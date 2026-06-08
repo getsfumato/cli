@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit"
+  short_description: "Create conventional commits from diffs"
+  default_prompt: "Use $commit to create a commit message for the current staged changes."

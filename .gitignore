@@ -1,0 +1,49 @@
+# Rust build artifacts
+target/
+
+# Cargo emits this when publishing crates locally.
+*.crate
+
+# Keep Cargo.lock for binaries/apps. Sfumato is a CLI app, so Cargo.lock should
+# be committed for reproducible builds.
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local Sfumato/Obsidian generated resources
+Resources/Sfumato/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.fuse_hidden*
+.Trash-*
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.code-workspace
+
+# Local test coverage/profiling output
+coverage/
+tarpaulin-report.html
+*.profraw
+*.profdata
