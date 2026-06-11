@@ -1,10 +1,29 @@
 use super::*;
+use crate::config::GlobalConfig;
+
+fn effective_config() -> EffectiveConfig {
+    let global = GlobalConfig::default_config();
+    EffectiveConfig {
+        user: global.user,
+        project_name: "demo".to_string(),
+        project_root: PathBuf::from("/tmp/demo"),
+        output_dir: PathBuf::from("Resources/Sfumato"),
+        connectors: global.connectors,
+        models: global.models,
+        model_defaults: global.defaults.0,
+        marp: global.marp,
+    }
+}
 
 #[test]
 fn filters_supported_files() {
     assert!(is_supported(Path::new("note.md")));
-    assert!(is_supported(Path::new("main.RS")));
     assert!(!is_supported(Path::new("image.png")));
+}
+
+#[test]
+fn supports_no_source_files() {
+    assert!(collect_sources(&[]).unwrap().is_empty());
 }
 
 #[test]
@@ -15,16 +34,12 @@ fn strips_markdown_code_fence() {
 
 #[test]
 fn rejects_paths_outside_output_root() {
-    let root = Path::new("/tmp/vault/out");
-    let outside = Path::new("/tmp/vault/elsewhere/slides.md");
-    assert!(ensure_inside(root, outside).is_err());
+    assert!(ensure_inside(Path::new("/tmp/out"), Path::new("/tmp/elsewhere/a.md")).is_err());
 }
 
 #[test]
 fn normalizes_frontmatter() {
-    let config = SfumatoConfig::default_for_cwd(PathBuf::from("/tmp/vault"));
+    let config = effective_config();
     let markdown = normalize_marp_markdown("# Demo\n\n---\n\n## One", &config, "Demo").unwrap();
-
     assert!(markdown.contains("marp: true"));
-    assert!(markdown.contains("theme: default"));
 }

@@ -8,38 +8,43 @@ use toml::{Table, Value};
 
 use crate::{
     cli::ConfigScope,
-    config::{ConfigOverrides, SfumatoConfig, project_config_path, user_config_path},
+    config::{
+        ConfigOverrides, EffectiveConfig, ProjectRegistry, project_config_path, user_config_path,
+    },
 };
 
 #[derive(Debug)]
 pub struct ConfigService {
     user_config_path: PathBuf,
-    project_config_path: PathBuf,
 }
 
 impl ConfigService {
     pub fn new() -> Result<Self> {
-        let user_config_path =
-            user_config_path().context("Could not find a user configuration directory")?;
-
         Ok(Self {
-            user_config_path,
-            project_config_path: project_config_path(),
+            user_config_path: user_config_path()
+                .context("Could not find a user configuration directory")?,
         })
     }
 
-    pub fn show(&self, scope: ConfigScope, key: Option<String>) -> Result<String> {
+    pub fn show(
+        &self,
+        scope: ConfigScope,
+        project: Option<String>,
+        key: Option<String>,
+    ) -> Result<String> {
         let value = match scope {
             ConfigScope::Effective => {
-                let config = SfumatoConfig::load(ConfigOverrides::default())?;
-                toml::Value::try_from(config).context("Could not serialize effective config")?
+                let config = EffectiveConfig::load(ConfigOverrides {
+                    project,
+                    ..Default::default()
+                })?;
+                Value::try_from(config).context("Could not serialize effective config")?
             }
             ConfigScope::User => Value::Table(self.read_config_table(&self.user_config_path)?),
             ConfigScope::Project => {
-                Value::Table(self.read_config_table(&self.project_config_path)?)
+                Value::Table(self.read_config_table(&self.project_path(project.as_deref())?)?)
             }
         };
-
         let shown = if let Some(key) = key {
             get_dotted_value(&value, &key)
                 .with_context(|| format!("Config key '{key}' was not found"))?
@@ -47,53 +52,59 @@ impl ConfigService {
         } else {
             value
         };
-
         render_config_value(&shown)
     }
 
-    pub fn set(&self, scope: ConfigScope, key: &str, raw_value: &str) -> Result<()> {
-        let path = self.editable_path(scope)?;
-        let mut table = self.read_config_table(path)?;
-        let value = parse_config_value(raw_value);
-
-        set_dotted_value(&mut table, key, value)?;
-        self.write_config_table(path, &table)?;
+    pub fn set(
+        &self,
+        scope: ConfigScope,
+        project: Option<String>,
+        key: &str,
+        raw_value: &str,
+    ) -> Result<()> {
+        let path = self.editable_path(scope, project.as_deref())?;
+        let mut table = self.read_config_table(&path)?;
+        set_dotted_value(&mut table, key, parse_config_value(raw_value))?;
+        self.write_config_table(&path, &table)?;
         println!("Set {key} in {}", path.display());
         Ok(())
     }
 
-    pub fn delete(&self, scope: ConfigScope, key: &str) -> Result<()> {
-        let path = self.editable_path(scope)?;
-        let mut table = self.read_config_table(path)?;
-
+    pub fn delete(&self, scope: ConfigScope, project: Option<String>, key: &str) -> Result<()> {
+        let path = self.editable_path(scope, project.as_deref())?;
+        let mut table = self.read_config_table(&path)?;
         delete_dotted_value(&mut table, key)?;
-        self.write_config_table(path, &table)?;
+        self.write_config_table(&path, &table)?;
         println!("Deleted {key} from {}", path.display());
         Ok(())
     }
 
-    fn editable_path(&self, scope: ConfigScope) -> Result<&Path> {
+    fn editable_path(&self, scope: ConfigScope, project: Option<&str>) -> Result<PathBuf> {
         match scope {
-            ConfigScope::User => Ok(&self.user_config_path),
-            ConfigScope::Project => Ok(&self.project_config_path),
+            ConfigScope::User => Ok(self.user_config_path.clone()),
+            ConfigScope::Project => self.project_path(project),
             ConfigScope::Effective => bail!(
                 "The effective config is merged and read-only. Use --scope user or --scope project."
             ),
         }
     }
 
+    fn project_path(&self, requested: Option<&str>) -> Result<PathBuf> {
+        let registry = ProjectRegistry::load()?;
+        let (_, root) = registry.selected(requested)?;
+        Ok(project_config_path(&root))
+    }
+
     fn read_config_table(&self, path: &Path) -> Result<Table> {
         if !path.exists() {
             return Ok(Table::new());
         }
-
         let text = fs::read_to_string(path)
             .with_context(|| format!("Could not read config file {}", path.display()))?;
-        let value = text
+        match text
             .parse::<Value>()
-            .with_context(|| format!("Could not parse config file {}", path.display()))?;
-
-        match value {
+            .with_context(|| format!("Could not parse config file {}", path.display()))?
+        {
             Value::Table(table) => Ok(table),
             _ => bail!("Config file {} must contain a TOML table", path.display()),
         }
@@ -104,7 +115,6 @@ impl ConfigService {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Could not create {}", parent.display()))?;
         }
-
         let rendered = toml::to_string_pretty(table).context("Could not render config as TOML")?;
         fs::write(path, rendered).with_context(|| format!("Could not write {}", path.display()))
     }
@@ -124,11 +134,9 @@ fn render_config_value(value: &Value) -> Result<String> {
 
 fn get_dotted_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     let mut current = value;
-
     for part in split_key(key) {
         current = current.get(part)?;
     }
-
     Some(current)
 }
 
@@ -137,18 +145,15 @@ fn set_dotted_value(table: &mut Table, key: &str, value: Value) -> Result<()> {
     if parts.is_empty() {
         bail!("Config key cannot be empty");
     }
-
     let mut current = table;
     for part in &parts[..parts.len() - 1] {
         let entry = current
             .entry((*part).to_string())
             .or_insert_with(|| Value::Table(Table::new()));
-
         current = entry
             .as_table_mut()
             .with_context(|| format!("Config key '{part}' is not a table"))?;
     }
-
     current.insert(parts[parts.len() - 1].to_string(), value);
     Ok(())
 }
@@ -158,7 +163,6 @@ fn delete_dotted_value(table: &mut Table, key: &str) -> Result<()> {
     if parts.is_empty() {
         bail!("Config key cannot be empty");
     }
-
     let mut current = table;
     for part in &parts[..parts.len() - 1] {
         current = current
@@ -166,12 +170,9 @@ fn delete_dotted_value(table: &mut Table, key: &str) -> Result<()> {
             .and_then(Value::as_table_mut)
             .with_context(|| format!("Config key '{key}' was not found"))?;
     }
-
-    let removed = current.remove(parts[parts.len() - 1]);
-    if removed.is_none() {
+    if current.remove(parts[parts.len() - 1]).is_none() {
         bail!("Config key '{key}' was not found");
     }
-
     Ok(())
 }
 

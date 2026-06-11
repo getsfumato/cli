@@ -21,6 +21,14 @@ pub enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
+    Connector {
+        #[command(subcommand)]
+        command: ConnectorCommands,
+    },
     Generate {
         #[command(subcommand)]
         command: GenerateCommands,
@@ -36,12 +44,65 @@ pub enum InitTarget {
         #[arg(long, help = "Overwrite an existing user config")]
         force: bool,
     },
-    Project,
+    Project(InitProjectArgs),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum GenerateCommands {
     Slides(SlidesArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommands {
+    List,
+    Show(ProjectShowArgs),
+    Use(ProjectNameArgs),
+    Remove(ProjectNameArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConnectorCommands {
+    List,
+    Show(ConnectorShowArgs),
+    Setup(ConnectorSetupArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ConnectorShowArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ConnectorSetupArgs {
+    #[arg(value_enum)]
+    pub preset: ConnectorPreset,
+
+    #[arg(long, help = "Connector name; defaults to the preset name")]
+    pub name: Option<String>,
+
+    #[arg(long, default_value = "OPENROUTER_API_KEY")]
+    pub api_key_env: String,
+}
+
+#[derive(Debug, Args)]
+pub struct InitProjectArgs {
+    pub name: String,
+
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+
+    #[arg(long)]
+    pub no_activate: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectShowArgs {
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectNameArgs {
+    pub name: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -61,6 +122,9 @@ pub struct ConfigShowArgs {
 
     #[arg(long, value_enum, default_value_t = ConfigScope::Effective, help = "Config scope to read from")]
     pub scope: ConfigScope,
+
+    #[arg(long, help = "Project name when reading project or effective config")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -72,6 +136,9 @@ pub struct ConfigSetArgs {
 
     #[arg(long, value_enum, default_value_t = ConfigScope::User, help = "Config file to edit")]
     pub scope: ConfigScope,
+
+    #[arg(long, help = "Project name when editing project config")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -81,18 +148,17 @@ pub struct ConfigDeleteArgs {
 
     #[arg(long, value_enum, default_value_t = ConfigScope::User, help = "Config file to edit")]
     pub scope: ConfigScope,
+
+    #[arg(long, help = "Project name when editing project config")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct SlidesArgs {
-    #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
 
-    #[arg(long, value_enum)]
-    pub provider: Option<ProviderArg>,
-
-    #[arg(long)]
-    pub model: Option<String>,
+    #[arg(long, required = true)]
+    pub instruction: String,
 
     #[arg(long)]
     pub title: Option<String>,
@@ -107,13 +173,13 @@ pub struct SlidesArgs {
     pub dry_run: bool,
 
     #[arg(long)]
-    pub config: Option<PathBuf>,
-}
+    pub project: Option<String>,
 
-#[derive(Clone, Debug, ValueEnum)]
-pub enum ProviderArg {
-    Ollama,
-    Openrouter,
+    #[arg(long = "model", value_name = "CAPABILITY=PROFILE")]
+    pub model_overrides: Vec<String>,
+
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -121,4 +187,10 @@ pub enum ConfigScope {
     User,
     Project,
     Effective,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ConnectorPreset {
+    Ollama,
+    Openrouter,
 }

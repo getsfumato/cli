@@ -8,8 +8,9 @@ use slug::slugify;
 use walkdir::WalkDir;
 
 use crate::{
-    config::SfumatoConfig,
-    providers::{GenerateTextRequest, ProviderKind},
+    config::{Capability, EffectiveConfig},
+    generation::{GenerationOutput, GenerationRequest},
+    providers::{TextGenerationRequest, build_text_provider},
     renderers::marp,
 };
 
@@ -19,16 +20,16 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 
 #[derive(Debug)]
 pub struct GenerateSlidesOptions {
-    pub inputs: Vec<PathBuf>,
     pub title: Option<String>,
     pub dry_run: bool,
-    pub provider_kind: ProviderKind,
 }
 
 #[derive(Debug)]
 pub struct GenerateSlidesResult {
     pub markdown_path: PathBuf,
     pub pdf_path: Option<PathBuf>,
+    pub output: GenerationOutput,
+    pub prompt_preview: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -38,12 +39,15 @@ struct SourceDocument {
 }
 
 pub async fn generate_slides(
-    config: SfumatoConfig,
+    config: EffectiveConfig,
+    request: GenerationRequest,
     options: GenerateSlidesOptions,
 ) -> Result<GenerateSlidesResult> {
     let output_root = config.output_root()?;
     let slides_dir = output_root.join("slides");
-    let title = options.title.unwrap_or_else(|| config.project.name.clone());
+    let title = options
+        .title
+        .unwrap_or_else(|| instruction_title(&request.instruction));
     let slug = slugify(&title);
     let markdown_path = slides_dir.join(format!("{slug}.md"));
     let pdf_path = slides_dir.join(format!("{slug}.pdf"));
@@ -51,24 +55,29 @@ pub async fn generate_slides(
     ensure_inside(&output_root, &markdown_path)?;
     ensure_inside(&output_root, &pdf_path)?;
 
-    let documents = collect_sources(&options.inputs)?;
-    if documents.is_empty() {
-        bail!("No supported input files found.");
-    }
-
+    let documents = collect_sources(&request.sources)?;
     let source_bundle = build_source_bundle(&documents);
-    let request = build_generation_request(&config, &title, &source_bundle);
+    let provider_request =
+        build_generation_request(&config, &request.instruction, &title, &source_bundle);
+    let (profile_name, profile) = config.resolve_model(Capability::Text)?;
+    let selected_models =
+        std::collections::BTreeMap::from([("text".to_string(), profile_name.to_string())]);
 
     if options.dry_run {
-        println!("{}", request.user_prompt);
         return Ok(GenerateSlidesResult {
             markdown_path,
             pdf_path: None,
+            output: GenerationOutput {
+                project: config.project_name,
+                models: selected_models,
+                artifacts: Vec::new(),
+            },
+            prompt_preview: Some(provider_request.user_prompt),
         });
     }
 
-    let provider = options.provider_kind.build_provider(&config)?;
-    let response = provider.generate_text(request).await?;
+    let provider = build_text_provider(&config, profile)?;
+    let response = provider.generate_text(provider_request).await?;
     let markdown = normalize_marp_markdown(&response.text, &config, &title)?;
 
     fs::create_dir_all(&slides_dir)
@@ -88,17 +97,29 @@ pub async fn generate_slides(
         None
     };
 
+    let mut artifacts = vec![markdown_path.clone()];
+    if let Some(pdf) = &rendered_pdf {
+        artifacts.push(pdf.clone());
+    }
+
     Ok(GenerateSlidesResult {
         markdown_path,
         pdf_path: rendered_pdf,
+        output: GenerationOutput {
+            project: config.project_name,
+            models: selected_models,
+            artifacts,
+        },
+        prompt_preview: None,
     })
 }
 
 fn build_generation_request(
-    config: &SfumatoConfig,
+    config: &EffectiveConfig,
+    instruction: &str,
     title: &str,
     source_bundle: &str,
-) -> GenerateTextRequest {
+) -> TextGenerationRequest {
     let learning_style = if config.user.learning_style.is_empty() {
         "not specified".to_string()
     } else {
@@ -115,6 +136,7 @@ fn build_generation_request(
 Project: {project}
 Theme: {theme}
 Marp theme: {marp_theme}
+Instruction: {instruction}
 
 Requirements:
 - Return only Markdown.
@@ -129,17 +151,14 @@ Requirements:
 Source material:
 {source_bundle}
 "#,
-        project = config.project.name,
+        project = config.project_name,
         theme = config.user.theme,
         marp_theme = config.marp.theme,
     );
 
-    GenerateTextRequest {
+    TextGenerationRequest {
         system_prompt,
         user_prompt,
-        model: config.inference.model.clone(),
-        temperature: config.inference.temperature,
-        max_tokens: config.inference.max_tokens,
     }
 }
 
@@ -162,6 +181,11 @@ fn collect_sources(inputs: &[PathBuf]) -> Result<Vec<SourceDocument>> {
 
     documents.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(documents)
+}
+
+fn instruction_title(instruction: &str) -> String {
+    let compact = instruction.split_whitespace().collect::<Vec<_>>().join(" ");
+    compact.chars().take(60).collect()
 }
 
 fn push_source_file(path: &Path, documents: &mut Vec<SourceDocument>) -> Result<()> {
@@ -212,7 +236,11 @@ fn excerpt(content: &str, max_chars: usize) -> String {
     excerpt
 }
 
-fn normalize_marp_markdown(generated: &str, config: &SfumatoConfig, title: &str) -> Result<String> {
+fn normalize_marp_markdown(
+    generated: &str,
+    config: &EffectiveConfig,
+    title: &str,
+) -> Result<String> {
     let mut markdown = strip_code_fence(generated.trim()).to_string();
 
     if !markdown.starts_with("---") {

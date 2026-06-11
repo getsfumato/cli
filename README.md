@@ -1,129 +1,147 @@
 # Sfumato CLI
 
-Sfumato is a Rust CLI for generating Obsidian-friendly study resources with local
-or cloud models. The first resource type is a Marp slide deck generated from
-files and folders.
+Sfumato is a Rust CLI for generating Obsidian-friendly study resources from an
+instruction and optional source material. It is designed to work directly from
+the terminal or as a resource-generation engine orchestrated by tools such as
+Claude Code.
 
-## Current MVP
+## Mental Model
 
-- `sfumato init user` opens a small setup experience, asks a few questions, and
-  writes your user preferences.
-- `sfumato init project` writes a project preference template.
-- `sfumato generate slides <inputs...>` reads supported files, asks a model for a
-  Marp deck, and writes Markdown into the configured vault output folder.
-- Providers are OpenAI-like chat completion adapters for Ollama and OpenRouter.
-- PDF export is optional and uses the external `marp` CLI when available.
+- **User:** one global learning profile.
+- **Projects:** many registered study/work contexts, with one active project.
+- **Connectors:** named OpenAI-compatible API connections such as Ollama and
+  OpenRouter.
+- **Model profiles:** named connector models with capabilities such as `text`,
+  `code`, `image`, `video`, `speech`, and `embedding`.
+- **Generation requests:** a required instruction plus optional files/folders.
 
-Supported input extensions:
+Global preferences, connectors, model profiles, and defaults live in:
 
 ```text
-.md .txt .rs .py .js .ts .html .css .json .toml .yaml .yml
+~/.config/sfumato/config.toml
 ```
 
-## Examples
+The project registry and active project live in:
+
+```text
+~/.config/sfumato/projects.toml
+```
+
+Each project keeps portable settings in:
+
+```text
+<project-root>/.sfumato/project.toml
+```
+
+## OpenAI-Compatible Connectors
+
+Ollama and OpenRouter use the same OpenAI-compatible connector implementation.
+They differ only by configuration:
+
+```bash
+cargo run -- connector setup ollama
+cargo run -- connector setup openrouter --api-key-env OPENROUTER_API_KEY
+cargo run -- connector list
+cargo run -- connector show openrouter
+```
+
+Ollama defaults to `http://localhost:11434/v1` with the required-but-ignored
+`ollama` API key. OpenRouter defaults to `https://openrouter.ai/api/v1`, reads
+its bearer token from `OPENROUTER_API_KEY`.
+
+## Setup
+
+Create or reset the global user configuration:
 
 ```bash
 cargo run -- init user
-cargo run -- init project
-cargo run -- generate slides ./notes --provider ollama --model llama3.2 --title "Intro"
-OPENROUTER_API_KEY=... cargo run -- generate slides ./notes --provider openrouter --model openai/gpt-4o-mini
+cargo run -- init user --yes --force
 ```
 
-Show the merged effective config:
+Create, register, and activate a project:
 
 ```bash
-cargo run -- config show
+cargo run -- init project university --path /path/to/vault
 ```
 
-Show, set, or delete a specific user/project value:
+Manage projects:
 
 ```bash
-cargo run -- config show user.theme
-cargo run -- config set user.theme gruvbox
-cargo run -- config set inference.temperature 0.3
-cargo run -- config delete user.name
-cargo run -- config set project.output_dir "Resources/Sfumato" --scope project
+cargo run -- project list
+cargo run -- project show
+cargo run -- project show university
+cargo run -- project use university
+cargo run -- project remove university
 ```
 
-Config keys use dotted paths. Values are parsed as TOML when possible, so
-`true`, `0.3`, `4000`, and `["visual", "practice"]` become typed values;
-otherwise they are saved as strings.
+Removing a project only removes it from the registry; it does not delete project
+files.
 
-The init flow uses:
+## Generate Slides
 
-- `inquire` for interactive questions.
-- `indicatif` for write progress feedback.
-
-Use the starter defaults without the interactive questions:
+Instructions are required. Sources are optional:
 
 ```bash
-cargo run -- init user --yes
+cargo run -- generate slides --instruction "Explain Fourier series visually"
+cargo run -- generate slides --instruction "Create revision slides" ./notes ./course-material
+cargo run -- generate slides --instruction "Summarize these notes" --project university ./notes
 ```
 
-Overwrite an existing user config:
+Override a model profile for a capability:
 
 ```bash
-cargo run -- init user --force
+cargo run -- generate slides \
+  --instruction "Explain ownership in Rust" \
+  --model text=cloud-text
 ```
 
-Preview the prompt without calling a model:
+Preview the prompt without calling a connector:
 
 ```bash
-cargo run -- generate slides ./notes --dry-run
+cargo run -- generate slides --instruction "Explain Fourier series" --dry-run
 ```
 
-Export a PDF when Marp CLI is installed:
+Return machine-readable output for agent callers:
 
 ```bash
-cargo run -- generate slides ./notes --pdf
+cargo run -- generate slides --instruction "Explain Fourier series" --json
 ```
 
-If Marp is missing, Sfumato keeps the Markdown deck and reports that PDF export
-was skipped.
+Successful JSON includes the selected project, selected model profiles, and
+artifact paths. Errors are also emitted as JSON when `--json` is set.
 
 ## Configuration
 
-Config is layered in this order:
+Show merged effective configuration:
 
-1. User config: `~/.config/sfumato/config.toml`
-2. Project config: `.sfumato/project.toml`
-3. CLI flags for inference-time overrides
-
-Project config example:
-
-```toml
-[project]
-name = "university"
-vault_root = "."
-output_dir = "Resources/Sfumato"
+```bash
+cargo run -- config show
+cargo run -- config show model_defaults.text
 ```
 
-User config example:
+Edit user configuration:
 
-```toml
-[user]
-name = "Alex"
-learning_style = ["visual", "step-by-step"]
-theme = "sfumato-default"
-
-[inference]
-provider = "ollama"
-model = "llama3.2"
-temperature = 0.4
-max_tokens = 4000
-
-[providers.ollama]
-base_url = "http://localhost:11434/v1"
-api_key = "ollama"
-
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[marp]
-theme = "default"
-pdf = false
+```bash
+cargo run -- config set defaults.text cloud-text
+cargo run -- config set models.cloud-text.model openai/gpt-4o-mini
 ```
+
+Edit the active or named project:
+
+```bash
+cargo run -- config set output_dir "Resources/Sfumato" --scope project
+cargo run -- config set model_defaults.text cloud-text --scope project --project university
+cargo run -- config delete model_defaults.text --scope project --project university
+```
+
+The effective scope is merged and read-only. Resolution order is:
+
+1. command `--model capability=profile` override
+2. selected project model default
+3. user model default
+
+The old v0.1 single-project/single-inference config format is intentionally not
+supported. Run `sfumato init user --force` and register projects again.
 
 ## Development
 

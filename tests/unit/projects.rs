@@ -1,0 +1,34 @@
+use super::*;
+
+#[test]
+fn initializes_switches_and_removes_projects_without_deleting_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry_path = temp.path().join("projects.toml");
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    let mut service = ProjectService::load_from(registry_path.clone()).unwrap();
+
+    service
+        .init("first".to_string(), first.clone(), true)
+        .unwrap();
+    service
+        .init("second".to_string(), second.clone(), false)
+        .unwrap();
+    assert_eq!(service.registry.active.as_deref(), Some("first"));
+    assert!(
+        service
+            .init("first".to_string(), first.clone(), true)
+            .is_err()
+    );
+
+    service.use_project("second").unwrap();
+    assert_eq!(service.registry.active.as_deref(), Some("second"));
+
+    service.remove("second").unwrap();
+    assert!(project_config_path(&second).exists());
+    assert!(!service.registry.projects.contains_key("second"));
+
+    let reloaded = ProjectRegistry::load_from(&registry_path).unwrap();
+    assert!(reloaded.projects.contains_key("first"));
+    assert!(!reloaded.projects.contains_key("second"));
+}

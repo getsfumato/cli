@@ -1,15 +1,20 @@
-use anyhow::Result;
+use std::{collections::BTreeMap, str::FromStr};
+
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 
 use crate::{
     cli::{
         Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs, ConfigShowArgs,
-        GenerateCommands, InitTarget, SlidesArgs,
+        ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, GenerateCommands,
+        InitProjectArgs, InitTarget, ProjectCommands, ProjectNameArgs, ProjectShowArgs, SlidesArgs,
     },
-    config::{ConfigOverrides, SfumatoConfig},
+    config::{Capability, ConfigOverrides, EffectiveConfig},
     config_editor::ConfigService,
-    init,
-    providers::ProviderKind,
+    connectors::ConnectorService,
+    generation::{GenerationRequest, ResourceKind},
+    init::InitService,
+    projects::ProjectService,
     resources::slides::{GenerateSlidesOptions, generate_slides},
 };
 
@@ -24,29 +29,89 @@ impl RunnableCommand for Commands {
         match self {
             Self::Init { target } => target.run().await,
             Self::Config { command } => command.run().await,
+            Self::Project { command } => command.run().await,
+            Self::Connector { command } => command.run().await,
             Self::Generate { command } => command.run().await,
         }
     }
 }
 
 #[async_trait]
-impl RunnableCommand for InitTarget {
+impl RunnableCommand for ConnectorCommands {
     async fn run(self) -> Result<()> {
-        let init_service = init::InitService::new()?;
-
         match self {
-            Self::User { yes, force } => init_service.write_user_config(yes, force),
-            Self::Project => init_service.write_project_config(),
+            Self::List => {
+                ConnectorService::load()?.list();
+                Ok(())
+            }
+            Self::Show(args) => args.run().await,
+            Self::Setup(args) => args.run().await,
         }
     }
 }
 
 #[async_trait]
-impl RunnableCommand for GenerateCommands {
+impl RunnableCommand for ConnectorShowArgs {
+    async fn run(self) -> Result<()> {
+        println!("{}", ConnectorService::load()?.show(&self.name)?);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ConnectorSetupArgs {
+    async fn run(self) -> Result<()> {
+        ConnectorService::load()?.setup(self.preset, self.name, self.api_key_env)
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for InitTarget {
     async fn run(self) -> Result<()> {
         match self {
-            Self::Slides(args) => args.run().await,
+            Self::User { yes, force } => InitService::new()?.write_user_config(yes, force),
+            Self::Project(args) => args.run().await,
         }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for InitProjectArgs {
+    async fn run(self) -> Result<()> {
+        ProjectService::load()?.init(self.name, self.path, !self.no_activate)
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ProjectCommands {
+    async fn run(self) -> Result<()> {
+        match self {
+            Self::List => {
+                ProjectService::load()?.list();
+                Ok(())
+            }
+            Self::Show(args) => args.run().await,
+            Self::Use(args) => args.run().await,
+            Self::Remove(args) => {
+                let mut service = ProjectService::load()?;
+                service.remove(&args.name)
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ProjectShowArgs {
+    async fn run(self) -> Result<()> {
+        println!("{}", ProjectService::load()?.show(self.name.as_deref())?);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ProjectNameArgs {
+    async fn run(self) -> Result<()> {
+        ProjectService::load()?.use_project(&self.name)
     }
 }
 
@@ -64,8 +129,7 @@ impl RunnableCommand for ConfigCommands {
 #[async_trait]
 impl RunnableCommand for ConfigShowArgs {
     async fn run(self) -> Result<()> {
-        let service = ConfigService::new()?;
-        let rendered = service.show(self.scope, self.key)?;
+        let rendered = ConfigService::new()?.show(self.scope, self.project, self.key)?;
         println!("{rendered}");
         Ok(())
     }
@@ -74,64 +138,107 @@ impl RunnableCommand for ConfigShowArgs {
 #[async_trait]
 impl RunnableCommand for ConfigSetArgs {
     async fn run(self) -> Result<()> {
-        let service = ConfigService::new()?;
-        service.set(self.scope, &self.key, &self.value)?;
-        Ok(())
+        ConfigService::new()?.set(self.scope, self.project, &self.key, &self.value)
     }
 }
 
 #[async_trait]
 impl RunnableCommand for ConfigDeleteArgs {
     async fn run(self) -> Result<()> {
-        let service = ConfigService::new()?;
-        service.delete(self.scope, &self.key)?;
-        Ok(())
+        ConfigService::new()?.delete(self.scope, self.project, &self.key)
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for GenerateCommands {
+    async fn run(self) -> Result<()> {
+        match self {
+            Self::Slides(args) => args.run().await,
+        }
     }
 }
 
 #[async_trait]
 impl RunnableCommand for SlidesArgs {
     async fn run(self) -> Result<()> {
-        let SlidesArgs {
-            inputs,
-            provider,
-            model,
-            title,
-            out,
-            pdf,
-            dry_run,
+        let json = self.json;
+        match self.execute().await {
+            Ok(()) => Ok(()),
+            Err(error) if json => {
+                println!("{}", serde_json::json!({ "error": format!("{error:#}") }));
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl SlidesArgs {
+    async fn execute(self) -> Result<()> {
+        if self.instruction.trim().is_empty() {
+            bail!("Instruction cannot be empty");
+        }
+        let model_overrides = parse_model_overrides(&self.model_overrides)?;
+        let config = EffectiveConfig::load(ConfigOverrides {
+            project: self.project.clone(),
+            model_overrides: model_overrides.clone(),
+            output_dir: self.out,
+            pdf: self.pdf,
+        })?;
+        let request = GenerationRequest {
+            instruction: self.instruction,
+            sources: self.inputs,
+            resource_kind: ResourceKind::Slides,
+            project: self.project,
+            model_overrides,
+        };
+        let result = generate_slides(
             config,
-        } = self;
+            request,
+            GenerateSlidesOptions {
+                title: self.title,
+                dry_run: self.dry_run,
+            },
+        )
+        .await?;
 
-        let overrides = ConfigOverrides {
-            provider,
-            model,
-            output_dir: out,
-            pdf,
-            config_path: config,
-        };
-        let config = SfumatoConfig::load(overrides)?;
-        let provider_kind = ProviderKind::from_config(&config)?;
-
-        let options = GenerateSlidesOptions {
-            inputs,
-            title,
-            dry_run,
-            provider_kind,
-        };
-
-        let result = generate_slides(config, options).await?;
-        if dry_run {
+        if self.json {
+            println!("{}", serde_json::to_string_pretty(&result.output)?);
+        } else if self.dry_run {
+            if let Some(prompt) = result.prompt_preview {
+                println!("{prompt}");
+            }
             println!("Dry run complete; no files were written.");
-            return Ok(());
+        } else {
+            println!("Wrote {}", result.markdown_path.display());
+            if let Some(pdf_path) = result.pdf_path {
+                println!("Wrote {}", pdf_path.display());
+            }
         }
-
-        println!("Wrote {}", result.markdown_path.display());
-
-        if let Some(pdf_path) = result.pdf_path {
-            println!("Wrote {}", pdf_path.display());
-        }
-
         Ok(())
     }
 }
+
+fn parse_model_overrides(values: &[String]) -> Result<BTreeMap<Capability, String>> {
+    values
+        .iter()
+        .map(|value| {
+            let (capability, profile) = value.split_once('=').with_context(|| {
+                format!("Invalid model override '{value}'. Use capability=profile.")
+            })?;
+            if profile.trim().is_empty() {
+                bail!("Model profile cannot be empty in '{value}'");
+            }
+            Ok((
+                Capability::from_str(capability.trim())?,
+                profile.trim().to_string(),
+            ))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+// Test bodies live under tests/unit so implementation files stay focused, while
+// this module hook still lets those tests exercise private helpers.
+#[path = "../../tests/unit/commands.rs"]
+mod tests;
