@@ -29,6 +29,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: ConnectorCommands,
     },
+    Theme {
+        #[command(subcommand)]
+        command: ThemeCommands,
+    },
     Generate {
         #[command(subcommand)]
         command: GenerateCommands,
@@ -65,6 +69,27 @@ pub enum ConnectorCommands {
     List,
     Show(ConnectorShowArgs),
     Setup(ConnectorSetupArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ThemeCommands {
+    Create(ThemeNameArgs),
+    List,
+    Show(ThemeNameArgs),
+    Use(ThemeUseArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ThemeNameArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ThemeUseArgs {
+    pub name: String,
+
+    #[arg(long)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -117,7 +142,7 @@ pub enum ConfigCommands {
 
 #[derive(Debug, Args)]
 pub struct ConfigShowArgs {
-    #[arg(help = "Optional dotted key, for example user.theme")]
+    #[arg(help = "Optional dotted key, for example defaults.text")]
     pub key: Option<String>,
 
     #[arg(long, value_enum, default_value_t = ConfigScope::Effective, help = "Config scope to read from")]
@@ -143,7 +168,7 @@ pub struct ConfigSetArgs {
 
 #[derive(Debug, Args)]
 pub struct ConfigDeleteArgs {
-    #[arg(help = "Dotted key to delete, for example user.theme")]
+    #[arg(help = "Dotted key to delete, for example defaults.text")]
     pub key: String,
 
     #[arg(long, value_enum, default_value_t = ConfigScope::User, help = "Config file to edit")]
@@ -174,6 +199,9 @@ pub struct SlidesArgs {
 
     #[arg(long)]
     pub project: Option<String>,
+
+    #[arg(long)]
+    pub theme: Option<String>,
 
     #[arg(long = "model", value_name = "CAPABILITY=PROFILE")]
     pub model_overrides: Vec<String>,

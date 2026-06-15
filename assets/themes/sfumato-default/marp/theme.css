@@ -1,0 +1,33 @@
+/* @theme sfumato-default */
+
+@import "default";
+
+:root {
+  --sfumato-background: #f7f7f5;
+  --sfumato-surface: #ffffff;
+  --sfumato-text: #202124;
+  --sfumato-muted: #5f6368;
+  --sfumato-primary: #315c8c;
+  --sfumato-accent: #b35c24;
+}
+
+section {
+  background: var(--sfumato-background);
+  color: var(--sfumato-text);
+  font-family: Inter, Arial, sans-serif;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--sfumato-primary);
+}
+
+a,
+strong {
+  color: var(--sfumato-accent);
+}
+
+code {
+  background: var(--sfumato-surface);
+}

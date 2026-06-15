@@ -1,0 +1,24 @@
+schema_version = 1
+name = "sfumato-default"
+description = "Sfumato's neutral default theme"
+
+[tokens.colors]
+background = "#f7f7f5"
+surface = "#ffffff"
+text = "#202124"
+muted = "#5f6368"
+primary = "#315c8c"
+accent = "#b35c24"
+
+[tokens.fonts]
+body = "Inter, Arial, sans-serif"
+heading = "Inter, Arial, sans-serif"
+mono = "JetBrains Mono, monospace"
+
+[adapters]
+marp_css = "marp/theme.css"
+
+[adapters.html]
+shell = "html/page.html"
+css = "html/style.css"
+script = "html/script.js"

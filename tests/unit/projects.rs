@@ -31,4 +31,6 @@ fn initializes_switches_and_removes_projects_without_deleting_files() {
     let reloaded = ProjectRegistry::load_from(&registry_path).unwrap();
     assert!(reloaded.projects.contains_key("first"));
     assert!(!reloaded.projects.contains_key("second"));
+    let first_config = load_project_config(&project_config_path(&first), DEFAULT_THEME).unwrap();
+    assert_eq!(first_config.theme, DEFAULT_THEME);
 }

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default)]
 pub struct ConfigOverrides {
     pub project: Option<String>,
+    pub theme: Option<String>,
     pub model_overrides: BTreeMap<Capability, String>,
     pub output_dir: Option<PathBuf>,
     pub pdf: bool,
@@ -19,6 +20,7 @@ pub struct ConfigOverrides {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobalConfig {
+    pub schema_version: u32,
     pub user: UserConfig,
     pub connectors: BTreeMap<String, OpenAiCompatibleConnectorConfig>,
     pub models: BTreeMap<String, ModelProfile>,
@@ -31,14 +33,24 @@ pub struct GlobalConfig {
 pub struct UserConfig {
     pub name: Option<String>,
     pub learning_style: Vec<String>,
-    pub theme: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectRegistry {
+    pub schema_version: u32,
     pub active: Option<String>,
     pub projects: BTreeMap<String, RegisteredProject>,
+}
+
+impl Default for ProjectRegistry {
+    fn default() -> Self {
+        Self {
+            schema_version: CONFIG_SCHEMA_VERSION,
+            active: None,
+            projects: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -50,7 +62,9 @@ pub struct RegisteredProject {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
+    pub schema_version: u32,
     pub name: String,
+    pub theme: String,
     pub output_dir: PathBuf,
     #[serde(default)]
     pub model_defaults: BTreeMap<Capability, String>,
@@ -129,7 +143,6 @@ pub struct OpenAiCompatibleConnectorConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MarpConfig {
-    pub theme: String,
     pub pdf: bool,
 }
 
@@ -139,6 +152,7 @@ pub struct EffectiveConfig {
     pub project_name: String,
     pub project_root: PathBuf,
     pub output_dir: PathBuf,
+    pub theme: String,
     pub connectors: BTreeMap<String, OpenAiCompatibleConnectorConfig>,
     pub models: BTreeMap<String, ModelProfile>,
     pub model_defaults: BTreeMap<Capability, String>,
@@ -148,10 +162,12 @@ pub struct EffectiveConfig {
 impl GlobalConfig {
     pub fn load() -> Result<Self> {
         let path = user_config_path().context("Could not find a user configuration directory")?;
+        crate::themes::ThemeService::load()?.install_default()?;
         if !path.exists() {
             return Ok(Self::default_config());
         }
 
+        migrate_global_config(&path)?;
         read_toml(&path).with_context(|| {
             format!(
                 "Could not load {}. Sfumato's v0.1 config format is no longer supported; run `sfumato init user --force` to reset it.",
@@ -188,10 +204,10 @@ impl GlobalConfig {
         );
 
         Self {
+            schema_version: CONFIG_SCHEMA_VERSION,
             user: UserConfig {
                 name: None,
                 learning_style: vec!["visual".to_string(), "step-by-step".to_string()],
-                theme: "sfumato-default".to_string(),
             },
             connectors: BTreeMap::from([
                 (
@@ -218,10 +234,7 @@ impl GlobalConfig {
                 Capability::Text,
                 "local-text".to_string(),
             )])),
-            marp: MarpConfig {
-                theme: "default".to_string(),
-                pdf: false,
-            },
+            marp: MarpConfig { pdf: false },
         }
     }
 }
@@ -237,6 +250,7 @@ impl ProjectRegistry {
         if !path.exists() {
             return Ok(Self::default());
         }
+        migrate_registry_config(path)?;
         read_toml(path)
     }
 
@@ -259,12 +273,18 @@ impl ProjectRegistry {
 
 impl EffectiveConfig {
     pub fn load(overrides: ConfigOverrides) -> Result<Self> {
+        let legacy_theme = installed_legacy_user_theme();
         let global = GlobalConfig::load()?;
         let registry = ProjectRegistry::load()?;
         let (selected_name, project_root) = registry.selected(overrides.project.as_deref())?;
         let project_path = project_config_path(&project_root);
-        let project: ProjectConfig = read_toml(&project_path)
-            .with_context(|| format!("Could not load project config {}", project_path.display()))?;
+        let project: ProjectConfig = load_project_config(
+            &project_path,
+            legacy_theme
+                .as_deref()
+                .unwrap_or(crate::themes::DEFAULT_THEME),
+        )
+        .with_context(|| format!("Could not load project config {}", project_path.display()))?;
 
         if project.name != selected_name {
             bail!(
@@ -282,9 +302,9 @@ impl EffectiveConfig {
         let output_dir = overrides
             .output_dir
             .unwrap_or_else(|| project.output_dir.clone());
+        let theme = resolve_theme_name(&project.theme, overrides.theme);
         let marp = project.marp.unwrap_or_else(|| global.marp.clone());
         let marp = MarpConfig {
-            theme: marp.theme,
             pdf: marp.pdf || overrides.pdf,
         };
 
@@ -293,6 +313,7 @@ impl EffectiveConfig {
             project_name: project.name,
             project_root,
             output_dir,
+            theme,
             connectors: global.connectors,
             models: global.models,
             model_defaults,
@@ -347,6 +368,10 @@ pub fn projects_registry_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("sfumato/projects.toml"))
 }
 
+pub fn themes_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("sfumato/themes"))
+}
+
 pub fn project_config_path(project_root: &Path) -> PathBuf {
     project_root.join(".sfumato/project.toml")
 }
@@ -364,6 +389,11 @@ pub fn write_toml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     }
     let rendered = toml::to_string_pretty(value).context("Could not render config as TOML")?;
     fs::write(path, rendered).with_context(|| format!("Could not write {}", path.display()))
+}
+
+pub fn load_project_config(path: &Path, fallback_theme: &str) -> Result<ProjectConfig> {
+    migrate_project_config(path, fallback_theme)?;
+    read_toml(path)
 }
 
 fn absolutize(path: &Path) -> Result<PathBuf> {
@@ -384,6 +414,138 @@ fn merge_model_defaults(
     user.extend(project);
     user.extend(command);
     user
+}
+
+fn resolve_theme_name(project_theme: &str, command_theme: Option<String>) -> String {
+    command_theme.unwrap_or_else(|| project_theme.to_string())
+}
+
+pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+
+fn migrate_global_config(path: &Path) -> Result<()> {
+    let mut value = read_toml_value(path)?;
+    let table = value
+        .as_table_mut()
+        .context("Global config must contain a TOML table")?;
+    if table
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        == Some(CONFIG_SCHEMA_VERSION.into())
+    {
+        return Ok(());
+    }
+    let legacy_theme = table
+        .get("user")
+        .and_then(toml::Value::as_table)
+        .and_then(|user| user.get("theme"))
+        .and_then(toml::Value::as_str)
+        .filter(|name| {
+            themes_dir()
+                .map(|root| root.join(name).join("theme.toml").is_file())
+                .unwrap_or(false)
+        })
+        .unwrap_or(crate::themes::DEFAULT_THEME)
+        .to_string();
+    if user_config_path().as_deref() == Some(path) {
+        migrate_registered_projects(&legacy_theme)?;
+    }
+    if let Some(user) = table.get_mut("user").and_then(toml::Value::as_table_mut) {
+        user.remove("theme");
+    }
+    if let Some(marp) = table.get_mut("marp").and_then(toml::Value::as_table_mut) {
+        marp.remove("theme");
+    }
+    table.insert(
+        "schema_version".to_string(),
+        toml::Value::Integer(CONFIG_SCHEMA_VERSION.into()),
+    );
+    write_migrated_toml(path, &value)
+}
+
+fn migrate_registered_projects(fallback_theme: &str) -> Result<()> {
+    let Some(registry_path) = projects_registry_path().filter(|path| path.exists()) else {
+        return Ok(());
+    };
+    let registry = ProjectRegistry::load_from(&registry_path)?;
+    for project in registry.projects.values() {
+        let path = project_config_path(&project.path);
+        if path.exists() {
+            migrate_project_config(&path, fallback_theme)?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_project_config(path: &Path, fallback_theme: &str) -> Result<()> {
+    let mut value = read_toml_value(path)?;
+    let table = value
+        .as_table_mut()
+        .context("Project config must contain a TOML table")?;
+    if table
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        == Some(CONFIG_SCHEMA_VERSION.into())
+        && table.contains_key("theme")
+    {
+        return Ok(());
+    }
+    table
+        .entry("theme".to_string())
+        .or_insert_with(|| toml::Value::String(fallback_theme.to_string()));
+    if let Some(marp) = table.get_mut("marp").and_then(toml::Value::as_table_mut) {
+        marp.remove("theme");
+    }
+    table.insert(
+        "schema_version".to_string(),
+        toml::Value::Integer(CONFIG_SCHEMA_VERSION.into()),
+    );
+    write_migrated_toml(path, &value)
+}
+
+fn migrate_registry_config(path: &Path) -> Result<()> {
+    let mut value = read_toml_value(path)?;
+    let table = value
+        .as_table_mut()
+        .context("Project registry must contain a TOML table")?;
+    if table
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        == Some(CONFIG_SCHEMA_VERSION.into())
+    {
+        return Ok(());
+    }
+    table.insert(
+        "schema_version".to_string(),
+        toml::Value::Integer(CONFIG_SCHEMA_VERSION.into()),
+    );
+    write_migrated_toml(path, &value)
+}
+
+fn installed_legacy_user_theme() -> Option<String> {
+    let config_path = user_config_path()?;
+    let value = read_toml_value(&config_path).ok()?;
+    let name = value.get("user")?.get("theme")?.as_str()?.to_string();
+    let manifest = themes_dir()?.join(&name).join("theme.toml");
+    manifest.is_file().then_some(name)
+}
+
+fn read_toml_value(path: &Path) -> Result<toml::Value> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("Could not read config file {}", path.display()))?;
+    toml::from_str::<toml::Value>(&text)
+        .with_context(|| format!("Could not parse config file {}", path.display()))
+}
+
+fn write_migrated_toml(path: &Path, value: &toml::Value) -> Result<()> {
+    let backup = PathBuf::from(format!("{}.bak", path.display()));
+    fs::copy(path, &backup)
+        .with_context(|| format!("Could not back up config to {}", backup.display()))?;
+    let temporary = PathBuf::from(format!("{}.tmp", path.display()));
+    let rendered = toml::to_string_pretty(value).context("Could not render migrated config")?;
+    fs::write(&temporary, rendered)
+        .with_context(|| format!("Could not write {}", temporary.display()))?;
+    fs::rename(&temporary, path)
+        .with_context(|| format!("Could not replace migrated config {}", path.display()))
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ fn effective_config() -> EffectiveConfig {
         project_name: "demo".to_string(),
         project_root: PathBuf::from("/tmp/demo"),
         output_dir: PathBuf::from("Resources/Sfumato"),
+        theme: "sfumato-default".to_string(),
         connectors: global.connectors,
         models: global.models,
         model_defaults: global.defaults.0,
@@ -39,7 +40,35 @@ fn rejects_paths_outside_output_root() {
 
 #[test]
 fn normalizes_frontmatter() {
-    let config = effective_config();
+    let mut config = effective_config();
+    config.theme = "gruvbox".to_string();
     let markdown = normalize_marp_markdown("# Demo\n\n---\n\n## One", &config, "Demo").unwrap();
     assert!(markdown.contains("marp: true"));
+    assert!(markdown.contains("theme: gruvbox"));
+}
+
+#[test]
+fn copies_theme_css_to_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("theme.css");
+    let destination = temp.path().join("output/themes/demo.css");
+    fs::write(&source, "/* @theme demo */").unwrap();
+    let package = ThemePackage {
+        root: temp.path().to_path_buf(),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "demo".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+    copy_theme_css(&package, &destination).unwrap();
+    assert_eq!(
+        fs::read_to_string(destination).unwrap(),
+        "/* @theme demo */"
+    );
 }

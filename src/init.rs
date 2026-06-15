@@ -7,6 +7,7 @@ use inquire::{Confirm, Select, Text};
 use crate::config::{
     Capability, GlobalConfig, ModelDefaults, ModelProfile, user_config_path, write_toml,
 };
+use crate::themes::ThemeService;
 
 #[derive(Debug)]
 pub struct InitService {
@@ -22,17 +23,17 @@ impl InitService {
     }
 
     pub fn write_user_config(&self, yes: bool, force: bool) -> Result<()> {
-        if self.user_config_path.exists() && !force {
-            if yes
+        if self.user_config_path.exists()
+            && !force
+            && (yes
                 || !Confirm::new(&format!(
                     "{} already exists. Overwrite it?",
                     self.user_config_path.display()
                 ))
                 .with_default(false)
-                .prompt()?
-            {
-                bail!("User config already exists. Re-run with --force to overwrite it.");
-            }
+                .prompt()?)
+        {
+            bail!("User config already exists. Re-run with --force to overwrite it.");
         }
 
         let config = if yes {
@@ -50,6 +51,7 @@ impl InitService {
         spinner.set_message("Writing user config");
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
         write_toml(&self.user_config_path, &config)?;
+        ThemeService::load()?.install_default()?;
         spinner.finish_with_message(format!("Wrote {}", self.user_config_path.display()));
         Ok(())
     }
@@ -70,8 +72,6 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
     }
     config.user.name = Some(name);
     config.user.learning_style = learning_style;
-    config.user.theme = prompt("Sfumato theme", "sfumato-default")?;
-
     let connector = Select::new(
         "Default text connector",
         vec!["ollama".to_string(), "openrouter".to_string()],
@@ -107,7 +107,6 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
         "OpenRouter API key environment variable",
         "OPENROUTER_API_KEY",
     )?);
-    config.marp.theme = prompt("Marp theme", "default")?;
     config.marp.pdf = Confirm::new("Export PDFs with Marp by default?")
         .with_default(false)
         .prompt()?;

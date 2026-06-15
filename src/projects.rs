@@ -6,9 +6,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::config::{
-    ProjectConfig, ProjectRegistry, RegisteredProject, project_config_path, projects_registry_path,
-    read_toml, write_toml,
+    CONFIG_SCHEMA_VERSION, ProjectConfig, ProjectRegistry, RegisteredProject, load_project_config,
+    project_config_path, projects_registry_path, write_toml,
 };
+use crate::themes::DEFAULT_THEME;
 
 #[derive(Debug)]
 pub struct ProjectService {
@@ -51,7 +52,9 @@ impl ProjectService {
         }
 
         let project = ProjectConfig {
+            schema_version: CONFIG_SCHEMA_VERSION,
             name: name.clone(),
+            theme: DEFAULT_THEME.to_string(),
             output_dir: PathBuf::from("Resources/Sfumato"),
             model_defaults: Default::default(),
             marp: None,
@@ -86,7 +89,7 @@ impl ProjectService {
 
     pub fn show(&self, requested: Option<&str>) -> Result<String> {
         let (_, root) = self.registry.selected(requested)?;
-        let project: ProjectConfig = read_toml(&project_config_path(&root))?;
+        let project = load_project_config(&project_config_path(&root), DEFAULT_THEME)?;
         toml::to_string_pretty(&project).context("Could not render project config")
     }
 

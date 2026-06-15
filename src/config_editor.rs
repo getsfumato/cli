@@ -40,7 +40,10 @@ impl ConfigService {
                 })?;
                 Value::try_from(config).context("Could not serialize effective config")?
             }
-            ConfigScope::User => Value::Table(self.read_config_table(&self.user_config_path)?),
+            ConfigScope::User => {
+                crate::config::GlobalConfig::load()?;
+                Value::Table(self.read_config_table(&self.user_config_path)?)
+            }
             ConfigScope::Project => {
                 Value::Table(self.read_config_table(&self.project_path(project.as_deref())?)?)
             }
@@ -81,7 +84,10 @@ impl ConfigService {
 
     fn editable_path(&self, scope: ConfigScope, project: Option<&str>) -> Result<PathBuf> {
         match scope {
-            ConfigScope::User => Ok(self.user_config_path.clone()),
+            ConfigScope::User => {
+                crate::config::GlobalConfig::load()?;
+                Ok(self.user_config_path.clone())
+            }
             ConfigScope::Project => self.project_path(project),
             ConfigScope::Effective => bail!(
                 "The effective config is merged and read-only. Use --scope user or --scope project."
@@ -92,7 +98,9 @@ impl ConfigService {
     fn project_path(&self, requested: Option<&str>) -> Result<PathBuf> {
         let registry = ProjectRegistry::load()?;
         let (_, root) = registry.selected(requested)?;
-        Ok(project_config_path(&root))
+        let path = project_config_path(&root);
+        crate::config::load_project_config(&path, crate::themes::DEFAULT_THEME)?;
+        Ok(path)
     }
 
     fn read_config_table(&self, path: &Path) -> Result<Table> {
@@ -101,8 +109,7 @@ impl ConfigService {
         }
         let text = fs::read_to_string(path)
             .with_context(|| format!("Could not read config file {}", path.display()))?;
-        match text
-            .parse::<Value>()
+        match toml::from_str::<Value>(&text)
             .with_context(|| format!("Could not parse config file {}", path.display()))?
         {
             Value::Table(table) => Ok(table),

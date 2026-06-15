@@ -1,0 +1,283 @@
+classDiagram
+    class Cli {
+        +Commands command
+    }
+
+    class RunnableCommand {
+        <<trait>>
+        +run() Result
+    }
+
+    class Commands {
+        <<enum>>
+        Init
+        Config
+        Project
+        Connector
+        Theme
+        Generate
+    }
+
+    class InitTarget {
+        <<enum>>
+        User
+        Project
+    }
+
+    class ConfigCommands {
+        <<enum>>
+        Show
+        Set
+        Delete
+    }
+
+    class ProjectCommands {
+        <<enum>>
+        List
+        Show
+        Use
+        Remove
+    }
+
+    class ConnectorCommands {
+        <<enum>>
+        List
+        Show
+        Setup
+    }
+
+    class ThemeCommands {
+        <<enum>>
+        Create
+        List
+        Show
+        Use
+    }
+
+    class GenerateCommands {
+        <<enum>>
+        Slides
+    }
+
+    class InitService {
+        -PathBuf user_config_path
+        +write_user_config()
+    }
+
+    class ConfigService {
+        -PathBuf user_config_path
+        +show()
+        +set()
+        +delete()
+    }
+
+    class ProjectService {
+        -ProjectRegistry registry
+        -PathBuf registry_path
+        +init()
+        +list()
+        +show()
+        +use_project()
+        +remove()
+    }
+
+    class ConnectorService {
+        -GlobalConfig config
+        +list()
+        +show()
+        +setup()
+    }
+
+    class ThemeService {
+        -PathBuf themes_dir
+        +install_default()
+        +create()
+        +list()
+        +show()
+        +use_for_project()
+        +resolve() ThemePackage
+    }
+
+    class GlobalConfig {
+        +u32 schema_version
+        +UserConfig user
+        +Map connectors
+        +Map models
+        +ModelDefaults defaults
+        +MarpConfig marp
+        +load()
+    }
+
+    class UserConfig {
+        +Option~String~ name
+        +Vec~String~ learning_style
+    }
+
+    class ProjectRegistry {
+        +u32 schema_version
+        +Option~String~ active
+        +Map projects
+        +selected()
+    }
+
+    class RegisteredProject {
+        +PathBuf path
+    }
+
+    class ProjectConfig {
+        +u32 schema_version
+        +String name
+        +String theme
+        +PathBuf output_dir
+        +Map model_defaults
+        +Option~MarpConfig~ marp
+    }
+
+    class EffectiveConfig {
+        +UserConfig user
+        +String project_name
+        +PathBuf project_root
+        +PathBuf output_dir
+        +String theme
+        +Map connectors
+        +Map models
+        +Map model_defaults
+        +MarpConfig marp
+        +resolve_model()
+        +output_root()
+    }
+
+    class ModelProfile {
+        +String connector
+        +String model
+        +Vec~Capability~ capabilities
+        +Map options
+    }
+
+    class Capability {
+        <<enum>>
+        Text
+        Code
+        Image
+        Video
+        Speech
+        Embedding
+    }
+
+    class OpenAiCompatibleConnectorConfig {
+        +String base_url
+        +Option~String~ api_key
+        +Option~String~ api_key_env
+        +Map headers
+    }
+
+    class ThemePackage {
+        +PathBuf root
+        +ThemeManifest manifest
+        +marp_css_path()
+    }
+
+    class ThemeManifest {
+        +u32 schema_version
+        +String name
+        +String description
+        +ThemeTokens tokens
+        +ThemeAdapters adapters
+    }
+
+    class ThemeTokens {
+        +Map colors
+        +Map fonts
+    }
+
+    class ThemeAdapters {
+        +PathBuf marp_css
+        +Option~HtmlThemeAdapter~ html
+    }
+
+    class HtmlThemeAdapter {
+        +PathBuf shell
+        +PathBuf css
+        +Option~PathBuf~ script
+    }
+
+    class GenerationRequest {
+        +String instruction
+        +Vec~PathBuf~ sources
+        +ResourceKind resource_kind
+        +Option~String~ project
+        +Map model_overrides
+    }
+
+    class GenerationOutput {
+        +String project
+        +Map models
+        +Vec~PathBuf~ artifacts
+    }
+
+    class TextGenerationProvider {
+        <<trait>>
+        +generate_text(request) TextGenerationResponse
+    }
+
+    class OpenAiCompatibleTextProvider {
+        -OpenAiCompatibleConnector connector
+        -ModelProfile profile
+        +request_body()
+        +generate_text()
+    }
+
+    class OpenAiCompatibleConnector {
+        -Client client
+        -String name
+        -OpenAiCompatibleConnectorConfig config
+        +endpoint()
+        -post()
+    }
+
+    Cli *-- Commands
+    Commands *-- InitTarget
+    Commands *-- ConfigCommands
+    Commands *-- ProjectCommands
+    Commands *-- ConnectorCommands
+    Commands *-- ThemeCommands
+    Commands *-- GenerateCommands
+
+    RunnableCommand <|.. Commands
+    RunnableCommand <|.. InitTarget
+    RunnableCommand <|.. ConfigCommands
+    RunnableCommand <|.. ProjectCommands
+    RunnableCommand <|.. ConnectorCommands
+    RunnableCommand <|.. ThemeCommands
+    RunnableCommand <|.. GenerateCommands
+
+    InitTarget --> InitService
+    ConfigCommands --> ConfigService
+    ProjectCommands --> ProjectService
+    ConnectorCommands --> ConnectorService
+    ThemeCommands --> ThemeService
+
+    GlobalConfig *-- UserConfig
+    GlobalConfig *-- OpenAiCompatibleConnectorConfig
+    GlobalConfig *-- ModelProfile
+    ModelProfile *-- Capability
+    ProjectRegistry *-- RegisteredProject
+    ProjectService *-- ProjectRegistry
+    EffectiveConfig ..> GlobalConfig : merges
+    EffectiveConfig ..> ProjectConfig : merges
+
+    ThemeService --> ProjectRegistry : assigns theme
+    ThemeService --> ThemePackage : resolves
+    ProjectConfig --> ThemePackage : selects by name
+    ThemePackage *-- ThemeManifest
+    ThemeManifest *-- ThemeTokens
+    ThemeManifest *-- ThemeAdapters
+    ThemeAdapters *-- HtmlThemeAdapter
+
+    TextGenerationProvider <|.. OpenAiCompatibleTextProvider
+    OpenAiCompatibleTextProvider *-- OpenAiCompatibleConnector
+    OpenAiCompatibleTextProvider --> ModelProfile
+    OpenAiCompatibleConnector *-- OpenAiCompatibleConnectorConfig
+    GenerationRequest --> EffectiveConfig : resolved with
+    GenerationRequest --> TextGenerationProvider : uses
+    GenerationRequest --> GenerationOutput : produces

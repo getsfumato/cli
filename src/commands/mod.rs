@@ -8,6 +8,7 @@ use crate::{
         Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs, ConfigShowArgs,
         ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, GenerateCommands,
         InitProjectArgs, InitTarget, ProjectCommands, ProjectNameArgs, ProjectShowArgs, SlidesArgs,
+        ThemeCommands, ThemeUseArgs,
     },
     config::{Capability, ConfigOverrides, EffectiveConfig},
     config_editor::ConfigService,
@@ -16,6 +17,7 @@ use crate::{
     init::InitService,
     projects::ProjectService,
     resources::slides::{GenerateSlidesOptions, generate_slides},
+    themes::ThemeService,
 };
 
 #[async_trait]
@@ -31,8 +33,31 @@ impl RunnableCommand for Commands {
             Self::Config { command } => command.run().await,
             Self::Project { command } => command.run().await,
             Self::Connector { command } => command.run().await,
+            Self::Theme { command } => command.run().await,
             Self::Generate { command } => command.run().await,
         }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ThemeCommands {
+    async fn run(self) -> Result<()> {
+        match self {
+            Self::Create(args) => ThemeService::load()?.create(&args.name),
+            Self::List => ThemeService::load()?.list(),
+            Self::Show(args) => {
+                println!("{}", ThemeService::load()?.show(&args.name)?);
+                Ok(())
+            }
+            Self::Use(args) => args.run().await,
+        }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ThemeUseArgs {
+    async fn run(self) -> Result<()> {
+        ThemeService::load()?.use_for_project(&self.name, self.project.as_deref())
     }
 }
 
@@ -181,6 +206,7 @@ impl SlidesArgs {
         let model_overrides = parse_model_overrides(&self.model_overrides)?;
         let config = EffectiveConfig::load(ConfigOverrides {
             project: self.project.clone(),
+            theme: self.theme,
             model_overrides: model_overrides.clone(),
             output_dir: self.out,
             pdf: self.pdf,

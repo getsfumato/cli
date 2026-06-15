@@ -5,10 +5,14 @@ instruction and optional source material. It is designed to work directly from
 the terminal or as a resource-generation engine orchestrated by tools such as
 Claude Code.
 
+The current class diagram is available in
+[docs/class-diagram.mmd](docs/class-diagram.mmd).
+
 ## Mental Model
 
 - **User:** one global learning profile.
 - **Projects:** many registered study/work contexts, with one active project.
+- **Themes:** globally reusable design packages selected by projects.
 - **Connectors:** named OpenAI-compatible API connections such as Ollama and
   OpenRouter.
 - **Model profiles:** named connector models with capabilities such as `text`,
@@ -31,6 +35,12 @@ Each project keeps portable settings in:
 
 ```text
 <project-root>/.sfumato/project.toml
+```
+
+Reusable themes live in:
+
+```text
+~/.config/sfumato/themes/<theme-name>/
 ```
 
 ## OpenAI-Compatible Connectors
@@ -77,6 +87,34 @@ cargo run -- project remove university
 Removing a project only removes it from the registry; it does not delete project
 files.
 
+## Themes
+
+Every project selects one reusable theme. Create, inspect, and assign themes:
+
+```bash
+cargo run -- theme create gruvbox
+cargo run -- theme list
+cargo run -- theme show gruvbox
+cargo run -- theme use gruvbox
+cargo run -- theme use gruvbox --project university
+```
+
+`sfumato init user` installs the bundled `sfumato-default` theme. A custom theme
+contains semantic color/font tokens and renderer adapters:
+
+```text
+~/.config/sfumato/themes/gruvbox/
+├── theme.toml
+├── marp/theme.css
+└── html/
+    ├── page.html
+    ├── style.css
+    └── script.js
+```
+
+The HTML adapter defines the contract for future HTML resources. Its shell must
+contain exactly one `<!-- SFUMATO_CONTENT -->` placeholder.
+
 ## Generate Slides
 
 Instructions are required. Sources are optional:
@@ -94,6 +132,17 @@ cargo run -- generate slides \
   --instruction "Explain ownership in Rust" \
   --model text=cloud-text
 ```
+
+Temporarily override the selected project's theme:
+
+```bash
+cargo run -- generate slides \
+  --instruction "Explain ownership in Rust" \
+  --theme gruvbox
+```
+
+Generated decks include a copied theme CSS artifact under
+`slides/themes/<theme-name>.css`. PDF export passes this CSS directly to Marp.
 
 Preview the prompt without calling a connector:
 
@@ -140,8 +189,17 @@ The effective scope is merged and read-only. Resolution order is:
 2. selected project model default
 3. user model default
 
-The old v0.1 single-project/single-inference config format is intentionally not
-supported. Run `sfumato init user --force` and register projects again.
+Theme resolution order is:
+
+1. command `--theme` override
+2. selected project's `theme`
+
+Unknown themes and themes without a valid Marp adapter fail clearly rather than
+silently falling back.
+
+Sfumato automatically migrates the previous project-theme fields into the
+project-owned theme schema. Before replacing a migrated TOML file, it writes a
+`.bak` copy beside it.
 
 ## Development
 

@@ -1,4 +1,4 @@
-use std::{path::Path, process::Stdio};
+use std::{ffi::OsString, path::Path, process::Stdio};
 
 use anyhow::{Context, Result, bail};
 use tokio::process::Command;
@@ -9,11 +9,13 @@ pub enum MarpError {
     Missing,
 }
 
-pub async fn render_pdf(markdown_path: &Path, pdf_path: &Path) -> Result<()> {
+pub async fn render_pdf(
+    markdown_path: &Path,
+    theme_css_path: &Path,
+    pdf_path: &Path,
+) -> Result<()> {
     let status = Command::new("marp")
-        .arg(markdown_path)
-        .arg("-o")
-        .arg(pdf_path)
+        .args(command_args(markdown_path, theme_css_path, pdf_path))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .status()
@@ -33,3 +35,19 @@ pub async fn render_pdf(markdown_path: &Path, pdf_path: &Path) -> Result<()> {
 
     Ok(())
 }
+
+fn command_args(markdown_path: &Path, theme_css_path: &Path, pdf_path: &Path) -> Vec<OsString> {
+    vec![
+        "--theme".into(),
+        theme_css_path.as_os_str().to_owned(),
+        markdown_path.as_os_str().to_owned(),
+        "-o".into(),
+        pdf_path.as_os_str().to_owned(),
+    ]
+}
+
+#[cfg(test)]
+// Test bodies live under tests/unit so implementation files stay focused, while
+// this module hook still lets those tests exercise private helpers.
+#[path = "../../tests/unit/renderers_marp.rs"]
+mod tests;

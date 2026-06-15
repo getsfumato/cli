@@ -12,6 +12,7 @@ use crate::{
     generation::{GenerationOutput, GenerationRequest},
     providers::{TextGenerationRequest, build_text_provider},
     renderers::marp,
+    themes::{ThemePackage, ThemeService},
 };
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -51,14 +52,24 @@ pub async fn generate_slides(
     let slug = slugify(&title);
     let markdown_path = slides_dir.join(format!("{slug}.md"));
     let pdf_path = slides_dir.join(format!("{slug}.pdf"));
+    let theme_css_path = slides_dir
+        .join("themes")
+        .join(format!("{}.css", config.theme));
 
     ensure_inside(&output_root, &markdown_path)?;
     ensure_inside(&output_root, &pdf_path)?;
+    ensure_inside(&output_root, &theme_css_path)?;
 
+    let theme = ThemeService::load()?.resolve(&config.theme)?;
     let documents = collect_sources(&request.sources)?;
     let source_bundle = build_source_bundle(&documents);
-    let provider_request =
-        build_generation_request(&config, &request.instruction, &title, &source_bundle);
+    let provider_request = build_generation_request(
+        &config,
+        &theme,
+        &request.instruction,
+        &title,
+        &source_bundle,
+    );
     let (profile_name, profile) = config.resolve_model(Capability::Text)?;
     let selected_models =
         std::collections::BTreeMap::from([("text".to_string(), profile_name.to_string())]);
@@ -82,11 +93,12 @@ pub async fn generate_slides(
 
     fs::create_dir_all(&slides_dir)
         .with_context(|| format!("Could not create {}", slides_dir.display()))?;
+    copy_theme_css(&theme, &theme_css_path)?;
     fs::write(&markdown_path, markdown)
         .with_context(|| format!("Could not write {}", markdown_path.display()))?;
 
     let rendered_pdf = if config.marp.pdf {
-        match marp::render_pdf(&markdown_path, &pdf_path).await {
+        match marp::render_pdf(&markdown_path, &theme_css_path, &pdf_path).await {
             Ok(()) => Some(pdf_path),
             Err(error) => {
                 eprintln!("PDF export skipped: {error}");
@@ -97,7 +109,7 @@ pub async fn generate_slides(
         None
     };
 
-    let mut artifacts = vec![markdown_path.clone()];
+    let mut artifacts = vec![markdown_path.clone(), theme_css_path];
     if let Some(pdf) = &rendered_pdf {
         artifacts.push(pdf.clone());
     }
@@ -114,8 +126,20 @@ pub async fn generate_slides(
     })
 }
 
+fn copy_theme_css(theme: &ThemePackage, destination: &Path) -> Result<()> {
+    fs::create_dir_all(
+        destination
+            .parent()
+            .context("Theme CSS output path must have a parent")?,
+    )?;
+    fs::copy(theme.marp_css_path(), destination)
+        .with_context(|| format!("Could not copy theme CSS to {}", destination.display()))?;
+    Ok(())
+}
+
 fn build_generation_request(
     config: &EffectiveConfig,
+    theme: &ThemePackage,
     instruction: &str,
     title: &str,
     source_bundle: &str,
@@ -134,8 +158,9 @@ fn build_generation_request(
         r#"Create a Marp Markdown slide deck titled "{title}".
 
 Project: {project}
-Theme: {theme}
-Marp theme: {marp_theme}
+Theme: {theme_name}
+Theme colors: {theme_colors}
+Theme fonts: {theme_fonts}
 Instruction: {instruction}
 
 Requirements:
@@ -152,14 +177,23 @@ Source material:
 {source_bundle}
 "#,
         project = config.project_name,
-        theme = config.user.theme,
-        marp_theme = config.marp.theme,
+        theme_name = theme.manifest.name,
+        theme_colors = format_tokens(&theme.manifest.tokens.colors),
+        theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
     );
 
     TextGenerationRequest {
         system_prompt,
         user_prompt,
     }
+}
+
+fn format_tokens(tokens: &std::collections::BTreeMap<String, String>) -> String {
+    tokens
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn collect_sources(inputs: &[PathBuf]) -> Result<Vec<SourceDocument>> {
@@ -246,13 +280,14 @@ fn normalize_marp_markdown(
     if !markdown.starts_with("---") {
         markdown = format!(
             "---\nmarp: true\ntheme: {}\npaginate: true\n---\n\n{}",
-            config.marp.theme, markdown
+            config.theme, markdown
         );
     }
 
     if !markdown.contains("marp: true") {
         markdown = markdown.replacen("---", "---\nmarp: true", 1);
     }
+    markdown = set_frontmatter_theme(markdown, &config.theme);
 
     if !markdown.contains("\n---") {
         bail!("Generated deck does not contain Marp slide separators.");
@@ -263,6 +298,35 @@ fn normalize_marp_markdown(
     }
 
     Ok(markdown)
+}
+
+fn set_frontmatter_theme(markdown: String, theme: &str) -> String {
+    let closing = markdown[3..]
+        .find("\n---")
+        .map(|index| index + 3)
+        .unwrap_or(markdown.len());
+    let (frontmatter, body) = markdown.split_at(closing);
+    if frontmatter
+        .lines()
+        .any(|line| line.trim_start().starts_with("theme:"))
+    {
+        let mut replaced = false;
+        let frontmatter = frontmatter
+            .lines()
+            .map(|line| {
+                if !replaced && line.trim_start().starts_with("theme:") {
+                    replaced = true;
+                    format!("theme: {theme}")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{frontmatter}{body}")
+    } else {
+        markdown.replacen("---", &format!("---\ntheme: {theme}"), 1)
+    }
 }
 
 fn strip_code_fence(text: &str) -> &str {

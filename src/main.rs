@@ -9,6 +9,7 @@ mod projects;
 mod providers;
 mod renderers;
 mod resources;
+mod themes;
 
 use anyhow::Result;
 use clap::Parser;
