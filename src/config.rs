@@ -427,11 +427,21 @@ fn migrate_global_config(path: &Path) -> Result<()> {
     let table = value
         .as_table_mut()
         .context("Global config must contain a TOML table")?;
-    if table
+    let current_version = table
         .get("schema_version")
         .and_then(toml::Value::as_integer)
-        == Some(CONFIG_SCHEMA_VERSION.into())
-    {
+        == Some(CONFIG_SCHEMA_VERSION.into());
+    let has_legacy_shape = table.contains_key("inference")
+        || table.contains_key("providers")
+        || table
+            .get("user")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|user| user.contains_key("theme"))
+        || table
+            .get("marp")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|marp| marp.contains_key("theme"));
+    if current_version && !has_legacy_shape {
         return Ok(());
     }
     let legacy_theme = table
@@ -455,11 +465,94 @@ fn migrate_global_config(path: &Path) -> Result<()> {
     if let Some(marp) = table.get_mut("marp").and_then(toml::Value::as_table_mut) {
         marp.remove("theme");
     }
+    migrate_legacy_providers(table)?;
+    migrate_legacy_inference(table)?;
     table.insert(
         "schema_version".to_string(),
         toml::Value::Integer(CONFIG_SCHEMA_VERSION.into()),
     );
     write_migrated_toml(path, &value)
+}
+
+fn migrate_legacy_providers(table: &mut toml::Table) -> Result<()> {
+    let Some(providers) = table.remove("providers") else {
+        return Ok(());
+    };
+    let providers = providers
+        .as_table()
+        .context("Legacy providers config must contain a TOML table")?;
+    let connectors = table
+        .entry("connectors".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .context("Connectors config must contain a TOML table")?;
+    for (name, provider) in providers {
+        connectors
+            .entry(name.clone())
+            .or_insert_with(|| provider.clone());
+    }
+    Ok(())
+}
+
+fn migrate_legacy_inference(table: &mut toml::Table) -> Result<()> {
+    let Some(inference) = table.remove("inference") else {
+        return Ok(());
+    };
+    let inference = inference
+        .as_table()
+        .context("Legacy inference config must contain a TOML table")?;
+    let connector = inference
+        .get("provider")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("ollama");
+    let profile_name = if connector == "ollama" {
+        "local-text".to_string()
+    } else if connector == "openrouter" {
+        "cloud-text".to_string()
+    } else {
+        format!("{connector}-text")
+    };
+    let model = inference
+        .get("model")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("llama3.2");
+    let mut options = toml::Table::new();
+    if let Some(temperature) = inference.get("temperature") {
+        options.insert("temperature".to_string(), temperature.clone());
+    }
+    if let Some(max_tokens) = inference.get("max_tokens") {
+        options.insert("max_tokens".to_string(), max_tokens.clone());
+    }
+    let profile = toml::Value::Table(toml::Table::from_iter([
+        (
+            "connector".to_string(),
+            toml::Value::String(connector.to_string()),
+        ),
+        ("model".to_string(), toml::Value::String(model.to_string())),
+        (
+            "capabilities".to_string(),
+            toml::Value::Array(vec![
+                toml::Value::String("text".to_string()),
+                toml::Value::String("code".to_string()),
+            ]),
+        ),
+        ("options".to_string(), toml::Value::Table(options)),
+    ]));
+    table
+        .entry("models".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .context("Models config must contain a TOML table")?
+        .entry(profile_name.clone())
+        .or_insert(profile);
+    table
+        .entry("defaults".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .context("Model defaults must contain a TOML table")?
+        .entry("text".to_string())
+        .or_insert_with(|| toml::Value::String(profile_name));
+    Ok(())
 }
 
 fn migrate_registered_projects(fallback_theme: &str) -> Result<()> {

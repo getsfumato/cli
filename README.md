@@ -8,6 +8,14 @@ Claude Code.
 The current class diagram is available in
 [docs/class-diagram.mmd](docs/class-diagram.mmd).
 
+Run `sfumato` without arguments to open the interactive command launcher. Its
+nested menus collect command arguments and execute the same commands exposed by
+Clap:
+
+```bash
+cargo run
+```
+
 ## Mental Model
 
 - **User:** one global learning profile.
@@ -58,6 +66,49 @@ cargo run -- connector show openrouter
 Ollama defaults to `http://localhost:11434/v1` with the required-but-ignored
 `ollama` API key. OpenRouter defaults to `https://openrouter.ai/api/v1`, reads
 its bearer token from `OPENROUTER_API_KEY`.
+
+## Models
+
+Model profiles are registered globally and reference a connector. A connector
+may provide many models:
+
+```bash
+cargo run -- model add local-gemma \
+  --connector ollama \
+  --id gemma4:e2b-mlx \
+  --capability text \
+  --capability code \
+  --option temperature=0.4 \
+  --option max_tokens=4000
+
+cargo run -- model add cloud-gemini \
+  --connector openrouter \
+  --id google/gemini-2.5-flash \
+  --capability text \
+  --capability code
+
+cargo run -- model list
+cargo run -- model show local-gemma
+cargo run -- model edit local-gemma --id gemma4:e2b-mlx --option temperature=0.2
+cargo run -- model remove local-gemma
+```
+
+`model edit` changes only supplied fields. Repeated `--capability` values replace
+the capability set, while repeated `--option key=value` values merge into the
+existing options by key.
+
+Choose user and project defaults by capability:
+
+```bash
+cargo run -- model use text local-gemma
+cargo run -- model use text cloud-gemini --project university
+```
+
+Model resolution order remains:
+
+1. generation command `--model capability=profile`
+2. selected project capability default
+3. user capability default
 
 ## Setup
 

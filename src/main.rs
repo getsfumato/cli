@@ -5,6 +5,8 @@ mod config_editor;
 mod connectors;
 mod generation;
 mod init;
+mod menu;
+mod models;
 mod projects;
 mod providers;
 mod renderers;
@@ -19,5 +21,18 @@ use commands::RunnableCommand;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    cli.command.run().await
+    match cli.command {
+        Some(command) => command.run().await,
+        None => {
+            menu::welcome();
+            while let Some(command) = menu::next_command()? {
+                if let Err(error) = command.run().await {
+                    eprintln!("Error: {error:#}\n");
+                } else {
+                    println!();
+                }
+            }
+            Ok(())
+        }
+    }
 }

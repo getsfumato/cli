@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(about = "Generate Obsidian-friendly learning resources with local or cloud models.")]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -28,6 +28,10 @@ pub enum Commands {
     Connector {
         #[command(subcommand)]
         command: ConnectorCommands,
+    },
+    Model {
+        #[command(subcommand)]
+        command: ModelCommands,
     },
     Theme {
         #[command(subcommand)]
@@ -69,6 +73,68 @@ pub enum ConnectorCommands {
     List,
     Show(ConnectorShowArgs),
     Setup(ConnectorSetupArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ModelCommands {
+    Add(ModelAddArgs),
+    Edit(ModelEditArgs),
+    List,
+    Show(ModelNameArgs),
+    Remove(ModelNameArgs),
+    Use(ModelUseArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ModelEditArgs {
+    pub name: String,
+
+    #[arg(long)]
+    pub connector: Option<String>,
+
+    #[arg(long = "id", help = "Provider-specific model ID")]
+    pub model_id: Option<String>,
+
+    #[arg(long = "capability", help = "Replace the profile capabilities")]
+    pub capabilities: Vec<String>,
+
+    #[arg(
+        long = "option",
+        value_name = "KEY=VALUE",
+        help = "Set or replace model options"
+    )]
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ModelAddArgs {
+    pub name: String,
+
+    #[arg(long)]
+    pub connector: String,
+
+    #[arg(long = "id", help = "Provider-specific model ID")]
+    pub model_id: String,
+
+    #[arg(long = "capability", required = true)]
+    pub capabilities: Vec<String>,
+
+    #[arg(long = "option", value_name = "KEY=VALUE")]
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ModelNameArgs {
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ModelUseArgs {
+    pub capability: String,
+    pub profile: String,
+
+    #[arg(long, help = "Assign the default to this project instead of the user")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

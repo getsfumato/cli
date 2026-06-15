@@ -133,17 +133,57 @@ fn command_model_default_wins_over_project_and_user() {
 }
 
 #[test]
-fn old_single_inference_config_is_rejected() {
+fn migrates_hybrid_v2_config_with_legacy_inference_and_providers() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.toml");
     let old = r#"
+schema_version = 2
+
 [user]
 learning_style = ["visual"]
-theme = "default"
 
 [inference]
 provider = "ollama"
 model = "llama3.2"
-temperature = 0.4
+temperature = 0.5
 max_tokens = 4000
+
+[providers.ollama]
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[marp]
+pdf = false
 "#;
-    assert!(toml::from_str::<GlobalConfig>(old).is_err());
+    fs::write(&path, old).unwrap();
+    migrate_global_config(&path).unwrap();
+    let migrated: GlobalConfig = read_toml(&path).unwrap();
+    assert!(migrated.connectors.contains_key("ollama"));
+    assert!(migrated.connectors.contains_key("openrouter"));
+    assert_eq!(
+        migrated
+            .defaults
+            .0
+            .get(&Capability::Text)
+            .map(String::as_str),
+        Some("local-text")
+    );
+    let profile = migrated.models.get("local-text").unwrap();
+    assert_eq!(profile.connector, "ollama");
+    assert_eq!(profile.model, "llama3.2");
+    assert_eq!(
+        profile
+            .options
+            .get("temperature")
+            .and_then(toml::Value::as_float),
+        Some(0.5)
+    );
+    let rendered = fs::read_to_string(&path).unwrap();
+    assert!(!rendered.contains("[inference]"));
+    assert!(!rendered.contains("[providers."));
+    assert!(PathBuf::from(format!("{}.bak", path.display())).exists());
 }

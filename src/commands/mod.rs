@@ -7,14 +7,16 @@ use crate::{
     cli::{
         Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs, ConfigShowArgs,
         ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, GenerateCommands,
-        InitProjectArgs, InitTarget, ProjectCommands, ProjectNameArgs, ProjectShowArgs, SlidesArgs,
-        ThemeCommands, ThemeUseArgs,
+        InitProjectArgs, InitTarget, ModelAddArgs, ModelCommands, ModelEditArgs, ModelNameArgs,
+        ModelUseArgs, ProjectCommands, ProjectNameArgs, ProjectShowArgs, SlidesArgs, ThemeCommands,
+        ThemeUseArgs,
     },
     config::{Capability, ConfigOverrides, EffectiveConfig},
     config_editor::ConfigService,
     connectors::ConnectorService,
     generation::{GenerationRequest, ResourceKind},
     init::InitService,
+    models::ModelService,
     projects::ProjectService,
     resources::slides::{GenerateSlidesOptions, generate_slides},
     themes::ThemeService,
@@ -33,9 +35,71 @@ impl RunnableCommand for Commands {
             Self::Config { command } => command.run().await,
             Self::Project { command } => command.run().await,
             Self::Connector { command } => command.run().await,
+            Self::Model { command } => command.run().await,
             Self::Theme { command } => command.run().await,
             Self::Generate { command } => command.run().await,
         }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ModelCommands {
+    async fn run(self) -> Result<()> {
+        match self {
+            Self::Add(args) => args.run().await,
+            Self::Edit(args) => args.run().await,
+            Self::List => {
+                ModelService::load()?.list();
+                Ok(())
+            }
+            Self::Show(args) => args.run().await,
+            Self::Remove(args) => {
+                let mut service = ModelService::load()?;
+                service.remove(&args.name)
+            }
+            Self::Use(args) => args.run().await,
+        }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ModelEditArgs {
+    async fn run(self) -> Result<()> {
+        ModelService::load()?.edit(
+            &self.name,
+            self.connector,
+            self.model_id,
+            self.capabilities,
+            self.options,
+        )
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ModelAddArgs {
+    async fn run(self) -> Result<()> {
+        ModelService::load()?.add(
+            self.name,
+            self.connector,
+            self.model_id,
+            self.capabilities,
+            self.options,
+        )
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ModelNameArgs {
+    async fn run(self) -> Result<()> {
+        println!("{}", ModelService::load()?.show(&self.name)?);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ModelUseArgs {
+    async fn run(self) -> Result<()> {
+        ModelService::load()?.use_default(&self.capability, &self.profile, self.project.as_deref())
     }
 }
 
