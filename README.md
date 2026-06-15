@@ -254,7 +254,13 @@ project-owned theme schema. Before replacing a migrated TOML file, it writes a
 
 ## Development
 
+The repository is a Cargo workspace. The root `sfumato` package owns terminal
+presentation and command routing; `crates/sfumato-core` owns configuration,
+repositories, application services, providers, rendering, and generation.
+
 ```bash
 cargo fmt
-cargo test
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo build --workspace
 ```

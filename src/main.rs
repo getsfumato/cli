@@ -1,17 +1,7 @@
 mod cli;
 mod commands;
-mod config;
-mod config_editor;
-mod connectors;
-mod generation;
 mod init;
 mod menu;
-mod models;
-mod projects;
-mod providers;
-mod renderers;
-mod resources;
-mod themes;
 
 use anyhow::Result;
 use clap::Parser;

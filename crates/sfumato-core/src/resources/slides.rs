@@ -31,6 +31,7 @@ pub struct GenerateSlidesResult {
     pub pdf_path: Option<PathBuf>,
     pub output: GenerationOutput,
     pub prompt_preview: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +85,7 @@ pub async fn generate_slides(
                 artifacts: Vec::new(),
             },
             prompt_preview: Some(provider_request.user_prompt),
+            warnings: Vec::new(),
         });
     }
 
@@ -97,11 +99,12 @@ pub async fn generate_slides(
     fs::write(&markdown_path, markdown)
         .with_context(|| format!("Could not write {}", markdown_path.display()))?;
 
+    let mut warnings = Vec::new();
     let rendered_pdf = if config.marp.pdf {
         match marp::render_pdf(&markdown_path, &theme_css_path, &pdf_path).await {
             Ok(()) => Some(pdf_path),
             Err(error) => {
-                eprintln!("PDF export skipped: {error}");
+                warnings.push(format!("PDF export skipped: {error}"));
                 None
             }
         }
@@ -123,6 +126,7 @@ pub async fn generate_slides(
             artifacts,
         },
         prompt_preview: None,
+        warnings,
     })
 }
 

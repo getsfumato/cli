@@ -10,7 +10,7 @@ use crate::cli::{
     ModelUseArgs, ProjectCommands, ProjectNameArgs, ProjectShowArgs, SlidesArgs, ThemeCommands,
     ThemeNameArgs, ThemeUseArgs,
 };
-use crate::models::ModelService;
+use sfumato_core::models::ModelService;
 
 const MAIN_MENU: &[&str] = &[
     "Generate resources",

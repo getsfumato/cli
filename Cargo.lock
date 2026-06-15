@@ -1223,9 +1223,21 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "dirs",
  "indicatif",
  "inquire",
+ "serde_json",
+ "sfumato-core",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "sfumato-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dirs",
  "reqwest",
  "serde",
  "serde_json",

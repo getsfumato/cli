@@ -1,34 +1,30 @@
-use std::{collections::BTreeMap, env, path::PathBuf};
+use std::{collections::BTreeMap, env};
 
 use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::{Confirm, Select, Text};
 
-use crate::config::{
-    Capability, GlobalConfig, ModelDefaults, ModelProfile, user_config_path, write_toml,
-};
-use crate::themes::ThemeService;
+use sfumato_core::config::{Capability, GlobalConfig, ModelDefaults, ModelProfile};
+use sfumato_core::setup::{SetupService, UserSetupRequest};
 
-#[derive(Debug)]
 pub struct InitService {
-    user_config_path: PathBuf,
+    setup: SetupService,
 }
 
 impl InitService {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            user_config_path: user_config_path()
-                .context("Could not find a user configuration directory")?,
+            setup: SetupService::load()?,
         })
     }
 
     pub fn write_user_config(&self, yes: bool, force: bool) -> Result<()> {
-        if self.user_config_path.exists()
+        if self.setup.user_config_exists()
             && !force
             && (yes
                 || !Confirm::new(&format!(
                     "{} already exists. Overwrite it?",
-                    self.user_config_path.display()
+                    self.setup.user_config_path().display()
                 ))
                 .with_default(false)
                 .prompt()?)
@@ -50,9 +46,8 @@ impl InitService {
         );
         spinner.set_message("Writing user config");
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-        write_toml(&self.user_config_path, &config)?;
-        ThemeService::load()?.install_default()?;
-        spinner.finish_with_message(format!("Wrote {}", self.user_config_path.display()));
+        let result = self.setup.setup_user(UserSetupRequest { config })?;
+        spinner.finish_with_message(format!("Wrote {}", result.path.display()));
         Ok(())
     }
 }

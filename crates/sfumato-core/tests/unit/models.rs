@@ -1,7 +1,10 @@
 use super::*;
 use crate::config::{
-    CONFIG_SCHEMA_VERSION, ProjectConfig, RegisteredProject, project_config_path, read_toml,
+    CONFIG_SCHEMA_VERSION, ProjectConfig, ProjectRegistry, RegisteredProject, project_config_path,
+    read_toml, write_toml,
 };
+use crate::themes::DEFAULT_THEME;
+use std::{collections::BTreeMap, path::PathBuf};
 
 fn service(temp: &tempfile::TempDir) -> ModelService {
     ModelService::load_from(

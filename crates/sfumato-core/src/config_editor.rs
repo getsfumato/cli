@@ -6,12 +6,16 @@ use std::{
 use anyhow::{Context, Result, bail};
 use toml::{Table, Value};
 
-use crate::{
-    cli::ConfigScope,
-    config::{
-        ConfigOverrides, EffectiveConfig, ProjectRegistry, project_config_path, user_config_path,
-    },
+use crate::config::{
+    ConfigOverrides, EffectiveConfig, ProjectRegistry, project_config_path, user_config_path,
 };
+
+#[derive(Clone, Copy, Debug)]
+pub enum ConfigTarget {
+    User,
+    Project,
+    Effective,
+}
 
 #[derive(Debug)]
 pub struct ConfigService {
@@ -28,23 +32,23 @@ impl ConfigService {
 
     pub fn show(
         &self,
-        scope: ConfigScope,
+        scope: ConfigTarget,
         project: Option<String>,
         key: Option<String>,
     ) -> Result<String> {
         let value = match scope {
-            ConfigScope::Effective => {
+            ConfigTarget::Effective => {
                 let config = EffectiveConfig::load(ConfigOverrides {
                     project,
                     ..Default::default()
                 })?;
                 Value::try_from(config).context("Could not serialize effective config")?
             }
-            ConfigScope::User => {
+            ConfigTarget::User => {
                 crate::config::GlobalConfig::load()?;
                 Value::Table(self.read_config_table(&self.user_config_path)?)
             }
-            ConfigScope::Project => {
+            ConfigTarget::Project => {
                 Value::Table(self.read_config_table(&self.project_path(project.as_deref())?)?)
             }
         };
@@ -60,36 +64,39 @@ impl ConfigService {
 
     pub fn set(
         &self,
-        scope: ConfigScope,
+        scope: ConfigTarget,
         project: Option<String>,
         key: &str,
         raw_value: &str,
-    ) -> Result<()> {
+    ) -> Result<PathBuf> {
         let path = self.editable_path(scope, project.as_deref())?;
         let mut table = self.read_config_table(&path)?;
         set_dotted_value(&mut table, key, parse_config_value(raw_value))?;
         self.write_config_table(&path, &table)?;
-        println!("Set {key} in {}", path.display());
-        Ok(())
+        Ok(path)
     }
 
-    pub fn delete(&self, scope: ConfigScope, project: Option<String>, key: &str) -> Result<()> {
+    pub fn delete(
+        &self,
+        scope: ConfigTarget,
+        project: Option<String>,
+        key: &str,
+    ) -> Result<PathBuf> {
         let path = self.editable_path(scope, project.as_deref())?;
         let mut table = self.read_config_table(&path)?;
         delete_dotted_value(&mut table, key)?;
         self.write_config_table(&path, &table)?;
-        println!("Deleted {key} from {}", path.display());
-        Ok(())
+        Ok(path)
     }
 
-    fn editable_path(&self, scope: ConfigScope, project: Option<&str>) -> Result<PathBuf> {
+    fn editable_path(&self, scope: ConfigTarget, project: Option<&str>) -> Result<PathBuf> {
         match scope {
-            ConfigScope::User => {
+            ConfigTarget::User => {
                 crate::config::GlobalConfig::load()?;
                 Ok(self.user_config_path.clone())
             }
-            ConfigScope::Project => self.project_path(project),
-            ConfigScope::Effective => bail!(
+            ConfigTarget::Project => self.project_path(project),
+            ConfigTarget::Effective => bail!(
                 "The effective config is merged and read-only. Use --scope user or --scope project."
             ),
         }

@@ -163,17 +163,25 @@ impl GlobalConfig {
     pub fn load() -> Result<Self> {
         let path = user_config_path().context("Could not find a user configuration directory")?;
         crate::themes::ThemeService::load()?.install_default()?;
+        Self::load_from(&path)
+    }
+
+    pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default_config());
         }
 
-        migrate_global_config(&path)?;
-        read_toml(&path).with_context(|| {
+        migrate_global_config(path)?;
+        read_toml(path).with_context(|| {
             format!(
                 "Could not load {}. Sfumato's v0.1 config format is no longer supported; run `sfumato init user --force` to reset it.",
                 path.display()
             )
         })
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<()> {
+        write_toml(path, self)
     }
 
     pub fn default_config() -> Self {

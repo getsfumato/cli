@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::ProjectRegistry;
 
 #[test]
 fn creates_lists_and_resolves_theme_packages() {

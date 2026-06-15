@@ -7,7 +7,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ProjectRegistry, load_project_config, themes_dir, write_toml};
+use crate::config::{themes_dir, write_toml};
+use crate::repositories::{FilesystemProjectRepository, ProjectRepository, ThemeRepository};
 
 pub const DEFAULT_THEME: &str = "sfumato-default";
 pub const THEME_SCHEMA_VERSION: u32 = 1;
@@ -55,38 +56,150 @@ pub struct ThemePackage {
     pub manifest: ThemeManifest,
 }
 
+#[derive(Clone, Debug)]
+pub struct ThemeSummary {
+    pub name: String,
+}
+
 impl ThemePackage {
     pub fn marp_css_path(&self) -> PathBuf {
         self.root.join(&self.manifest.adapters.marp_css)
     }
 }
 
-#[derive(Debug)]
 pub struct ThemeService {
-    themes_dir: PathBuf,
+    repository: Box<dyn ThemeRepository>,
+    project_repository: Box<dyn ProjectRepository>,
 }
 
 impl ThemeService {
     pub fn load() -> Result<Self> {
-        Ok(Self {
-            themes_dir: themes_dir().context("Could not find Sfumato themes directory")?,
-        })
+        Ok(Self::new(
+            Box::new(FilesystemThemeRepository::load()?),
+            Box::new(FilesystemProjectRepository::default_path()?),
+        ))
+    }
+
+    pub fn new(
+        repository: Box<dyn ThemeRepository>,
+        project_repository: Box<dyn ProjectRepository>,
+    ) -> Self {
+        Self {
+            repository,
+            project_repository,
+        }
     }
 
     #[cfg(test)]
     fn load_from(themes_dir: PathBuf) -> Self {
+        let project_path = themes_dir.join("projects.toml");
+        Self::new(
+            Box::new(FilesystemThemeRepository { themes_dir }),
+            Box::new(FilesystemProjectRepository::new(project_path)),
+        )
+    }
+
+    pub fn install_default(&self) -> Result<ThemePackage> {
+        self.repository.install_default()
+    }
+
+    pub fn create(&self, name: &str) -> Result<ThemePackage> {
+        self.repository.create(name)
+    }
+
+    pub fn list(&self) -> Result<Vec<ThemeSummary>> {
+        self.repository.list()
+    }
+
+    pub fn names(&self) -> Result<Vec<String>> {
+        Ok(self.list()?.into_iter().map(|theme| theme.name).collect())
+    }
+
+    pub fn show(&self, name: &str) -> Result<String> {
+        let package = self.repository.load(name)?;
+        toml::to_string_pretty(&package.manifest).context("Could not render theme manifest")
+    }
+
+    pub fn use_for_project(
+        &self,
+        name: &str,
+        requested_project: Option<&str>,
+    ) -> Result<crate::config::ProjectConfig> {
+        self.repository.load(name)?;
+        let mut project = self.project_repository.load(requested_project)?;
+        project.theme = name.to_string();
+        self.project_repository.save(&project)?;
+        Ok(project)
+    }
+
+    pub fn resolve(&self, name: &str) -> Result<ThemePackage> {
+        self.repository.load(name)
+    }
+
+    #[cfg(test)]
+    fn use_for_project_in_registry(
+        &self,
+        name: &str,
+        requested_project: Option<&str>,
+        registry: &crate::config::ProjectRegistry,
+    ) -> Result<crate::config::ProjectConfig> {
+        self.repository.load(name)?;
+        let (_, root) = registry.selected(requested_project)?;
+        let path = crate::config::project_config_path(&root);
+        let mut project = crate::config::load_project_config(&path, DEFAULT_THEME)?;
+        project.theme = name.to_string();
+        write_toml(&path, &project)?;
+        Ok(project)
+    }
+}
+
+#[derive(Debug)]
+pub struct FilesystemThemeRepository {
+    themes_dir: PathBuf,
+}
+
+impl ThemeRepository for FilesystemThemeRepository {
+    fn list(&self) -> Result<Vec<ThemeSummary>> {
+        Ok(self
+            .names()?
+            .into_iter()
+            .map(|name| ThemeSummary { name })
+            .collect())
+    }
+
+    fn load(&self, name: &str) -> Result<ThemePackage> {
+        self.resolve(name)
+    }
+
+    fn create(&self, name: &str) -> Result<ThemePackage> {
+        FilesystemThemeRepository::create(self, name)
+    }
+
+    fn install_default(&self) -> Result<ThemePackage> {
+        FilesystemThemeRepository::install_default(self)
+    }
+}
+
+impl FilesystemThemeRepository {
+    pub fn new(themes_dir: PathBuf) -> Self {
         Self { themes_dir }
     }
 
-    pub fn install_default(&self) -> Result<()> {
-        let root = self.themes_dir.join(DEFAULT_THEME);
-        if root.exists() {
-            return Ok(());
-        }
-        write_bundled_theme(&root, DEFAULT_THEME)
+    pub fn load() -> Result<Self> {
+        Ok(Self::new(
+            themes_dir().context("Could not find Sfumato themes directory")?,
+        ))
     }
 
-    pub fn create(&self, name: &str) -> Result<()> {
+    pub fn install_default(&self) -> Result<ThemePackage> {
+        let root = self.themes_dir.join(DEFAULT_THEME);
+        if !root.exists() {
+            write_bundled_theme(&root, DEFAULT_THEME)?;
+        }
+        self.resolve(DEFAULT_THEME)
+    }
+
+    pub fn create(&self, name: &str) -> Result<ThemePackage> {
         validate_theme_name(name)?;
         self.install_default()?;
         let destination = self.themes_dir.join(name);
@@ -100,16 +213,7 @@ impl ThemeService {
         manifest.description = format!("Custom Sfumato theme: {name}");
         write_toml(&destination.join("theme.toml"), &manifest)?;
         rewrite_marp_metadata(&destination.join(&manifest.adapters.marp_css), name)?;
-        self.resolve(name)?;
-        println!("Created theme '{name}' at {}", destination.display());
-        Ok(())
-    }
-
-    pub fn list(&self) -> Result<()> {
-        for name in self.names()? {
-            println!("{name}");
-        }
-        Ok(())
+        self.resolve(name)
     }
 
     pub fn names(&self) -> Result<Vec<String>> {
@@ -124,32 +228,6 @@ impl ThemeService {
             .collect::<Vec<_>>();
         names.sort();
         Ok(names)
-    }
-
-    pub fn show(&self, name: &str) -> Result<String> {
-        let package = self.resolve(name)?;
-        toml::to_string_pretty(&package.manifest).context("Could not render theme manifest")
-    }
-
-    pub fn use_for_project(&self, name: &str, requested_project: Option<&str>) -> Result<()> {
-        let registry = ProjectRegistry::load()?;
-        self.use_for_project_in_registry(name, requested_project, &registry)
-    }
-
-    fn use_for_project_in_registry(
-        &self,
-        name: &str,
-        requested_project: Option<&str>,
-        registry: &ProjectRegistry,
-    ) -> Result<()> {
-        self.resolve(name)?;
-        let (_, root) = registry.selected(requested_project)?;
-        let path = crate::config::project_config_path(&root);
-        let mut project = load_project_config(&path, DEFAULT_THEME)?;
-        project.theme = name.to_string();
-        write_toml(&path, &project)?;
-        println!("Project '{}' now uses theme '{name}'", project.name);
-        Ok(())
     }
 
     pub fn resolve(&self, name: &str) -> Result<ThemePackage> {

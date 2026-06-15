@@ -3,26 +3,48 @@ use std::collections::{BTreeMap, btree_map::Entry};
 use anyhow::{Context, Result};
 
 use crate::{
-    cli::ConnectorPreset,
-    config::{GlobalConfig, OpenAiCompatibleConnectorConfig, user_config_path, write_toml},
+    config::{GlobalConfig, OpenAiCompatibleConnectorConfig},
+    repositories::{FilesystemGlobalConfigRepository, GlobalConfigRepository},
 };
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
+pub enum ConnectorPreset {
+    Ollama,
+    Openrouter,
+}
+
 pub struct ConnectorService {
     config: GlobalConfig,
+    repository: Box<dyn GlobalConfigRepository>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConnectorSummary {
+    pub name: String,
+    pub base_url: String,
 }
 
 impl ConnectorService {
     pub fn load() -> Result<Self> {
+        Self::new(Box::new(FilesystemGlobalConfigRepository::default_path()?))
+    }
+
+    pub fn new(repository: Box<dyn GlobalConfigRepository>) -> Result<Self> {
         Ok(Self {
-            config: GlobalConfig::load()?,
+            config: repository.load()?,
+            repository,
         })
     }
 
-    pub fn list(&self) {
-        for (name, connector) in &self.config.connectors {
-            println!("{name}\t{}", connector.base_url);
-        }
+    pub fn list(&self) -> Vec<ConnectorSummary> {
+        self.config
+            .connectors
+            .iter()
+            .map(|(name, connector)| ConnectorSummary {
+                name: name.clone(),
+                base_url: connector.base_url.clone(),
+            })
+            .collect()
     }
 
     pub fn show(&self, name: &str) -> Result<String> {
@@ -39,7 +61,7 @@ impl ConnectorService {
         preset: ConnectorPreset,
         name: Option<String>,
         api_key_env: String,
-    ) -> Result<()> {
+    ) -> Result<ConnectorSummary> {
         let (default_name, connector) = match preset {
             ConnectorPreset::Ollama => (
                 "ollama",
@@ -61,6 +83,7 @@ impl ConnectorService {
             ),
         };
         let name = name.unwrap_or_else(|| default_name.to_string());
+        let base_url = connector.base_url.clone();
         match self.config.connectors.entry(name.clone()) {
             Entry::Vacant(entry) => {
                 entry.insert(connector);
@@ -69,10 +92,8 @@ impl ConnectorService {
                 entry.insert(connector);
             }
         }
-        let path = user_config_path().context("Could not find user configuration path")?;
-        write_toml(&path, &self.config)?;
-        println!("Configured OpenAI-compatible connector '{name}'");
-        Ok(())
+        self.repository.save(&self.config)?;
+        Ok(ConnectorSummary { name, base_url })
     }
 }
 

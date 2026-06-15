@@ -1,56 +1,81 @@
-use std::{collections::BTreeMap, path::PathBuf, str::FromStr};
+use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{
-    Capability, GlobalConfig, ModelProfile, ProjectRegistry, load_project_config,
-    project_config_path, projects_registry_path, user_config_path, write_toml,
+use crate::{
+    config::{Capability, GlobalConfig, ModelProfile},
+    repositories::{
+        FilesystemGlobalConfigRepository, FilesystemProjectRepository, GlobalConfigRepository,
+        ProjectRepository,
+    },
 };
-use crate::themes::DEFAULT_THEME;
 
-#[derive(Debug)]
 pub struct ModelService {
     config: GlobalConfig,
-    config_path: PathBuf,
-    registry_path: PathBuf,
+    global_repository: Box<dyn GlobalConfigRepository>,
+    project_repository: Box<dyn ProjectRepository>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelSummary {
+    pub name: String,
+    pub connector: String,
+    pub model: String,
+    pub capabilities: Vec<Capability>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelDefaultChanged {
+    pub capability: Capability,
+    pub profile: String,
+    pub project: Option<String>,
 }
 
 impl ModelService {
     pub fn load() -> Result<Self> {
+        Self::new(
+            Box::new(FilesystemGlobalConfigRepository::default_path()?),
+            Box::new(FilesystemProjectRepository::default_path()?),
+        )
+    }
+
+    pub fn new(
+        global_repository: Box<dyn GlobalConfigRepository>,
+        project_repository: Box<dyn ProjectRepository>,
+    ) -> Result<Self> {
         Ok(Self {
-            config: GlobalConfig::load()?,
-            config_path: user_config_path().context("Could not find user configuration path")?,
-            registry_path: projects_registry_path()
-                .context("Could not find project registry path")?,
+            config: global_repository.load()?,
+            global_repository,
+            project_repository,
         })
     }
 
     #[cfg(test)]
-    fn load_from(config: GlobalConfig, config_path: PathBuf, registry_path: PathBuf) -> Self {
-        Self {
-            config,
-            config_path,
-            registry_path,
-        }
+    fn load_from(
+        config: GlobalConfig,
+        config_path: std::path::PathBuf,
+        registry_path: std::path::PathBuf,
+    ) -> Self {
+        let global_repository = FilesystemGlobalConfigRepository::new(config_path);
+        global_repository.save(&config).unwrap();
+        Self::new(
+            Box::new(global_repository),
+            Box::new(FilesystemProjectRepository::new(registry_path)),
+        )
+        .unwrap()
     }
 
-    pub fn list(&self) {
-        if self.config.models.is_empty() {
-            println!("No registered model profiles.");
-            return;
-        }
-        for (name, profile) in &self.config.models {
-            let capabilities = profile
-                .capabilities
-                .iter()
-                .map(|capability| capability.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
-            println!(
-                "{name}\t{}\t{}\t{capabilities}",
-                profile.connector, profile.model
-            );
-        }
+    pub fn list(&self) -> Vec<ModelSummary> {
+        self.config
+            .models
+            .iter()
+            .map(|(name, profile)| ModelSummary {
+                name: name.clone(),
+                connector: profile.connector.clone(),
+                model: profile.model.clone(),
+                capabilities: profile.capabilities.clone(),
+            })
+            .collect()
     }
 
     pub fn show(&self, name: &str) -> Result<String> {
@@ -77,7 +102,7 @@ impl ModelService {
         model_id: String,
         capabilities: Vec<String>,
         options: Vec<String>,
-    ) -> Result<()> {
+    ) -> Result<ModelProfile> {
         validate_profile_name(&name)?;
         if self.config.models.contains_key(&name) {
             bail!("Model profile '{name}' already exists");
@@ -90,21 +115,18 @@ impl ModelService {
         }
         let capabilities = parse_capabilities(&capabilities)?;
         let options = parse_options(&options)?;
-        self.config.models.insert(
-            name.clone(),
-            ModelProfile {
-                connector,
-                model: model_id,
-                capabilities,
-                options,
-            },
-        );
+        let profile = ModelProfile {
+            connector,
+            model: model_id,
+            capabilities,
+            options,
+        };
+        self.config.models.insert(name.clone(), profile.clone());
         self.save()?;
-        println!("Added model profile '{name}'");
-        Ok(())
+        Ok(profile)
     }
 
-    pub fn remove(&mut self, name: &str) -> Result<()> {
+    pub fn remove(&mut self, name: &str) -> Result<String> {
         if !self.config.models.contains_key(name) {
             bail!("Model profile '{name}' was not found");
         }
@@ -120,10 +142,8 @@ impl ModelService {
                 capability.as_str()
             );
         }
-        let registry = ProjectRegistry::load_from(&self.registry_path)?;
-        for (project_name, registered) in registry.projects {
-            let project =
-                load_project_config(&project_config_path(&registered.path), DEFAULT_THEME)?;
+        for (project_name, _, _) in self.project_repository.list()? {
+            let project = self.project_repository.load(Some(&project_name))?;
             if let Some(capability) = project
                 .model_defaults
                 .iter()
@@ -137,8 +157,7 @@ impl ModelService {
         }
         self.config.models.remove(name);
         self.save()?;
-        println!("Removed model profile '{name}'");
-        Ok(())
+        Ok(name.to_string())
     }
 
     pub fn edit(
@@ -148,7 +167,7 @@ impl ModelService {
         model_id: Option<String>,
         capabilities: Vec<String>,
         options: Vec<String>,
-    ) -> Result<()> {
+    ) -> Result<ModelProfile> {
         if connector.is_none()
             && model_id.is_none()
             && capabilities.is_empty()
@@ -189,11 +208,10 @@ impl ModelService {
         profile.options.extend(parsed_options);
         let mut updated_config = self.config.clone();
         updated_config.models.insert(name.to_string(), profile);
-        validate_selected_capabilities(&updated_config, name, &self.registry_path)?;
+        validate_selected_capabilities(&updated_config, name, self.project_repository.as_ref())?;
         self.config = updated_config;
         self.save()?;
-        println!("Updated model profile '{name}'");
-        Ok(())
+        self.profile(name)
     }
 
     pub fn use_default(
@@ -201,7 +219,7 @@ impl ModelService {
         capability: &str,
         profile_name: &str,
         project: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<ModelDefaultChanged> {
         let capability = Capability::from_str(capability)?;
         let profile = self
             .config
@@ -216,42 +234,39 @@ impl ModelService {
         }
 
         if let Some(project_name) = project {
-            let registry = ProjectRegistry::load_from(&self.registry_path)?;
-            let (_, root) = registry.selected(Some(project_name))?;
-            let path = project_config_path(&root);
-            let mut project_config = load_project_config(&path, DEFAULT_THEME)?;
+            let mut project_config = self.project_repository.load(Some(project_name))?;
             project_config
                 .model_defaults
                 .insert(capability, profile_name.to_string());
-            write_toml(&path, &project_config)?;
-            println!(
-                "Project '{}' now uses model profile '{profile_name}' for '{}'",
-                project_config.name,
-                capability.as_str()
-            );
+            self.project_repository.save(&project_config)?;
+            return Ok(ModelDefaultChanged {
+                capability,
+                profile: profile_name.to_string(),
+                project: Some(project_config.name),
+            });
         } else {
             self.config
                 .defaults
                 .0
                 .insert(capability, profile_name.to_string());
             self.save()?;
-            println!(
-                "User default for '{}' is now model profile '{profile_name}'",
-                capability.as_str()
-            );
         }
-        Ok(())
+        Ok(ModelDefaultChanged {
+            capability,
+            profile: profile_name.to_string(),
+            project: None,
+        })
     }
 
     fn save(&self) -> Result<()> {
-        write_toml(&self.config_path, &self.config)
+        self.global_repository.save(&self.config)
     }
 }
 
 fn validate_selected_capabilities(
     config: &GlobalConfig,
     profile_name: &str,
-    registry_path: &std::path::Path,
+    project_repository: &dyn ProjectRepository,
 ) -> Result<()> {
     let profile = config
         .models
@@ -265,9 +280,8 @@ fn validate_selected_capabilities(
             );
         }
     }
-    let registry = ProjectRegistry::load_from(registry_path)?;
-    for (project_name, registered) in registry.projects {
-        let project = load_project_config(&project_config_path(&registered.path), DEFAULT_THEME)?;
+    for (project_name, _, _) in project_repository.list()? {
+        let project = project_repository.load(Some(&project_name))?;
         for (capability, selected_profile) in project.model_defaults {
             if selected_profile == profile_name && !profile.capabilities.contains(&capability) {
                 bail!(
