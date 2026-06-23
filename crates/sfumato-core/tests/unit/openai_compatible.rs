@@ -1,4 +1,5 @@
 use super::*;
+use crate::providers::ToolFunctionDefinition;
 use std::collections::BTreeMap;
 
 fn profile(connector: &str) -> ModelProfile {
@@ -60,14 +61,46 @@ fn serializes_chat_completion_from_model_profile() {
     )
     .unwrap();
 
-    let body = connector.request_body(&TextGenerationRequest {
-        system_prompt: "system".to_string(),
-        user_prompt: "user".to_string(),
-    });
+    let body = connector.request_body(&TextGenerationRequest::new(
+        "system".to_string(),
+        "user".to_string(),
+    ));
 
     assert_eq!(body.model, "llama3.2");
     assert_eq!(body.max_tokens, 100);
     assert_eq!(body.messages.len(), 2);
+}
+
+#[test]
+fn serializes_chat_completion_tools() {
+    let connector = OpenAiCompatibleTextProvider::new(
+        "ollama".to_string(),
+        OpenAiCompatibleConnectorConfig {
+            base_url: "http://localhost:11434/v1".to_string(),
+            api_key: Some("ollama".to_string()),
+            api_key_env: None,
+            headers: BTreeMap::new(),
+        },
+        profile("ollama"),
+    )
+    .unwrap();
+    let mut request = TextGenerationRequest::new("system".to_string(), "user".to_string());
+    request.tools.push(ToolDefinition {
+        kind: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "sfumato_read_file".to_string(),
+            description: "Read a file".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }),
+        },
+    });
+
+    let body = connector.request_body(&request);
+
+    assert_eq!(body.tools.unwrap()[0].function.name, "sfumato_read_file");
 }
 
 #[test]

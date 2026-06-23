@@ -10,3 +10,4 @@ pub mod repositories;
 pub mod resources;
 pub mod setup;
 pub mod themes;
+pub mod tools;

@@ -28,5 +28,12 @@ pub enum ResourceKind {
 pub struct GenerationOutput {
     pub project: String,
     pub models: BTreeMap<String, String>,
+    pub tools: Vec<GenerationToolSummary>,
     pub artifacts: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GenerationToolSummary {
+    pub name: String,
+    pub description: String,
 }

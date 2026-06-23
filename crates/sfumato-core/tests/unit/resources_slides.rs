@@ -72,3 +72,20 @@ fn copies_theme_css_to_output() {
         "/* @theme demo */"
     );
 }
+
+#[test]
+fn summarizes_declared_tools_for_generation_output() {
+    let tool = ToolDefinition {
+        kind: "function".to_string(),
+        function: crate::providers::ToolFunctionDefinition {
+            name: "sfumato_read_file".to_string(),
+            description: "Read a file".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        },
+    };
+
+    let summaries = summarize_tools(&[tool]);
+
+    assert_eq!(summaries[0].name, "sfumato_read_file");
+    assert_eq!(summaries[0].description, "Read a file");
+}

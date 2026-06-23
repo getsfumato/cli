@@ -23,6 +23,8 @@ const MAIN_MENU: &[&str] = &[
     "Exit",
 ];
 
+const PROJECT_MENU: &[&str] = &["List", "Show", "Create", "Use", "Remove", "Back"];
+
 pub fn welcome() {
     println!("Sfumato\nGenerate themed learning resources from your terminal.\n");
 }
@@ -207,11 +209,7 @@ fn generate_menu() -> Result<Option<Commands>> {
 }
 
 fn project_menu() -> Result<Option<Commands>> {
-    let Some(action) = select(
-        "Projects",
-        &["List", "Show", "Use", "Remove", "Initialize", "Back"],
-    )?
-    else {
+    let Some(action) = select("Projects", PROJECT_MENU)? else {
         return Ok(None);
     };
     let command = match action.as_str() {
@@ -219,6 +217,7 @@ fn project_menu() -> Result<Option<Commands>> {
         "Show" => ProjectCommands::Show(ProjectShowArgs {
             name: optional_text("Project name; leave empty for active project", None)?,
         }),
+        "Create" => return init_project_command(),
         "Use" => {
             let Some(name) = required_text("Project name", None)? else {
                 return Ok(None);
@@ -231,7 +230,6 @@ fn project_menu() -> Result<Option<Commands>> {
             };
             ProjectCommands::Remove(ProjectNameArgs { name })
         }
-        "Initialize" => return init_project_command(),
         "Back" => return Ok(None),
         _ => unreachable!("project menu choices are fixed"),
     };

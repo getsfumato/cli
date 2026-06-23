@@ -2,20 +2,81 @@ mod openai_compatible;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::sync::Arc;
 
 use crate::config::{Capability, EffectiveConfig, ModelProfile};
 
 pub use openai_compatible::OpenAiCompatibleTextProvider;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TextGenerationRequest {
     pub system_prompt: String,
     pub user_prompt: String,
+    pub tools: Vec<ToolDefinition>,
+    pub tool_executor: Option<Arc<dyn ToolExecutor>>,
+    pub max_tool_rounds: usize,
+}
+
+impl TextGenerationRequest {
+    pub fn new(system_prompt: String, user_prompt: String) -> Self {
+        Self {
+            system_prompt,
+            user_prompt,
+            tools: Vec::new(),
+            tool_executor: None,
+            max_tool_rounds: 4,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct TextGenerationResponse {
     pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolDefinition {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: ToolFunctionDefinition,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolFunctionDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct ToolExecutionRequest {
+    pub name: String,
+    pub arguments: Value,
+}
+
+pub trait ToolExecutor: Send + Sync {
+    fn execute(&self, request: ToolExecutionRequest) -> Result<String>;
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolCall {
+    pub id: Option<String>,
+    #[serde(default = "function_tool_kind")]
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: ToolCallFunction,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ToolCallFunction {
+    pub name: String,
+    pub arguments: Value,
+}
+
+fn function_tool_kind() -> String {
+    "function".to_string()
 }
 
 #[async_trait]

@@ -195,10 +195,24 @@ cargo run -- generate slides \
 Generated decks include a copied theme CSS artifact under
 `slides/themes/<theme-name>.css`. PDF export passes this CSS directly to Marp.
 
+During generation, Sfumato declares read-only filesystem tools to compatible
+models. The model can ask Sfumato to list directories or read UTF-8 text files,
+but tool execution is restricted to the active project root and any source paths
+passed to the command.
+
 Preview the prompt without calling a connector:
 
 ```bash
 cargo run -- generate slides --instruction "Explain Fourier series" --dry-run
+```
+
+Dry runs print the tools that would be injected into the model request before
+the prompt preview:
+
+```text
+Injected tools:
+- sfumato_list_directory: List files and directories inside the allowed Sfumato project/source roots.
+- sfumato_read_file: Read a UTF-8 text file inside the allowed Sfumato project/source roots.
 ```
 
 Return machine-readable output for agent callers:
@@ -208,7 +222,31 @@ cargo run -- generate slides --instruction "Explain Fourier series" --json
 ```
 
 Successful JSON includes the selected project, selected model profiles, and
-artifact paths. Errors are also emitted as JSON when `--json` is set.
+declared tool summaries, and artifact paths:
+
+```json
+{
+  "project": "university",
+  "models": {
+    "text": "local-text"
+  },
+  "tools": [
+    {
+      "name": "sfumato_list_directory",
+      "description": "List files and directories inside the allowed Sfumato project/source roots."
+    },
+    {
+      "name": "sfumato_read_file",
+      "description": "Read a UTF-8 text file inside the allowed Sfumato project/source roots."
+    }
+  ],
+  "artifacts": [
+    "/path/to/vault/Resources/Sfumato/slides/explain-fourier-series.md"
+  ]
+}
+```
+
+Errors are also emitted as JSON when `--json` is set.
 
 ## Configuration
 

@@ -9,10 +9,11 @@ use walkdir::WalkDir;
 
 use crate::{
     config::{Capability, EffectiveConfig},
-    generation::{GenerationOutput, GenerationRequest},
-    providers::{TextGenerationRequest, build_text_provider},
+    generation::{GenerationOutput, GenerationRequest, GenerationToolSummary},
+    providers::{TextGenerationRequest, ToolDefinition, build_text_provider},
     renderers::marp,
     themes::{ThemePackage, ThemeService},
+    tools::default_filesystem_tools,
 };
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -31,6 +32,7 @@ pub struct GenerateSlidesResult {
     pub pdf_path: Option<PathBuf>,
     pub output: GenerationOutput,
     pub prompt_preview: Option<String>,
+    pub tool_summaries: Vec<GenerationToolSummary>,
     pub warnings: Vec<String>,
 }
 
@@ -63,14 +65,18 @@ pub async fn generate_slides(
 
     let theme = ThemeService::load()?.resolve(&config.theme)?;
     let documents = collect_sources(&request.sources)?;
+    let tool_set = default_filesystem_tools(&config.project_root, &request.sources)?;
+    let tool_summaries = summarize_tools(&tool_set.definitions);
     let source_bundle = build_source_bundle(&documents);
-    let provider_request = build_generation_request(
+    let mut provider_request = build_generation_request(
         &config,
         &theme,
         &request.instruction,
         &title,
         &source_bundle,
     );
+    provider_request.tools = tool_set.definitions;
+    provider_request.tool_executor = Some(tool_set.executor);
     let (profile_name, profile) = config.resolve_model(Capability::Text)?;
     let selected_models =
         std::collections::BTreeMap::from([("text".to_string(), profile_name.to_string())]);
@@ -82,9 +88,11 @@ pub async fn generate_slides(
             output: GenerationOutput {
                 project: config.project_name,
                 models: selected_models,
+                tools: tool_summaries.clone(),
                 artifacts: Vec::new(),
             },
             prompt_preview: Some(provider_request.user_prompt),
+            tool_summaries,
             warnings: Vec::new(),
         });
     }
@@ -123,11 +131,23 @@ pub async fn generate_slides(
         output: GenerationOutput {
             project: config.project_name,
             models: selected_models,
+            tools: tool_summaries.clone(),
             artifacts,
         },
         prompt_preview: None,
+        tool_summaries,
         warnings,
     })
+}
+
+fn summarize_tools(tools: &[ToolDefinition]) -> Vec<GenerationToolSummary> {
+    tools
+        .iter()
+        .map(|tool| GenerationToolSummary {
+            name: tool.function.name.clone(),
+            description: tool.function.description.clone(),
+        })
+        .collect()
 }
 
 fn copy_theme_css(theme: &ThemePackage, destination: &Path) -> Result<()> {
@@ -176,6 +196,7 @@ Requirements:
 - Explain the source material for a student.
 - Use examples from the provided files.
 - Add presenter notes with short teaching cues when useful.
+- You may call Sfumato filesystem tools to list allowed directories or read allowed text files when more context is needed.
 
 Source material:
 {source_bundle}
@@ -186,10 +207,7 @@ Source material:
         theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
     );
 
-    TextGenerationRequest {
-        system_prompt,
-        user_prompt,
-    }
+    TextGenerationRequest::new(system_prompt, user_prompt)
 }
 
 fn format_tokens(tokens: &std::collections::BTreeMap<String, String>) -> String {

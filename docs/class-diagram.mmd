@@ -30,6 +30,7 @@ classDiagram
         class ModelService
         class ThemeService
         class SlidesPipeline
+        class FilesystemToolExecutor
     }
 
     namespace RepositoryPorts {
@@ -73,6 +74,7 @@ classDiagram
         class ThemePackage
         class GenerationRequest
         class GenerationOutput
+        class GenerationToolSummary
     }
 
     namespace ProviderAdapters {
@@ -80,6 +82,11 @@ classDiagram
             <<trait>>
             +generate_text(request) TextGenerationResponse
         }
+        class ToolExecutor {
+            <<trait>>
+            +execute(request) String
+        }
+        class ToolDefinition
         class OpenAiCompatibleTextProvider
         class OpenAiCompatibleConnector
     }
@@ -118,13 +125,18 @@ classDiagram
 
     SlidesPipeline --> GenerationRequest
     SlidesPipeline --> GenerationOutput
+    GenerationOutput --> GenerationToolSummary
     SlidesPipeline --> EffectiveConfig
     SlidesPipeline --> ThemeService
     SlidesPipeline --> TextGenerationProvider
     SlidesPipeline --> SourceReader
     SlidesPipeline --> ArtifactWriter
     SlidesPipeline --> MarpRenderer
+    SlidesPipeline --> FilesystemToolExecutor
 
     OpenAiCompatibleTextProvider ..|> TextGenerationProvider
+    OpenAiCompatibleTextProvider --> ToolDefinition
+    OpenAiCompatibleTextProvider --> ToolExecutor
     OpenAiCompatibleTextProvider --> OpenAiCompatibleConnector
     OpenAiCompatibleTextProvider --> ModelProfile
+    FilesystemToolExecutor ..|> ToolExecutor

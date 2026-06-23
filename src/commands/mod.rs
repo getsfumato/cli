@@ -404,6 +404,13 @@ impl SlidesArgs {
         if self.json {
             println!("{}", serde_json::to_string_pretty(&result.output)?);
         } else if self.dry_run {
+            if !result.tool_summaries.is_empty() {
+                println!("Injected tools:");
+                for tool in &result.tool_summaries {
+                    println!("- {}: {}", tool.name, tool.description);
+                }
+                println!();
+            }
             if let Some(prompt) = result.prompt_preview {
                 println!("{prompt}");
             }

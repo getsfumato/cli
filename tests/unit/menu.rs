@@ -13,6 +13,11 @@ fn menu_lists_every_top_level_command_family() {
 }
 
 #[test]
+fn project_menu_exposes_create_action() {
+    assert!(PROJECT_MENU.contains(&"Create"));
+}
+
+#[test]
 fn parses_comma_separated_inputs_and_overrides() {
     assert_eq!(
         parse_paths("notes, course material/week-1,"),
