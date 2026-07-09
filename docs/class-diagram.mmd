@@ -61,6 +61,7 @@ classDiagram
         class FilesystemProjectRepository
         class FilesystemThemeRepository
         class MarpRenderer
+        class MermaidDiagramRenderer
         class SourceReader
         class ArtifactWriter
     }
@@ -132,6 +133,7 @@ classDiagram
     SlidesPipeline --> SourceReader
     SlidesPipeline --> ArtifactWriter
     SlidesPipeline --> MarpRenderer
+    SlidesPipeline --> MermaidDiagramRenderer
     SlidesPipeline --> FilesystemToolExecutor
 
     OpenAiCompatibleTextProvider ..|> TextGenerationProvider

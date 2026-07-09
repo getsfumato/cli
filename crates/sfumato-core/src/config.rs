@@ -144,6 +144,8 @@ pub struct OpenAiCompatibleConnectorConfig {
 #[serde(deny_unknown_fields)]
 pub struct MarpConfig {
     pub pdf: bool,
+    #[serde(default)]
+    pub browser_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -242,7 +244,10 @@ impl GlobalConfig {
                 Capability::Text,
                 "local-text".to_string(),
             )])),
-            marp: MarpConfig { pdf: false },
+            marp: MarpConfig {
+                pdf: false,
+                browser_path: None,
+            },
         }
     }
 }
@@ -314,6 +319,7 @@ impl EffectiveConfig {
         let marp = project.marp.unwrap_or_else(|| global.marp.clone());
         let marp = MarpConfig {
             pdf: marp.pdf || overrides.pdf,
+            browser_path: marp.browser_path,
         };
 
         Ok(Self {
@@ -441,6 +447,7 @@ fn migrate_global_config(path: &Path) -> Result<()> {
         == Some(CONFIG_SCHEMA_VERSION.into());
     let has_legacy_shape = table.contains_key("inference")
         || table.contains_key("providers")
+        || table.contains_key("diagrams")
         || table
             .get("user")
             .and_then(toml::Value::as_table)
@@ -473,6 +480,7 @@ fn migrate_global_config(path: &Path) -> Result<()> {
     if let Some(marp) = table.get_mut("marp").and_then(toml::Value::as_table_mut) {
         marp.remove("theme");
     }
+    table.remove("diagrams");
     migrate_legacy_providers(table)?;
     migrate_legacy_inference(table)?;
     table.insert(

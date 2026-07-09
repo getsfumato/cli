@@ -193,12 +193,60 @@ cargo run -- generate slides \
 ```
 
 Generated decks include a copied theme CSS artifact under
-`slides/themes/<theme-name>.css`. PDF export passes this CSS directly to Marp.
+`slides/themes/<theme-name>.css`. Normal generation writes both Marp Markdown
+and a PDF. PDF export passes the copied CSS for the configured project theme
+directly to Marp:
+
+```text
+marp --theme <output>/slides/themes/<theme-name>.css <deck.md> -o <deck.pdf>
+```
+
+If Marp CLI is not installed, Sfumato keeps the Markdown and theme CSS artifacts
+and prints a clear PDF export warning.
+
+If Marp needs an explicit browser executable, configure it in the global or
+project Marp settings:
+
+```toml
+[marp]
+pdf = false
+browser_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+```
+
+Sfumato uses `browser_path` first, then tries common local Chromium browser
+locations, then lets Marp use its own defaults.
 
 During generation, Sfumato declares read-only filesystem tools to compatible
 models. The model can ask Sfumato to list directories or read UTF-8 text files,
 but tool execution is restricted to the active project root and any source paths
 passed to the command.
+
+Slide generation also allows Mermaid diagrams. The text model may return fenced
+`mermaid` blocks; before writing the deck, Sfumato renders each diagram to SVG,
+stores the `.mmd` source and `.svg` output as local artifacts under
+`slides/diagrams/`, and replaces the Mermaid block with a relative Markdown
+image reference. PDF export enables Marp local-file access so those generated SVG
+artifacts render into the final PDF.
+
+Diagram rendering uses local Mermaid CLI (`mmdc`), so it works offline once
+`@mermaid-js/mermaid-cli` is installed:
+
+```bash
+npm install -g @mermaid-js/mermaid-cli
+```
+
+Normal generation prints live progress to stderr while the model is working,
+including model request rounds, tool calls, compact tool results, and tool
+errors. JSON output mode keeps this progress stream disabled so stdout remains
+machine-readable.
+
+Tool exploration is bounded. Sfumato defaults to 8 filesystem tool rounds, then
+asks the model to stop calling tools and return the final deck. You can tune this
+per model profile:
+
+```bash
+cargo run -- model edit grok-latest --option max_tool_rounds=12
+```
 
 Preview the prompt without calling a connector:
 

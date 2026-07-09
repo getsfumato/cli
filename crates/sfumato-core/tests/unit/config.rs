@@ -86,10 +86,23 @@ fn migrates_global_project_and_registry_configs_with_backups() {
         "theme".to_string(),
         toml::Value::String("default".to_string()),
     );
+    global_value.as_table_mut().unwrap().insert(
+        "diagrams".to_string(),
+        toml::Value::Table(toml::Table::from_iter([(
+            "renderer".to_string(),
+            toml::Value::String("mermaid-cli".to_string()),
+        )])),
+    );
     fs::write(&global_path, toml::to_string_pretty(&global_value).unwrap()).unwrap();
     migrate_global_config(&global_path).unwrap();
     let migrated_global: GlobalConfig = read_toml(&global_path).unwrap();
     assert_eq!(migrated_global.schema_version, CONFIG_SCHEMA_VERSION);
+    assert!(
+        read_toml_value(&global_path)
+            .unwrap()
+            .get("diagrams")
+            .is_none()
+    );
     assert!(PathBuf::from(format!("{}.bak", global_path.display())).exists());
 
     let project_path = temp.path().join("project.toml");

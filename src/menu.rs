@@ -198,7 +198,7 @@ fn generate_menu() -> Result<Option<Commands>> {
             instruction,
             title,
             out,
-            pdf: confirm("Render PDF with Marp?", false)?,
+            pdf: true,
             dry_run: confirm("Preview prompt without generating files?", false)?,
             project,
             theme,

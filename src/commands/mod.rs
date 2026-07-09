@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use serde_json::Value;
 
 use crate::{
     cli::{
@@ -20,6 +21,7 @@ use sfumato_core::{
     generation::{GenerationRequest, ResourceKind},
     models::ModelService,
     projects::ProjectService,
+    providers::TextGenerationEvent,
     resources::slides::{GenerateSlidesOptions, generate_slides},
     themes::ThemeService,
 };
@@ -394,6 +396,9 @@ impl SlidesArgs {
             GenerateSlidesOptions {
                 title: self.title,
                 dry_run: self.dry_run,
+                event_sink: (!self.json && !self.dry_run)
+                    .then_some(std::sync::Arc::new(render_generation_event)
+                        as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>),
             },
         )
         .await?;
@@ -423,6 +428,207 @@ impl SlidesArgs {
         }
         Ok(())
     }
+}
+
+fn render_generation_event(event: TextGenerationEvent) {
+    match event {
+        TextGenerationEvent::RequestStarted { round } => {
+            eprintln!(
+                "{} {}",
+                styled_label("model", ANSI_CYAN),
+                dim(&format!("request round {round}"))
+            );
+        }
+        TextGenerationEvent::ToolCallRequested { name, arguments } => {
+            eprintln!(
+                "{} {} {}",
+                styled_label("tool call", ANSI_MAGENTA),
+                bold(&name),
+                format_tool_arguments(&arguments)
+            );
+        }
+        TextGenerationEvent::ToolCallSucceeded { name, result } => {
+            eprintln!(
+                "{} {} {}",
+                styled_label("tool result", ANSI_GREEN),
+                bold(&name),
+                format_tool_result(&name, &result)
+            );
+        }
+        TextGenerationEvent::ToolCallFailed { name, error } => {
+            eprintln!(
+                "{} {} {}",
+                styled_label("tool error", ANSI_RED),
+                bold(&name),
+                red(&compact_preview(&error, 180))
+            );
+        }
+        TextGenerationEvent::ResponseCompleted => {
+            eprintln!(
+                "{} {}",
+                styled_label("model", ANSI_CYAN),
+                green("response complete")
+            );
+        }
+    }
+}
+
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BOLD: &str = "\x1b[1m";
+const ANSI_DIM: &str = "\x1b[2m";
+const ANSI_ITALIC: &str = "\x1b[3m";
+const ANSI_CYAN: &str = "\x1b[36m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_MAGENTA: &str = "\x1b[35m";
+
+fn styled_label(label: &str, color: &str) -> String {
+    format!("{ANSI_BOLD}{color}{label}:{ANSI_RESET}")
+}
+
+fn bold(value: &str) -> String {
+    format!("{ANSI_BOLD}{value}{ANSI_RESET}")
+}
+
+fn dim(value: &str) -> String {
+    format!("{ANSI_DIM}{value}{ANSI_RESET}")
+}
+
+fn italic(value: &str) -> String {
+    format!("{ANSI_ITALIC}{value}{ANSI_RESET}")
+}
+
+fn green(value: &str) -> String {
+    format!("{ANSI_GREEN}{value}{ANSI_RESET}")
+}
+
+fn red(value: &str) -> String {
+    format!("{ANSI_RED}{value}{ANSI_RESET}")
+}
+
+fn yellow(value: &str) -> String {
+    format!("{ANSI_YELLOW}{value}{ANSI_RESET}")
+}
+
+fn format_tool_arguments(arguments: &Value) -> String {
+    let arguments = parse_maybe_json_string(arguments);
+    if let Some(path) = arguments.get("path").and_then(Value::as_str) {
+        return format!("path {}", italic(path));
+    }
+    dim(&compact_preview(&arguments.to_string(), 140))
+}
+
+fn format_tool_result(name: &str, result: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(result) else {
+        return dim(&compact_preview(result, 180));
+    };
+
+    if let Some(error) = value.get("error").and_then(Value::as_str) {
+        return red(&format!("returned error: {}", compact_preview(error, 180)));
+    }
+
+    if name == "sfumato_list_directory" || value.get("entries").is_some() {
+        return summarize_directory_listing(&value);
+    }
+
+    if name == "sfumato_read_file" || value.get("content").is_some() {
+        return summarize_file_read(&value);
+    }
+
+    dim(&compact_preview(result, 180))
+}
+
+fn summarize_directory_listing(value: &Value) -> String {
+    let path = value
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown path");
+    let entries = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let directories = entries
+        .iter()
+        .filter(|entry| entry.get("kind").and_then(Value::as_str) == Some("directory"))
+        .count();
+    let files = entries
+        .iter()
+        .filter(|entry| entry.get("kind").and_then(Value::as_str) == Some("file"))
+        .count();
+    let names = entries
+        .iter()
+        .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+        .take(6)
+        .collect::<Vec<_>>();
+    let truncated_by_display = entries.len() > names.len();
+    let truncated_by_tool = value
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let suffix = if names.is_empty() {
+        String::new()
+    } else {
+        let more = if truncated_by_display || truncated_by_tool {
+            ", ..."
+        } else {
+            ""
+        };
+        format!(" — {}", dim(&format!("{}{}", names.join(", "), more)))
+    };
+
+    format!(
+        "listed {} — {} entries ({} files, {} directories){}",
+        italic(path),
+        yellow(&entries.len().to_string()),
+        files,
+        directories,
+        suffix
+    )
+}
+
+fn summarize_file_read(value: &Value) -> String {
+    let path = value
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown file");
+    let content = value.get("content").and_then(Value::as_str).unwrap_or("");
+    let chars = content.chars().count();
+    let lines = content.lines().count();
+    let preview = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| compact_preview(line, 120));
+    let preview = preview
+        .map(|line| format!(" — {}", dim(&line)))
+        .unwrap_or_default();
+
+    format!(
+        "read {} — {} chars, {} lines{}",
+        italic(path),
+        yellow(&chars.to_string()),
+        lines,
+        preview
+    )
+}
+
+fn parse_maybe_json_string(value: &Value) -> Value {
+    if let Value::String(raw) = value {
+        serde_json::from_str(raw).unwrap_or_else(|_| value.clone())
+    } else {
+        value.clone()
+    }
+}
+
+fn compact_preview(value: &str, max_chars: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview = compact.chars().take(max_chars).collect::<String>();
+    if compact.chars().count() > max_chars {
+        preview.push_str("...");
+    }
+    preview
 }
 
 fn parse_model_overrides(values: &[String]) -> Result<BTreeMap<Capability, String>> {

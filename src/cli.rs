@@ -257,7 +257,7 @@ pub struct SlidesArgs {
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub pdf: bool,
 
     #[arg(long)]

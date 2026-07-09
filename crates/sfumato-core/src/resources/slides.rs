@@ -10,8 +10,8 @@ use walkdir::WalkDir;
 use crate::{
     config::{Capability, EffectiveConfig},
     generation::{GenerationOutput, GenerationRequest, GenerationToolSummary},
-    providers::{TextGenerationRequest, ToolDefinition, build_text_provider},
-    renderers::marp,
+    providers::{TextGenerationEvent, TextGenerationRequest, ToolDefinition, build_text_provider},
+    renderers::{diagrams::MermaidDiagramRenderer, marp},
     themes::{ThemePackage, ThemeService},
     tools::default_filesystem_tools,
 };
@@ -20,10 +20,10 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
     "md", "txt", "rs", "py", "js", "ts", "html", "css", "json", "toml", "yaml", "yml",
 ];
 
-#[derive(Debug)]
 pub struct GenerateSlidesOptions {
     pub title: Option<String>,
     pub dry_run: bool,
+    pub event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
 }
 
 #[derive(Debug)]
@@ -58,10 +58,12 @@ pub async fn generate_slides(
     let theme_css_path = slides_dir
         .join("themes")
         .join(format!("{}.css", config.theme));
+    let diagrams_dir = slides_dir.join("diagrams");
 
     ensure_inside(&output_root, &markdown_path)?;
     ensure_inside(&output_root, &pdf_path)?;
     ensure_inside(&output_root, &theme_css_path)?;
+    ensure_inside(&output_root, &diagrams_dir)?;
 
     let theme = ThemeService::load()?.resolve(&config.theme)?;
     let documents = collect_sources(&request.sources)?;
@@ -77,7 +79,9 @@ pub async fn generate_slides(
     );
     provider_request.tools = tool_set.definitions;
     provider_request.tool_executor = Some(tool_set.executor);
+    provider_request.event_sink = options.event_sink;
     let (profile_name, profile) = config.resolve_model(Capability::Text)?;
+    provider_request.max_tool_rounds = model_tool_rounds(profile);
     let selected_models =
         std::collections::BTreeMap::from([("text".to_string(), profile_name.to_string())]);
 
@@ -103,24 +107,30 @@ pub async fn generate_slides(
 
     fs::create_dir_all(&slides_dir)
         .with_context(|| format!("Could not create {}", slides_dir.display()))?;
+    let (markdown, diagram_artifacts) =
+        render_mermaid_diagrams(&markdown, &diagrams_dir, &slug).await?;
     copy_theme_css(&theme, &theme_css_path)?;
     fs::write(&markdown_path, markdown)
         .with_context(|| format!("Could not write {}", markdown_path.display()))?;
 
     let mut warnings = Vec::new();
-    let rendered_pdf = if config.marp.pdf {
-        match marp::render_pdf(&markdown_path, &theme_css_path, &pdf_path).await {
-            Ok(()) => Some(pdf_path),
-            Err(error) => {
-                warnings.push(format!("PDF export skipped: {error}"));
-                None
-            }
+    let rendered_pdf = match marp::render_pdf(
+        &markdown_path,
+        &theme_css_path,
+        &pdf_path,
+        config.marp.browser_path.as_deref(),
+    )
+    .await
+    {
+        Ok(()) => Some(pdf_path),
+        Err(error) => {
+            warnings.push(format!("PDF export skipped: {error}"));
+            None
         }
-    } else {
-        None
     };
 
     let mut artifacts = vec![markdown_path.clone(), theme_css_path];
+    artifacts.extend(diagram_artifacts);
     if let Some(pdf) = &rendered_pdf {
         artifacts.push(pdf.clone());
     }
@@ -161,6 +171,98 @@ fn copy_theme_css(theme: &ThemePackage, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+async fn render_mermaid_diagrams(
+    markdown: &str,
+    diagrams_dir: &Path,
+    slug: &str,
+) -> Result<(String, Vec<PathBuf>)> {
+    let blocks = extract_mermaid_blocks(markdown)?;
+    if blocks.is_empty() {
+        return Ok((markdown.to_string(), Vec::new()));
+    }
+
+    fs::create_dir_all(diagrams_dir)
+        .with_context(|| format!("Could not create {}", diagrams_dir.display()))?;
+    let renderer = MermaidDiagramRenderer;
+    let mut rendered = String::new();
+    let mut cursor = 0;
+    let mut artifacts = Vec::new();
+
+    for (index, block) in blocks.iter().enumerate() {
+        rendered.push_str(&markdown[cursor..block.start]);
+        let diagram_index = index + 1;
+        let source_path = diagrams_dir.join(format!("{slug}-diagram-{diagram_index}.mmd"));
+        let artifact_path = diagrams_dir.join(format!("{slug}-diagram-{diagram_index}.svg"));
+        fs::write(&source_path, &block.source)
+            .with_context(|| format!("Could not write {}", source_path.display()))?;
+        let _svg = renderer.render_svg(&source_path, &artifact_path).await?;
+        if !artifact_path.exists() {
+            bail!(
+                "Mermaid CLI did not write the expected SVG artifact {}",
+                artifact_path.display()
+            );
+        }
+        rendered.push_str(&embedded_svg_markdown(slug, diagram_index));
+        artifacts.push(source_path);
+        artifacts.push(artifact_path);
+        cursor = block.end;
+    }
+
+    rendered.push_str(&markdown[cursor..]);
+    Ok((rendered, artifacts))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MermaidBlock {
+    start: usize,
+    end: usize,
+    source: String,
+}
+
+fn extract_mermaid_blocks(markdown: &str) -> Result<Vec<MermaidBlock>> {
+    let mut blocks = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(relative_start) = markdown[cursor..].find("```") {
+        let fence_start = cursor + relative_start;
+        let after_ticks = fence_start + 3;
+        let line_end = markdown[after_ticks..]
+            .find('\n')
+            .map(|offset| after_ticks + offset)
+            .unwrap_or(markdown.len());
+        let language = markdown[after_ticks..line_end].trim();
+
+        if !language.eq_ignore_ascii_case("mermaid") {
+            cursor = line_end;
+            continue;
+        }
+
+        let content_start = if line_end < markdown.len() {
+            line_end + 1
+        } else {
+            line_end
+        };
+        let Some(relative_end) = markdown[content_start..].find("\n```") else {
+            bail!("Generated Mermaid diagram fence is not closed");
+        };
+        let content_end = content_start + relative_end;
+        let fence_end = content_end + "\n```".len();
+
+        blocks.push(MermaidBlock {
+            start: fence_start,
+            end: fence_end,
+            source: markdown[content_start..content_end].trim().to_string(),
+        });
+        cursor = fence_end;
+    }
+
+    Ok(blocks)
+}
+
+fn embedded_svg_markdown(slug: &str, index: usize) -> String {
+    format!("![Mermaid diagram {index}](diagrams/{slug}-diagram-{index}.svg)")
+}
+
 fn build_generation_request(
     config: &EffectiveConfig,
     theme: &ThemePackage,
@@ -182,6 +284,7 @@ fn build_generation_request(
         r#"Create a Marp Markdown slide deck titled "{title}".
 
 Project: {project}
+Allowed filesystem root: {project_root}
 Theme: {theme_name}
 Theme colors: {theme_colors}
 Theme fonts: {theme_fonts}
@@ -190,24 +293,40 @@ Instruction: {instruction}
 Requirements:
 - Return only Markdown.
 - Include Marp frontmatter.
+- Set Marp math rendering to MathJax with `math: mathjax`.
 - Use slide separators with ---.
 - Include a title slide.
+- You may use Mermaid diagrams in fenced ```mermaid blocks when a visual structure helps.
+- Do not use raw HTML, inline SVG, or HTML wrapper tags.
 - Include a short learning objective slide.
 - Explain the source material for a student.
 - Use examples from the provided files.
 - Add presenter notes with short teaching cues when useful.
 - You may call Sfumato filesystem tools to list allowed directories or read allowed text files when more context is needed.
+- When calling filesystem tools, prefer absolute paths under the allowed filesystem root.
+- Explore selectively. After reading the most relevant files, stop calling tools and produce the final deck.
 
 Source material:
 {source_bundle}
 "#,
         project = config.project_name,
+        project_root = config.project_root.display(),
         theme_name = theme.manifest.name,
         theme_colors = format_tokens(&theme.manifest.tokens.colors),
         theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
     );
 
     TextGenerationRequest::new(system_prompt, user_prompt)
+}
+
+fn model_tool_rounds(profile: &crate::config::ModelProfile) -> usize {
+    profile
+        .options
+        .get("max_tool_rounds")
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8)
 }
 
 fn format_tokens(tokens: &std::collections::BTreeMap<String, String>) -> String {
@@ -298,10 +417,11 @@ fn normalize_marp_markdown(
     title: &str,
 ) -> Result<String> {
     let mut markdown = strip_code_fence(generated.trim()).to_string();
+    markdown = sanitize_marp_markdown(&markdown);
 
     if !markdown.starts_with("---") {
         markdown = format!(
-            "---\nmarp: true\ntheme: {}\npaginate: true\n---\n\n{}",
+            "---\nmarp: true\ntheme: {}\npaginate: true\nmath: mathjax\n---\n\n{}",
             config.theme, markdown
         );
     }
@@ -309,7 +429,8 @@ fn normalize_marp_markdown(
     if !markdown.contains("marp: true") {
         markdown = markdown.replacen("---", "---\nmarp: true", 1);
     }
-    markdown = set_frontmatter_theme(markdown, &config.theme);
+    markdown = set_frontmatter_value(markdown, "theme", &config.theme);
+    markdown = set_frontmatter_value(markdown, "math", "mathjax");
 
     if !markdown.contains("\n---") {
         bail!("Generated deck does not contain Marp slide separators.");
@@ -322,23 +443,106 @@ fn normalize_marp_markdown(
     Ok(markdown)
 }
 
-fn set_frontmatter_theme(markdown: String, theme: &str) -> String {
+fn sanitize_marp_markdown(markdown: &str) -> String {
+    let without_svg = strip_html_blocks(markdown, "svg");
+    remove_html_tags_by_names(
+        &without_svg,
+        &["article", "div", "section", "span", "p", "br", "svg"],
+    )
+}
+
+fn strip_html_blocks(markdown: &str, tag_name: &str) -> String {
+    let mut output = String::new();
+    let mut cursor = 0;
+    let lower = markdown.to_lowercase();
+    let opening = format!("<{}", tag_name.to_lowercase());
+    let closing = format!("</{}>", tag_name.to_lowercase());
+
+    while let Some(relative_start) = lower[cursor..].find(&opening) {
+        let start = cursor + relative_start;
+        output.push_str(&markdown[cursor..start]);
+
+        let after_start = start + opening.len();
+        let is_tag_boundary = lower[after_start..]
+            .chars()
+            .next()
+            .map(|next| next.is_whitespace() || next == '>' || next == '/')
+            .unwrap_or(false);
+        if !is_tag_boundary {
+            output.push_str(&markdown[start..after_start]);
+            cursor = after_start;
+            continue;
+        }
+
+        if let Some(relative_end) = lower[after_start..].find(&closing) {
+            cursor = after_start + relative_end + closing.len();
+        } else if let Some(relative_tag_end) = lower[after_start..].find('>') {
+            cursor = after_start + relative_tag_end + 1;
+        } else {
+            cursor = markdown.len();
+        }
+    }
+
+    output.push_str(&markdown[cursor..]);
+    output
+}
+
+fn remove_html_tags_by_names(markdown: &str, tag_names: &[&str]) -> String {
+    let mut output = String::new();
+    let mut cursor = 0;
+
+    while let Some(relative_start) = markdown[cursor..].find('<') {
+        let start = cursor + relative_start;
+        output.push_str(&markdown[cursor..start]);
+
+        let Some(relative_end) = markdown[start..].find('>') else {
+            output.push_str(&markdown[start..]);
+            return output;
+        };
+        let end = start + relative_end + 1;
+        let tag = &markdown[start + 1..end - 1];
+
+        if is_named_html_tag(tag, tag_names) {
+            cursor = end;
+        } else {
+            output.push_str(&markdown[start..end]);
+            cursor = end;
+        }
+    }
+
+    output.push_str(&markdown[cursor..]);
+    output
+}
+
+fn is_named_html_tag(tag: &str, tag_names: &[&str]) -> bool {
+    let tag = tag.trim_start().trim_start_matches('/').trim_start();
+    let name = tag
+        .split(|character: char| character.is_whitespace() || character == '/' || character == '>')
+        .next()
+        .unwrap_or_default();
+    tag_names
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+fn set_frontmatter_value(markdown: String, key: &str, value: &str) -> String {
     let closing = markdown[3..]
         .find("\n---")
         .map(|index| index + 3)
         .unwrap_or(markdown.len());
     let (frontmatter, body) = markdown.split_at(closing);
+    let prefix = format!("{key}:");
     if frontmatter
         .lines()
-        .any(|line| line.trim_start().starts_with("theme:"))
+        .any(|line| line.trim_start().starts_with(&prefix))
     {
         let mut replaced = false;
         let frontmatter = frontmatter
             .lines()
             .map(|line| {
-                if !replaced && line.trim_start().starts_with("theme:") {
+                if !replaced && line.trim_start().starts_with(&prefix) {
                     replaced = true;
-                    format!("theme: {theme}")
+                    format!("{key}: {value}")
                 } else {
                     line.to_string()
                 }
@@ -347,7 +551,7 @@ fn set_frontmatter_theme(markdown: String, theme: &str) -> String {
             .join("\n");
         format!("{frontmatter}{body}")
     } else {
-        markdown.replacen("---", &format!("---\ntheme: {theme}"), 1)
+        markdown.replacen("---", &format!("---\n{key}: {value}"), 1)
     }
 }
 

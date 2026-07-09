@@ -16,6 +16,7 @@ pub struct TextGenerationRequest {
     pub user_prompt: String,
     pub tools: Vec<ToolDefinition>,
     pub tool_executor: Option<Arc<dyn ToolExecutor>>,
+    pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
     pub max_tool_rounds: usize,
 }
 
@@ -26,7 +27,14 @@ impl TextGenerationRequest {
             user_prompt,
             tools: Vec::new(),
             tool_executor: None,
-            max_tool_rounds: 4,
+            event_sink: None,
+            max_tool_rounds: 8,
+        }
+    }
+
+    pub fn emit(&self, event: TextGenerationEvent) {
+        if let Some(sink) = &self.event_sink {
+            sink(event);
         }
     }
 }
@@ -34,6 +42,15 @@ impl TextGenerationRequest {
 #[derive(Clone, Debug)]
 pub struct TextGenerationResponse {
     pub text: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum TextGenerationEvent {
+    RequestStarted { round: usize },
+    ToolCallRequested { name: String, arguments: Value },
+    ToolCallSucceeded { name: String, result: String },
+    ToolCallFailed { name: String, error: String },
+    ResponseCompleted,
 }
 
 #[derive(Clone, Debug, Serialize)]

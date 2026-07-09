@@ -102,9 +102,6 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
         "OpenRouter API key environment variable",
         "OPENROUTER_API_KEY",
     )?);
-    config.marp.pdf = Confirm::new("Export PDFs with Marp by default?")
-        .with_default(false)
-        .prompt()?;
     Ok(config)
 }
 

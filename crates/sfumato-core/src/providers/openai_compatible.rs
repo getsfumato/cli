@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{ModelProfile, OpenAiCompatibleConnectorConfig},
     providers::{
-        TextGenerationProvider, TextGenerationRequest, TextGenerationResponse, ToolCall,
-        ToolDefinition, ToolExecutionRequest,
+        TextGenerationEvent, TextGenerationProvider, TextGenerationRequest, TextGenerationResponse,
+        ToolCall, ToolDefinition, ToolExecutionRequest,
     },
 };
 
@@ -98,7 +98,8 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
         let tools = (!request.tools.is_empty()).then_some(request.tools.clone());
         let mut messages = initial_messages(&request);
 
-        for _ in 0..=request.max_tool_rounds {
+        for round in 0..request.max_tool_rounds {
+            request.emit(TextGenerationEvent::RequestStarted { round: round + 1 });
             let body = self.request_body_for_messages(messages.clone(), tools.clone());
             let parsed = self.send_chat_completion(&body).await?;
             let assistant_message = parsed
@@ -117,6 +118,7 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
                 if content.is_empty() {
                     bail!("Connector response did not include text content");
                 }
+                request.emit(TextGenerationEvent::ResponseCompleted);
                 return Ok(TextGenerationResponse { text: content });
             }
 
@@ -126,18 +128,66 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
             let tool_calls = assistant_message.tool_calls.clone();
             messages.push(assistant_message);
             for tool_call in tool_calls {
-                let result = executor.execute(ToolExecutionRequest {
+                request.emit(TextGenerationEvent::ToolCallRequested {
                     name: tool_call.function.name.clone(),
                     arguments: tool_call.function.arguments.clone(),
-                })?;
+                });
+                let result = match executor.execute(ToolExecutionRequest {
+                    name: tool_call.function.name.clone(),
+                    arguments: tool_call.function.arguments.clone(),
+                }) {
+                    Ok(result) => {
+                        request.emit(TextGenerationEvent::ToolCallSucceeded {
+                            name: tool_call.function.name.clone(),
+                            result: result.clone(),
+                        });
+                        result
+                    }
+                    Err(error) => {
+                        let error = format!("{error:#}");
+                        request.emit(TextGenerationEvent::ToolCallFailed {
+                            name: tool_call.function.name.clone(),
+                            error: error.clone(),
+                        });
+                        tool_error_json(&tool_call, error)
+                    }
+                };
                 messages.push(ChatMessage::tool_response(tool_call, result));
             }
         }
 
-        bail!(
-            "Connector exceeded the maximum of {} Sfumato tool rounds",
-            request.max_tool_rounds
-        )
+        messages.push(ChatMessage::text(
+            "user",
+            format!(
+                "You have reached Sfumato's limit of {} filesystem tool rounds. Stop calling tools and return the final Marp Markdown deck now, using the context already gathered.",
+                request.max_tool_rounds
+            ),
+        ));
+        request.emit(TextGenerationEvent::RequestStarted {
+            round: request.max_tool_rounds + 1,
+        });
+        let parsed = self
+            .send_chat_completion(&self.request_body_for_messages(messages, None))
+            .await?;
+        let assistant_message = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|choice| choice.message)
+            .context("Connector response did not include any choices")?;
+        let content = assistant_message
+            .content
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if content.is_empty() {
+            bail!(
+                "Connector did not return final text after {} Sfumato tool rounds",
+                request.max_tool_rounds
+            );
+        }
+        request.emit(TextGenerationEvent::ResponseCompleted);
+        Ok(TextGenerationResponse { text: content })
     }
 }
 
@@ -243,6 +293,14 @@ impl ChatMessage {
             tool_call_id: tool_call.id,
         }
     }
+}
+
+fn tool_error_json(tool_call: &ToolCall, error: String) -> String {
+    serde_json::json!({
+        "error": error,
+        "tool": tool_call.function.name,
+    })
+    .to_string()
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,5 +1,5 @@
 use super::*;
-use crate::providers::ToolFunctionDefinition;
+use crate::providers::{ToolCall, ToolCallFunction, ToolFunctionDefinition};
 use std::collections::BTreeMap;
 
 fn profile(connector: &str) -> ModelProfile {
@@ -114,4 +114,21 @@ fn requires_an_api_key_source() {
         })
         .is_err()
     );
+}
+
+#[test]
+fn formats_tool_execution_errors_as_tool_results() {
+    let tool_call = ToolCall {
+        id: Some("call-1".to_string()),
+        kind: "function".to_string(),
+        function: ToolCallFunction {
+            name: "sfumato_read_file".to_string(),
+            arguments: serde_json::json!({ "path": "missing.md" }),
+        },
+    };
+
+    let result = tool_error_json(&tool_call, "missing path".to_string());
+
+    assert!(result.contains("missing path"));
+    assert!(result.contains("sfumato_read_file"));
 }
