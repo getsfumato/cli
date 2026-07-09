@@ -235,6 +235,10 @@ Diagram rendering uses local Mermaid CLI (`mmdc`), so it works offline once
 npm install -g @mermaid-js/mermaid-cli
 ```
 
+Mermaid SVGs are rendered with the selected Sfumato project theme. Sfumato maps
+theme color and font tokens into Mermaid's `base` theme variables before calling
+`mmdc`, so diagrams visually match the Marp deck.
+
 Normal generation prints live progress to stderr while the model is working,
 including model request rounds, tool calls, compact tool results, and tool
 errors. JSON output mode keeps this progress stream disabled so stdout remains

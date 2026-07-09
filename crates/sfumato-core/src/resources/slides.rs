@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -11,8 +12,11 @@ use crate::{
     config::{Capability, EffectiveConfig},
     generation::{GenerationOutput, GenerationRequest, GenerationToolSummary},
     providers::{TextGenerationEvent, TextGenerationRequest, ToolDefinition, build_text_provider},
-    renderers::{diagrams::MermaidDiagramRenderer, marp},
-    themes::{ThemePackage, ThemeService},
+    renderers::{
+        diagrams::{MermaidDiagramRenderer, MermaidThemeConfig},
+        marp,
+    },
+    themes::{ThemePackage, ThemeService, ThemeTokens},
     tools::default_filesystem_tools,
 };
 
@@ -108,7 +112,7 @@ pub async fn generate_slides(
     fs::create_dir_all(&slides_dir)
         .with_context(|| format!("Could not create {}", slides_dir.display()))?;
     let (markdown, diagram_artifacts) =
-        render_mermaid_diagrams(&markdown, &diagrams_dir, &slug).await?;
+        render_mermaid_diagrams(&markdown, &diagrams_dir, &slug, &theme).await?;
     copy_theme_css(&theme, &theme_css_path)?;
     fs::write(&markdown_path, markdown)
         .with_context(|| format!("Could not write {}", markdown_path.display()))?;
@@ -175,6 +179,7 @@ async fn render_mermaid_diagrams(
     markdown: &str,
     diagrams_dir: &Path,
     slug: &str,
+    theme: &ThemePackage,
 ) -> Result<(String, Vec<PathBuf>)> {
     let blocks = extract_mermaid_blocks(markdown)?;
     if blocks.is_empty() {
@@ -184,6 +189,7 @@ async fn render_mermaid_diagrams(
     fs::create_dir_all(diagrams_dir)
         .with_context(|| format!("Could not create {}", diagrams_dir.display()))?;
     let renderer = MermaidDiagramRenderer;
+    let mermaid_theme = mermaid_theme_config(&theme.manifest.tokens);
     let mut rendered = String::new();
     let mut cursor = 0;
     let mut artifacts = Vec::new();
@@ -195,7 +201,9 @@ async fn render_mermaid_diagrams(
         let artifact_path = diagrams_dir.join(format!("{slug}-diagram-{diagram_index}.svg"));
         fs::write(&source_path, &block.source)
             .with_context(|| format!("Could not write {}", source_path.display()))?;
-        let _svg = renderer.render_svg(&source_path, &artifact_path).await?;
+        let _svg = renderer
+            .render_svg(&source_path, &artifact_path, &mermaid_theme)
+            .await?;
         if !artifact_path.exists() {
             bail!(
                 "Mermaid CLI did not write the expected SVG artifact {}",
@@ -210,6 +218,58 @@ async fn render_mermaid_diagrams(
 
     rendered.push_str(&markdown[cursor..]);
     Ok((rendered, artifacts))
+}
+
+fn mermaid_theme_config(tokens: &ThemeTokens) -> MermaidThemeConfig {
+    let colors = &tokens.colors;
+    let fonts = &tokens.fonts;
+    let background = theme_token(colors, "background", "#ffffff");
+    let surface = theme_token(colors, "surface", &background);
+    let surface_alt = theme_token(colors, "surface-alt", &surface);
+    let text = theme_token(colors, "text", "#222222");
+    let primary = theme_token(colors, "primary", "#315c8c");
+    let accent = theme_token(colors, "accent", &primary);
+    let muted = theme_token(colors, "muted", &text);
+    let body_font = theme_token(fonts, "body", "system-ui, sans-serif");
+
+    MermaidThemeConfig::new(BTreeMap::from([
+        ("background".to_string(), background.clone()),
+        ("mainBkg".to_string(), surface.clone()),
+        ("primaryColor".to_string(), surface.clone()),
+        ("primaryTextColor".to_string(), text.clone()),
+        ("primaryBorderColor".to_string(), primary.clone()),
+        ("secondaryColor".to_string(), surface_alt.clone()),
+        ("secondaryTextColor".to_string(), text.clone()),
+        ("secondaryBorderColor".to_string(), accent.clone()),
+        ("tertiaryColor".to_string(), background.clone()),
+        ("tertiaryTextColor".to_string(), text.clone()),
+        ("tertiaryBorderColor".to_string(), muted.clone()),
+        ("lineColor".to_string(), accent.clone()),
+        ("textColor".to_string(), text.clone()),
+        ("fontFamily".to_string(), body_font),
+        ("nodeBorder".to_string(), primary.clone()),
+        ("nodeTextColor".to_string(), text.clone()),
+        ("clusterBkg".to_string(), background),
+        ("clusterBorder".to_string(), accent.clone()),
+        ("defaultLinkColor".to_string(), accent.clone()),
+        ("edgeLabelBackground".to_string(), surface_alt.clone()),
+        ("noteBkgColor".to_string(), surface_alt),
+        ("noteTextColor".to_string(), text),
+        ("noteBorderColor".to_string(), accent),
+    ]))
+}
+
+fn theme_token(tokens: &BTreeMap<String, String>, name: &str, fallback: &str) -> String {
+    tokens
+        .get(name)
+        .filter(|value| is_mermaid_theme_value(value))
+        .cloned()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn is_mermaid_theme_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with('#') || trimmed.contains(',') || trimmed.contains("sans")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

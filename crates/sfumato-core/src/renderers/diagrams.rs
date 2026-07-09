@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     path::{Path, PathBuf},
 };
@@ -11,17 +12,25 @@ use tokio::process::Command;
 pub struct MermaidDiagramRenderer;
 
 impl MermaidDiagramRenderer {
-    pub async fn render_svg(&self, input_path: &Path, output_path: &Path) -> Result<String> {
+    pub async fn render_svg(
+        &self,
+        input_path: &Path,
+        output_path: &Path,
+        theme: &MermaidThemeConfig,
+    ) -> Result<String> {
         let puppeteer_config = write_puppeteer_config(output_path)?;
+        let mermaid_config = write_mermaid_config(output_path, theme)?;
         let output = Command::new("mmdc")
             .args(mermaid_cli_args(
                 input_path,
                 output_path,
                 puppeteer_config.as_deref(),
+                mermaid_config.as_deref(),
             ))
             .output()
             .await;
         remove_puppeteer_config(puppeteer_config.as_deref());
+        remove_puppeteer_config(mermaid_config.as_deref());
 
         let output = match output {
             Ok(output) => output,
@@ -63,6 +72,7 @@ fn mermaid_cli_args(
     input_path: &Path,
     output_path: &Path,
     puppeteer_config: Option<&Path>,
+    mermaid_config: Option<&Path>,
 ) -> Vec<OsString> {
     let mut args = vec![
         "-i".into(),
@@ -74,8 +84,27 @@ fn mermaid_cli_args(
     if let Some(config) = puppeteer_config {
         args.extend(["-p".into(), config.as_os_str().to_owned()]);
     }
+    if let Some(config) = mermaid_config {
+        args.extend(["-c".into(), config.as_os_str().to_owned()]);
+    }
 
     args
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MermaidThemeConfig {
+    theme: &'static str,
+    #[serde(rename = "themeVariables")]
+    theme_variables: BTreeMap<String, String>,
+}
+
+impl MermaidThemeConfig {
+    pub fn new(theme_variables: BTreeMap<String, String>) -> Self {
+        Self {
+            theme: "base",
+            theme_variables,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -96,6 +125,17 @@ fn write_puppeteer_config(output_path: &Path) -> Result<Option<PathBuf>> {
         args: ["--no-sandbox"],
     };
     let rendered = serde_json::to_string(&config).context("Could not render Puppeteer config")?;
+    std::fs::write(&path, rendered)
+        .with_context(|| format!("Could not write {}", path.display()))?;
+    Ok(Some(path))
+}
+
+fn write_mermaid_config(
+    output_path: &Path,
+    config: &MermaidThemeConfig,
+) -> Result<Option<PathBuf>> {
+    let path = output_path.with_extension("mermaid.json");
+    let rendered = serde_json::to_string(config).context("Could not render Mermaid config")?;
     std::fs::write(&path, rendered)
         .with_context(|| format!("Could not write {}", path.display()))?;
     Ok(Some(path))

@@ -115,6 +115,27 @@ fn embeds_rendered_svg_as_local_markdown_image() {
 }
 
 #[test]
+fn maps_theme_tokens_to_mermaid_theme_variables() {
+    let config = mermaid_theme_config(&crate::themes::ThemeTokens {
+        colors: BTreeMap::from([
+            ("background".to_string(), "#fbf1c7".to_string()),
+            ("surface".to_string(), "#f9f5d7".to_string()),
+            ("surface-alt".to_string(), "#ebdbb2".to_string()),
+            ("text".to_string(), "#3c3836".to_string()),
+            ("primary".to_string(), "#9d0006".to_string()),
+            ("accent".to_string(), "#af3a03".to_string()),
+        ]),
+        fonts: BTreeMap::from([("body".to_string(), "Inter, sans-serif".to_string())]),
+    });
+    let rendered = serde_json::to_string(&config).unwrap();
+
+    assert!(rendered.contains("\"theme\":\"base\""));
+    assert!(rendered.contains("\"primaryBorderColor\":\"#9d0006\""));
+    assert!(rendered.contains("\"lineColor\":\"#af3a03\""));
+    assert!(rendered.contains("\"fontFamily\":\"Inter, sans-serif\""));
+}
+
+#[test]
 fn copies_theme_css_to_output() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("theme.css");
