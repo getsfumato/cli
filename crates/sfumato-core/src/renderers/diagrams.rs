@@ -79,6 +79,8 @@ fn mermaid_cli_args(
         input_path.as_os_str().to_owned(),
         "-o".into(),
         output_path.as_os_str().to_owned(),
+        "--backgroundColor".into(),
+        "transparent".into(),
     ];
 
     if let Some(config) = puppeteer_config {

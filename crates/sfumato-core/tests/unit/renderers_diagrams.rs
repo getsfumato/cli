@@ -16,8 +16,28 @@ fn mermaid_cli_args_render_svg_from_source_file() {
             std::ffi::OsString::from("diagram.mmd"),
             std::ffi::OsString::from("-o"),
             std::ffi::OsString::from("diagram.svg"),
+            std::ffi::OsString::from("--backgroundColor"),
+            std::ffi::OsString::from("transparent"),
         ]
     );
+}
+
+#[test]
+fn mermaid_cli_args_request_transparent_background() {
+    let args = mermaid_cli_args(
+        Path::new("diagram.mmd"),
+        Path::new("diagram.svg"),
+        None,
+        None,
+    );
+
+    assert!(args.windows(2).any(|window| {
+        window
+            == [
+                std::ffi::OsString::from("--backgroundColor"),
+                std::ffi::OsString::from("transparent"),
+            ]
+    }));
 }
 
 #[test]
