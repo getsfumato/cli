@@ -12,6 +12,7 @@ fn effective_config() -> EffectiveConfig {
         connectors: global.connectors,
         models: global.models,
         model_defaults: global.defaults.0,
+        model_roles: global.model_roles,
         marp: global.marp,
     }
 }
@@ -31,6 +32,28 @@ fn supports_no_source_files() {
 fn strips_markdown_code_fence() {
     let text = "```markdown\n---\nmarp: true\n---\n# Title\n```";
     assert!(strip_code_fence(text).starts_with("---"));
+}
+
+#[test]
+fn strips_marp_code_fence_without_leaving_the_language_label() {
+    let text = "```marp\n---\nmarp: true\n---\n# Title\n```";
+    let stripped = strip_code_fence(text);
+
+    assert!(stripped.starts_with("---"));
+    assert!(!stripped.starts_with("marp\n"));
+}
+
+#[test]
+fn normalizes_a_fenced_marp_deck_without_metadata_slides() {
+    let mut config = effective_config();
+    config.theme = "gruvbox".to_string();
+    let generated = "```marp\n---\nmarp: true\ntheme: gruvbox\nmath: mathjax\npaginate: true\n---\n\n<!-- _class: lead -->\n\n# Fourier Series\n\n---\n\n## Intuition\n\nContent.\n```";
+    let markdown = normalize_marp_markdown(generated, &config, "Fourier Series").unwrap();
+
+    assert_eq!(markdown.matches("marp: true").count(), 1);
+    assert_eq!(markdown.matches("# Fourier Series").count(), 1);
+    assert!(!markdown.contains("\n\nmarp\n\n---"));
+    assert!(!markdown.contains("\n\nmarp: true\ntheme: gruvbox"));
 }
 
 #[test]
@@ -293,7 +316,7 @@ fn prompt_mentions_allowed_filesystem_root() {
         },
     };
 
-    let request = build_generation_request(&config, &package, "Explain", "Explain", "");
+    let request = build_generation_request(&config, &package, "Explain", None, "");
 
     assert!(
         request
@@ -302,6 +325,399 @@ fn prompt_mentions_allowed_filesystem_root() {
     );
     assert!(request.user_prompt.contains("prefer absolute paths"));
     assert!(request.user_prompt.contains("Explore selectively"));
+    assert!(
+        request
+            .user_prompt
+            .contains("Do not copy or lightly rephrase the instruction")
+    );
+    assert!(request.user_prompt.contains("first `# H1`"));
+}
+
+#[test]
+fn generation_prompt_preserves_an_explicit_title() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+
+    let request = build_generation_request(
+        &config,
+        &package,
+        "Explain this subject",
+        Some("A Deliberate Title"),
+        "",
+    );
+
+    assert!(
+        request
+            .user_prompt
+            .contains("Use exactly \"A Deliberate Title\" as the deck title")
+    );
+    assert!(
+        request
+            .user_prompt
+            .contains("Instruction: Explain this subject")
+    );
+}
+
+#[test]
+fn extracts_the_drafters_title_from_the_first_h1() {
+    let generated = "---\nmarp: true\ntheme: demo\n---\n\n<!-- _class: lead -->\n\n# **Fourier Series: From Waves to Spectra**\n\n---\n\n## Intuition";
+
+    assert_eq!(
+        extract_generated_title(generated).as_deref(),
+        Some("Fourier Series: From Waves to Spectra")
+    );
+}
+
+#[test]
+fn title_extraction_ignores_h1_examples_inside_code_fences() {
+    let generated = "---\nmarp: true\n---\n\n```markdown\n# Not the deck title\n```\n\n# The Actual Deck Title\n\n---\n\n## One";
+
+    assert_eq!(
+        extract_generated_title(generated).as_deref(),
+        Some("The Actual Deck Title")
+    );
+}
+
+#[test]
+fn title_extraction_rejects_a_deck_without_an_h1() {
+    let generated = "---\nmarp: true\n---\n\n## First topic\n\n---\n\n## Second topic";
+
+    assert_eq!(extract_generated_title(generated), None);
+}
+
+#[test]
+fn recognizes_when_the_drafter_reuses_the_instruction_as_title() {
+    assert!(titles_are_equivalent(
+        "Explain Fourier Series!",
+        "explain fourier series"
+    ));
+    assert!(!titles_are_equivalent(
+        "Fourier Series: From Waves to Spectra",
+        "Explain Fourier series visually"
+    ));
+}
+
+#[test]
+fn normalization_keeps_the_artifact_title_on_the_first_slide() {
+    let config = effective_config();
+    let markdown = normalize_marp_markdown(
+        "---\nmarp: true\n---\n\n# Reviewer Changed It\n\n---\n\n## One",
+        &config,
+        "Fourier Series: A Visual Guide",
+    )
+    .unwrap();
+
+    assert!(markdown.contains("\n\n# Fourier Series: A Visual Guide\n\n---"));
+    assert!(!markdown.contains("Reviewer Changed It"));
+}
+
+#[test]
+fn artifact_paths_use_the_generated_title_slug() {
+    let (markdown, pdf) =
+        slide_artifact_paths(Path::new("/tmp/slides"), "Fourier Series: A Visual Guide").unwrap();
+
+    assert_eq!(
+        markdown,
+        PathBuf::from("/tmp/slides/fourier-series-a-visual-guide.md")
+    );
+    assert_eq!(
+        pdf,
+        PathBuf::from("/tmp/slides/fourier-series-a-visual-guide.pdf")
+    );
+}
+
+#[test]
+fn review_prompt_requests_targeted_json_patch_with_grounding() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+    let deck = SlideDeckDocument::from_marp(
+        "---\nmarp: true\ntheme: sfumato-default\n---\n\n# Fourier series\n\n---\n\n## Definition",
+        "Fourier series",
+    )
+    .unwrap();
+    let snapshot = deck.snapshot().unwrap();
+    let request = build_review_request(
+        &config,
+        &package,
+        "Explain Fourier series",
+        "SOURCE: notes.md",
+        &snapshot,
+        None,
+    )
+    .unwrap();
+
+    assert!(request.user_prompt.contains("Explain Fourier series"));
+    assert!(request.user_prompt.contains("SOURCE: notes.md"));
+    assert!(request.user_prompt.contains("Definition"));
+    assert!(request.user_prompt.contains("RFC 6902 JSON Patch"));
+    assert!(request.user_prompt.contains("/slides/<id>/revision"));
+    assert!(!request.user_prompt.contains("complete revised Marp"));
+}
+
+#[test]
+fn review_retry_prompt_returns_the_validation_error_to_the_model() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+    let deck = SlideDeckDocument::from_marp(
+        "---\nmarp: true\n---\n\n# Demo\n\n---\n\n## Diagram",
+        "Demo",
+    )
+    .unwrap();
+    let snapshot = deck.snapshot().unwrap();
+    let retry = ReviewRetryContext {
+        invalid_response: "[{\"op\":\"replace\"}]".to_string(),
+        error: "Slide `slide-2` has an unclosed `mermaid` fenced code block".to_string(),
+    };
+
+    let request = build_review_request(
+        &config,
+        &package,
+        "Explain diagrams",
+        "",
+        &snapshot,
+        Some(&retry),
+    )
+    .unwrap();
+
+    assert!(request.user_prompt.contains("Corrective retry"));
+    assert!(request.user_prompt.contains("unclosed `mermaid`"));
+    assert!(
+        request
+            .user_prompt
+            .contains("previous response was rejected")
+    );
+    assert!(
+        request
+            .user_prompt
+            .contains("against the original snapshot")
+    );
+}
+
+#[test]
+fn layout_repair_request_has_no_filesystem_tools() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+    let request = build_layout_repair_request(
+        LayoutRepairRequestContext {
+            config: &config,
+            theme: &package,
+            instruction: "Explain",
+            title: "Explain",
+            slide_markdown: "## Dense\n\n- Too much content",
+            issue: &SlideLayoutIssue {
+                slide: 2,
+                title: "Dense".to_string(),
+                vertical_overflow_px: 80,
+                horizontal_overflow_px: 0,
+            },
+        },
+        None,
+        None,
+    );
+
+    assert!(request.tools.is_empty());
+    assert!(request.user_prompt.contains("vertical_overflow_px"));
+    assert!(request.user_prompt.contains("## Dense"));
+    assert!(!request.user_prompt.contains("complete revised Marp"));
+    assert!(
+        request
+            .user_prompt
+            .contains("split this slide into two coherent slides")
+    );
+}
+
+#[test]
+fn layout_repair_retry_prompt_includes_mermaid_error_and_original_slide() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+    let retry = LayoutRepairRetryContext {
+        invalid_response: "## Broken\n\n```mermaid\nA---B".to_string(),
+        error: "Mermaid CLI parse error near A---B".to_string(),
+    };
+    let request = build_layout_repair_request(
+        LayoutRepairRequestContext {
+            config: &config,
+            theme: &package,
+            instruction: "Explain",
+            title: "A useful title",
+            slide_markdown: "## Original slide\n\nValid content.",
+            issue: &SlideLayoutIssue {
+                slide: 12,
+                title: "Original slide".to_string(),
+                vertical_overflow_px: 40,
+                horizontal_overflow_px: 0,
+            },
+        },
+        Some(&retry),
+        None,
+    );
+
+    assert!(request.user_prompt.contains("Corrective retry"));
+    assert!(request.user_prompt.contains("Mermaid CLI parse error"));
+    assert!(request.user_prompt.contains("A---B"));
+    assert!(request.user_prompt.contains("## Original slide"));
+    assert!(request.user_prompt.contains("original slide fragment"));
+}
+
+#[test]
+fn model_output_retry_excludes_missing_dependencies() {
+    assert!(should_retry_model_output(&anyhow::anyhow!(
+        "Mermaid CLI exited with a parse error"
+    )));
+    assert!(!should_retry_model_output(&anyhow::anyhow!(
+        "Mermaid CLI is not installed"
+    )));
+}
+
+#[test]
+fn locates_slide_ranges_without_counting_separators_inside_code_fences() {
+    let markdown = "---\nmarp: true\ntheme: demo\n---\n\n# One\n\n---\n\n## Two\n\n```yaml\n---\nvalue: true\n---\n```\n\n---\n\n## Three";
+    let ranges = slide_ranges(markdown).unwrap();
+
+    assert_eq!(ranges.len(), 3);
+    assert_eq!(markdown[ranges[0].start..ranges[0].end].trim(), "# One");
+    assert!(markdown[ranges[1].start..ranges[1].end].contains("```yaml"));
+    assert_eq!(markdown[ranges[2].start..ranges[2].end].trim(), "## Three");
+}
+
+#[test]
+fn focused_replacement_changes_only_the_target_slide() {
+    let markdown = "---\nmarp: true\ntheme: demo\n---\n\n# One\n\n---\n\n## Dense\n\nOld content\n\n---\n\n## Three";
+    let ranges = slide_ranges(markdown).unwrap();
+    let repaired = apply_slide_replacements(
+        markdown,
+        vec![SlideReplacement {
+            range: ranges[1].clone(),
+            markdown: "## Dense, part one\n\nShort.\n\n---\n\n## Dense, part two\n\nShort."
+                .to_string(),
+        }],
+    );
+
+    assert!(repaired.contains("# One"));
+    assert!(repaired.contains("## Three"));
+    assert!(!repaired.contains("Old content"));
+    assert!(repaired.contains("## Dense, part one"));
+    assert!(repaired.contains("## Dense, part two"));
+    assert_eq!(slide_ranges(&repaired).unwrap().len(), 4);
+}
+
+#[test]
+fn applies_multiple_focused_replacements_without_offset_drift() {
+    let markdown = "---\nmarp: true\ntheme: demo\n---\n\n# One\n\n---\n\n## Two\n\nOld two\n\n---\n\n## Three\n\nOld three";
+    let ranges = slide_ranges(markdown).unwrap();
+    let repaired = apply_slide_replacements(
+        markdown,
+        vec![
+            SlideReplacement {
+                range: ranges[1].clone(),
+                markdown: "## Two\n\nNew two".to_string(),
+            },
+            SlideReplacement {
+                range: ranges[2].clone(),
+                markdown: "## Three\n\nNew three".to_string(),
+            },
+        ],
+    );
+
+    assert!(repaired.contains("New two"));
+    assert!(repaired.contains("New three"));
+    assert!(!repaired.contains("Old two"));
+    assert!(!repaired.contains("Old three"));
+}
+
+#[test]
+fn normalizes_reviewer_fragment_without_document_frontmatter() {
+    let generated = "```markdown\n---\nmarp: true\ntheme: wrong\n---\n\n---\n\n## Fixed\n\nShort content.\n\n---\n```";
+    let fragment = normalize_slide_replacement(generated).unwrap();
+
+    assert_eq!(fragment, "## Fixed\n\nShort content.");
+    assert!(!fragment.contains("marp: true"));
+}
+
+#[test]
+fn layout_score_prioritizes_issue_count_then_overflow() {
+    let one_issue = vec![SlideLayoutIssue {
+        slide: 1,
+        title: "One".to_string(),
+        vertical_overflow_px: 100,
+        horizontal_overflow_px: 0,
+    }];
+    let two_issues = vec![
+        SlideLayoutIssue {
+            slide: 1,
+            title: "One".to_string(),
+            vertical_overflow_px: 1,
+            horizontal_overflow_px: 0,
+        },
+        SlideLayoutIssue {
+            slide: 2,
+            title: "Two".to_string(),
+            vertical_overflow_px: 1,
+            horizontal_overflow_px: 0,
+        },
+    ];
+
+    assert!(layout_score(&one_issue) < layout_score(&two_issues));
 }
 
 #[test]

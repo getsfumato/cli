@@ -132,3 +132,49 @@ fn formats_tool_execution_errors_as_tool_results() {
     assert!(result.contains("missing path"));
     assert!(result.contains("sfumato_read_file"));
 }
+
+#[test]
+fn preserves_reasoning_details_for_follow_up_tool_rounds() {
+    let response: ChatCompletionsResponse = serde_json::from_value(serde_json::json!({
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "reasoning": "I should inspect the notes.",
+                "reasoning_details": [{
+                    "type": "reasoning.text",
+                    "text": "Inspect the notes",
+                    "format": "unknown"
+                }],
+                "tool_calls": []
+            }
+        }]
+    }))
+    .unwrap();
+    let message = &response.choices[0].message;
+
+    assert_eq!(
+        message.reasoning.as_deref(),
+        Some("I should inspect the notes.")
+    );
+    assert!(message.reasoning_details.is_some());
+    let serialized = serde_json::to_value(message).unwrap();
+    assert!(serialized.get("reasoning_details").is_some());
+}
+
+#[test]
+fn explains_empty_content_caused_by_reasoning_token_limit() {
+    let usage = CompletionUsage {
+        completion_tokens: Some(4000),
+        completion_tokens_details: Some(CompletionTokenDetails {
+            reasoning_tokens: Some(4000),
+        }),
+    };
+
+    let error = empty_content_error(&profile("openrouter"), Some("length"), Some(&usage));
+
+    assert!(error.contains("finish reason: length"));
+    assert!(error.contains("reasoning tokens: 4000"));
+    assert!(error.contains("Increase the model profile's max_tokens"));
+}

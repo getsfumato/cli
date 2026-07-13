@@ -126,7 +126,7 @@ impl RunnableCommand for ModelNameArgs {
 impl RunnableCommand for ModelUseArgs {
     async fn run(self) -> Result<()> {
         let changed = ModelService::load()?.use_default(
-            &self.capability,
+            &self.selector,
             &self.profile,
             self.project.as_deref(),
         )?;
@@ -134,12 +134,12 @@ impl RunnableCommand for ModelUseArgs {
             println!(
                 "Project '{project}' now uses model profile '{}' for '{}'",
                 changed.profile,
-                changed.capability.as_str()
+                changed.selection.as_str()
             );
         } else {
             println!(
                 "User default for '{}' is now model profile '{}'",
-                changed.capability.as_str(),
+                changed.selection.as_str(),
                 changed.profile
             );
         }
@@ -380,6 +380,7 @@ impl SlidesArgs {
             project: self.project.clone(),
             theme: self.theme,
             model_overrides: model_overrides.clone(),
+            reviewer_model: self.review_model,
             output_dir: self.out,
             pdf: self.pdf,
         })?;
@@ -396,6 +397,7 @@ impl SlidesArgs {
             GenerateSlidesOptions {
                 title: self.title,
                 dry_run: self.dry_run,
+                review: !self.no_review,
                 event_sink: (!self.json && !self.dry_run)
                     .then_some(std::sync::Arc::new(render_generation_event)
                         as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>),
@@ -419,6 +421,19 @@ impl SlidesArgs {
             if let Some(prompt) = result.prompt_preview {
                 println!("{prompt}");
             }
+            if result.output.review.enabled {
+                let reviewer = result
+                    .output
+                    .models
+                    .get("reviewer")
+                    .map(String::as_str)
+                    .unwrap_or("draft model");
+                println!(
+                    "Review: enabled with model profile '{reviewer}' (semantic review and conditional layout repair)."
+                );
+            } else {
+                println!("Review: disabled.");
+            }
             println!("Dry run complete; no files were written.");
         } else {
             println!("Wrote {}", result.markdown_path.display());
@@ -432,6 +447,17 @@ impl SlidesArgs {
 
 fn render_generation_event(event: TextGenerationEvent) {
     match event {
+        TextGenerationEvent::StageStarted { stage, profile } => {
+            let profile = profile
+                .map(|profile| format!(" with {}", bold(&profile)))
+                .unwrap_or_default();
+            eprintln!(
+                "{} {}{}",
+                styled_label("stage", ANSI_YELLOW),
+                stage.as_str(),
+                profile
+            );
+        }
         TextGenerationEvent::RequestStarted { round } => {
             eprintln!(
                 "{} {}",
@@ -468,6 +494,46 @@ fn render_generation_event(event: TextGenerationEvent) {
                 "{} {}",
                 styled_label("model", ANSI_CYAN),
                 green("response complete")
+            );
+        }
+        TextGenerationEvent::ReviewRetryStarted { attempt, error } => {
+            eprintln!(
+                "{} attempt {attempt}: {}",
+                styled_label("review retry", ANSI_YELLOW),
+                yellow(&compact_preview(&error, 220))
+            );
+        }
+        TextGenerationEvent::LayoutCheckCompleted { issues } => {
+            let result = if issues == 0 {
+                green("no overflow detected")
+            } else {
+                yellow(&format!("{issues} slide(s) need repair"))
+            };
+            eprintln!("{} {}", styled_label("layout", ANSI_CYAN), result);
+        }
+        TextGenerationEvent::LayoutSlideRepairStarted {
+            slide,
+            position,
+            total,
+            profile,
+        } => {
+            eprintln!(
+                "{} slide {} ({position}/{total}) with {}",
+                styled_label("repair", ANSI_MAGENTA),
+                bold(&slide.to_string()),
+                bold(&profile)
+            );
+        }
+        TextGenerationEvent::LayoutSlideRepairRetryStarted {
+            slide,
+            attempt,
+            error,
+        } => {
+            eprintln!(
+                "{} slide {} attempt {attempt}: {}",
+                styled_label("repair retry", ANSI_YELLOW),
+                bold(&slide.to_string()),
+                yellow(&compact_preview(&error, 220))
             );
         }
     }

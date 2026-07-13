@@ -130,7 +130,8 @@ pub struct ModelNameArgs {
 
 #[derive(Debug, Args)]
 pub struct ModelUseArgs {
-    pub capability: String,
+    #[arg(help = "Capability or model role, for example text or reviewer")]
+    pub selector: String,
     pub profile: String,
 
     #[arg(long, help = "Assign the default to this project instead of the user")]
@@ -272,6 +273,12 @@ pub struct SlidesArgs {
     #[arg(long = "model", value_name = "CAPABILITY=PROFILE")]
     pub model_overrides: Vec<String>,
 
+    #[arg(long, value_name = "PROFILE")]
+    pub review_model: Option<String>,
+
+    #[arg(long)]
+    pub no_review: bool,
+
     #[arg(long)]
     pub json: bool,
 }
@@ -288,3 +295,9 @@ pub enum ConnectorPreset {
     Ollama,
     Openrouter,
 }
+
+#[cfg(test)]
+// Test bodies live under tests/unit so implementation files stay focused, while
+// this module hook still lets those tests inspect private CLI types.
+#[path = "../tests/unit/cli.rs"]
+mod tests;

@@ -30,10 +30,62 @@ pub struct GenerationOutput {
     pub models: BTreeMap<String, String>,
     pub tools: Vec<GenerationToolSummary>,
     pub artifacts: Vec<PathBuf>,
+    pub review: SlideReviewSummary,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct GenerationToolSummary {
     pub name: String,
     pub description: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SlideReviewSummary {
+    pub enabled: bool,
+    pub semantic_review: ReviewStatus,
+    pub layout_check: ReviewStatus,
+    pub repair: ReviewStatus,
+    pub remaining_issues: Vec<SlideLayoutIssue>,
+}
+
+impl SlideReviewSummary {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            semantic_review: ReviewStatus::Skipped,
+            layout_check: ReviewStatus::Skipped,
+            repair: ReviewStatus::Skipped,
+            remaining_issues: Vec::new(),
+        }
+    }
+
+    pub fn enabled() -> Self {
+        Self {
+            enabled: true,
+            semantic_review: ReviewStatus::Pending,
+            layout_check: ReviewStatus::Pending,
+            repair: ReviewStatus::NotNeeded,
+            remaining_issues: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Pending,
+    Completed,
+    Skipped,
+    Failed,
+    NotNeeded,
+    Accepted,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq)]
+pub struct SlideLayoutIssue {
+    pub slide: usize,
+    pub title: String,
+    pub vertical_overflow_px: u32,
+    pub horizontal_overflow_px: u32,
 }

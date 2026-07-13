@@ -11,6 +11,7 @@ fn effective_config() -> EffectiveConfig {
         connectors: global.connectors,
         models: global.models,
         model_defaults: global.defaults.0,
+        model_roles: global.model_roles,
         marp: global.marp,
     }
 }
@@ -143,6 +144,64 @@ fn command_model_default_wins_over_project_and_user() {
         BTreeMap::from([(Capability::Text, "command".to_string())]),
     );
     assert_eq!(merged.get(&Capability::Text).unwrap(), "command");
+}
+
+#[test]
+fn reviewer_role_resolves_explicit_profile_or_draft_fallback() {
+    let mut config = effective_config();
+    let (fallback_name, _) = config.resolve_model_role(ModelRole::Reviewer).unwrap();
+    assert_eq!(fallback_name, "local-text");
+
+    config
+        .model_roles
+        .insert(ModelRole::Reviewer, "cloud-text".to_string());
+    let (reviewer_name, reviewer) = config.resolve_model_role(ModelRole::Reviewer).unwrap();
+    assert_eq!(reviewer_name, "cloud-text");
+    assert_eq!(reviewer.connector, "openrouter");
+}
+
+#[test]
+fn reviewer_role_rejects_missing_connector_or_text_capability() {
+    let mut config = effective_config();
+    config.models.insert(
+        "invalid-reviewer".to_string(),
+        ModelProfile {
+            connector: "missing".to_string(),
+            model: "model".to_string(),
+            capabilities: vec![Capability::Text],
+            options: Default::default(),
+        },
+    );
+    config
+        .model_roles
+        .insert(ModelRole::Reviewer, "invalid-reviewer".to_string());
+    assert!(config.resolve_model_role(ModelRole::Reviewer).is_err());
+
+    config.models.get_mut("invalid-reviewer").unwrap().connector = "ollama".to_string();
+    config
+        .models
+        .get_mut("invalid-reviewer")
+        .unwrap()
+        .capabilities = vec![Capability::Code];
+    assert!(config.resolve_model_role(ModelRole::Reviewer).is_err());
+}
+
+#[test]
+fn reviewer_override_wins_over_project_and_user_roles() {
+    let merged = merge_model_roles(
+        BTreeMap::from([(ModelRole::Reviewer, "user".to_string())]),
+        BTreeMap::from([(ModelRole::Reviewer, "project".to_string())]),
+        Some("command".to_string()),
+    );
+    assert_eq!(merged.get(&ModelRole::Reviewer).unwrap(), "command");
+}
+
+#[test]
+fn existing_config_without_model_roles_still_loads() {
+    let rendered = toml::to_string_pretty(&GlobalConfig::default_config()).unwrap();
+    let rendered = rendered.replace("[model_roles]\n", "");
+    let parsed: GlobalConfig = toml::from_str(&rendered).unwrap();
+    assert!(parsed.model_roles.is_empty());
 }
 
 #[test]

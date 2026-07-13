@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, str::FromStr};
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    config::{Capability, GlobalConfig, ModelProfile},
+    config::{Capability, GlobalConfig, ModelProfile, ModelRole},
     repositories::{
         FilesystemGlobalConfigRepository, FilesystemProjectRepository, GlobalConfigRepository,
         ProjectRepository,
@@ -26,9 +26,46 @@ pub struct ModelSummary {
 
 #[derive(Clone, Debug)]
 pub struct ModelDefaultChanged {
-    pub capability: Capability,
+    pub selection: ModelSelection,
     pub profile: String,
     pub project: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelSelection {
+    Capability(Capability),
+    Role(ModelRole),
+}
+
+impl ModelSelection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Capability(capability) => capability.as_str(),
+            Self::Role(role) => role.as_str(),
+        }
+    }
+
+    fn required_capability(self) -> Capability {
+        match self {
+            Self::Capability(capability) => capability,
+            Self::Role(role) => role.required_capability(),
+        }
+    }
+}
+
+impl FromStr for ModelSelection {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Capability::from_str(value)
+            .map(Self::Capability)
+            .or_else(|_| ModelRole::from_str(value).map(Self::Role))
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Unknown model capability or role '{value}'. Use text, code, image, video, speech, embedding, or reviewer."
+                )
+            })
+    }
 }
 
 impl ModelService {
@@ -142,6 +179,17 @@ impl ModelService {
                 capability.as_str()
             );
         }
+        if let Some(role) = self
+            .config
+            .model_roles
+            .iter()
+            .find_map(|(role, profile)| (profile == name).then_some(*role))
+        {
+            bail!(
+                "Model profile '{name}' is the user default for '{}'; select another default first",
+                role.as_str()
+            );
+        }
         for (project_name, _, _) in self.project_repository.list()? {
             let project = self.project_repository.load(Some(&project_name))?;
             if let Some(capability) = project
@@ -152,6 +200,16 @@ impl ModelService {
                 bail!(
                     "Model profile '{name}' is the '{}' default for project '{project_name}'; select another default first",
                     capability.as_str()
+                );
+            }
+            if let Some(role) = project
+                .model_roles
+                .iter()
+                .find_map(|(role, profile)| (profile == name).then_some(*role))
+            {
+                bail!(
+                    "Model profile '{name}' is the '{}' default for project '{project_name}'; select another default first",
+                    role.as_str()
                 );
             }
         }
@@ -216,43 +274,62 @@ impl ModelService {
 
     pub fn use_default(
         &mut self,
-        capability: &str,
+        selector: &str,
         profile_name: &str,
         project: Option<&str>,
     ) -> Result<ModelDefaultChanged> {
-        let capability = Capability::from_str(capability)?;
+        let selection = ModelSelection::from_str(selector)?;
+        let required = selection.required_capability();
         let profile = self
             .config
             .models
             .get(profile_name)
             .with_context(|| format!("Model profile '{profile_name}' was not found"))?;
-        if !profile.capabilities.contains(&capability) {
+        if !profile.capabilities.contains(&required) {
             bail!(
                 "Model profile '{profile_name}' does not support '{}' capability",
-                capability.as_str()
+                required.as_str()
             );
         }
 
         if let Some(project_name) = project {
             let mut project_config = self.project_repository.load(Some(project_name))?;
-            project_config
-                .model_defaults
-                .insert(capability, profile_name.to_string());
+            match selection {
+                ModelSelection::Capability(capability) => {
+                    project_config
+                        .model_defaults
+                        .insert(capability, profile_name.to_string());
+                }
+                ModelSelection::Role(role) => {
+                    project_config
+                        .model_roles
+                        .insert(role, profile_name.to_string());
+                }
+            }
             self.project_repository.save(&project_config)?;
             return Ok(ModelDefaultChanged {
-                capability,
+                selection,
                 profile: profile_name.to_string(),
                 project: Some(project_config.name),
             });
         } else {
-            self.config
-                .defaults
-                .0
-                .insert(capability, profile_name.to_string());
+            match selection {
+                ModelSelection::Capability(capability) => {
+                    self.config
+                        .defaults
+                        .0
+                        .insert(capability, profile_name.to_string());
+                }
+                ModelSelection::Role(role) => {
+                    self.config
+                        .model_roles
+                        .insert(role, profile_name.to_string());
+                }
+            }
             self.save()?;
         }
         Ok(ModelDefaultChanged {
-            capability,
+            selection,
             profile: profile_name.to_string(),
             project: None,
         })
@@ -280,6 +357,17 @@ fn validate_selected_capabilities(
             );
         }
     }
+    for (role, selected_profile) in &config.model_roles {
+        if selected_profile == profile_name
+            && !profile.capabilities.contains(&role.required_capability())
+        {
+            bail!(
+                "Cannot remove '{}' capability because '{profile_name}' is the user default for '{}'",
+                role.required_capability().as_str(),
+                role.as_str()
+            );
+        }
+    }
     for (project_name, _, _) in project_repository.list()? {
         let project = project_repository.load(Some(&project_name))?;
         for (capability, selected_profile) in project.model_defaults {
@@ -287,6 +375,17 @@ fn validate_selected_capabilities(
                 bail!(
                     "Cannot remove '{}' capability because '{profile_name}' is the default for project '{project_name}'",
                     capability.as_str()
+                );
+            }
+        }
+        for (role, selected_profile) in project.model_roles {
+            if selected_profile == profile_name
+                && !profile.capabilities.contains(&role.required_capability())
+            {
+                bail!(
+                    "Cannot remove '{}' capability because '{profile_name}' is the '{}' default for project '{project_name}'",
+                    role.required_capability().as_str(),
+                    role.as_str()
                 );
             }
         }

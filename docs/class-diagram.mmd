@@ -30,6 +30,7 @@ classDiagram
         class ModelService
         class ThemeService
         class SlidesPipeline
+        class SlideReviewPipeline
         class FilesystemToolExecutor
     }
 
@@ -61,6 +62,7 @@ classDiagram
         class FilesystemProjectRepository
         class FilesystemThemeRepository
         class MarpRenderer
+        class MarpLayoutInspector
         class MermaidDiagramRenderer
         class SourceReader
         class ArtifactWriter
@@ -72,6 +74,36 @@ classDiagram
         class ProjectConfig
         class EffectiveConfig
         class ModelProfile
+        class ModelRole {
+            <<enum>>
+            Reviewer
+        }
+        class SlideReviewSummary
+        class SlideLayoutIssue
+        class ReviewableDocument {
+            <<trait>>
+            +snapshot() ReviewSnapshot
+            +apply_patch(JsonPatch) PatchReport
+            +validate() ValidationReport
+            +render() String
+        }
+        class ReviewSnapshot
+        class PatchReport
+        class SlideDeckDocument
+        class SlideDocument
+        class SlideElement {
+            <<enum>>
+            Paragraph
+            List
+            Code
+            Mermaid
+            Math
+            Table
+            Image
+            PresenterNotes
+        }
+        class SlideRange
+        class SlideReplacement
         class ThemePackage
         class GenerationRequest
         class GenerationOutput
@@ -126,10 +158,27 @@ classDiagram
 
     SlidesPipeline --> GenerationRequest
     SlidesPipeline --> GenerationOutput
+    GenerationOutput --> SlideReviewSummary
+    SlideReviewSummary --> SlideLayoutIssue
     GenerationOutput --> GenerationToolSummary
     SlidesPipeline --> EffectiveConfig
     SlidesPipeline --> ThemeService
     SlidesPipeline --> TextGenerationProvider
+    SlidesPipeline --> SlideReviewPipeline
+    SlideReviewPipeline --> ModelRole
+    SlideReviewPipeline --> TextGenerationProvider
+    SlideReviewPipeline --> ReviewSnapshot
+    SlideReviewPipeline --> ReviewableDocument
+    SlideDeckDocument ..|> ReviewableDocument
+    SlideDeckDocument *-- SlideDocument
+    SlideDocument *-- SlideElement
+    ReviewableDocument --> PatchReport
+    SlideReviewPipeline --> MarpLayoutInspector
+    SlideReviewPipeline --> SlideRange
+    SlideReviewPipeline --> SlideReplacement
+    SlideReplacement --> SlideRange
+    MarpLayoutInspector --> MarpRenderer
+    MarpLayoutInspector --> MermaidDiagramRenderer
     SlidesPipeline --> SourceReader
     SlidesPipeline --> ArtifactWriter
     SlidesPipeline --> MarpRenderer

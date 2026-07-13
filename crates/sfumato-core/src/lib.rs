@@ -8,6 +8,7 @@ pub mod providers;
 pub mod renderers;
 pub mod repositories;
 pub mod resources;
+pub mod review;
 pub mod setup;
 pub mod themes;
 pub mod tools;

@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0"
 async-trait = "0.1"
 dirs = "6.0"
+json-patch = "4.2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -14,7 +15,8 @@ slug = "0.1"
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["process"] }
 toml = "0.9"
+tempfile = "3.23"
 walkdir = "2.5"
 
 [dev-dependencies]
-tempfile = "3.23"
+tokio = { version = "1.48", features = ["macros", "rt"] }

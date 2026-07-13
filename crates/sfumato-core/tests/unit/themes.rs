@@ -67,6 +67,7 @@ fn assigns_theme_to_active_or_explicit_project() {
                 theme: DEFAULT_THEME.to_string(),
                 output_dir: PathBuf::from("Resources/Sfumato"),
                 model_defaults: Default::default(),
+                model_roles: Default::default(),
                 marp: None,
             },
         )

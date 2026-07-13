@@ -9,13 +9,20 @@ use slug::slugify;
 use walkdir::WalkDir;
 
 use crate::{
-    config::{Capability, EffectiveConfig},
-    generation::{GenerationOutput, GenerationRequest, GenerationToolSummary},
-    providers::{TextGenerationEvent, TextGenerationRequest, ToolDefinition, build_text_provider},
+    config::{Capability, EffectiveConfig, ModelRole},
+    generation::{
+        GenerationOutput, GenerationRequest, GenerationToolSummary, ReviewStatus, SlideLayoutIssue,
+        SlideReviewSummary,
+    },
+    providers::{
+        GenerationStage, TextGenerationEvent, TextGenerationProvider, TextGenerationRequest,
+        ToolDefinition, build_text_provider,
+    },
     renderers::{
         diagrams::{MermaidDiagramRenderer, MermaidThemeConfig},
         marp,
     },
+    review::{ReviewSnapshot, ReviewableDocument, decks::SlideDeckDocument, parse_json_patch},
     themes::{ThemePackage, ThemeService, ThemeTokens},
     tools::default_filesystem_tools,
 };
@@ -27,6 +34,7 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 pub struct GenerateSlidesOptions {
     pub title: Option<String>,
     pub dry_run: bool,
+    pub review: bool,
     pub event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
 }
 
@@ -51,21 +59,22 @@ pub async fn generate_slides(
     request: GenerationRequest,
     options: GenerateSlidesOptions,
 ) -> Result<GenerateSlidesResult> {
+    let GenerateSlidesOptions {
+        title: title_override,
+        dry_run,
+        review,
+        event_sink,
+    } = options;
     let output_root = config.output_root()?;
     let slides_dir = output_root.join("slides");
-    let title = options
-        .title
-        .unwrap_or_else(|| instruction_title(&request.instruction));
-    let slug = slugify(&title);
-    let markdown_path = slides_dir.join(format!("{slug}.md"));
-    let pdf_path = slides_dir.join(format!("{slug}.pdf"));
+    let title_override = title_override
+        .map(|title| validate_title(&title))
+        .transpose()?;
     let theme_css_path = slides_dir
         .join("themes")
         .join(format!("{}.css", config.theme));
     let diagrams_dir = slides_dir.join("diagrams");
 
-    ensure_inside(&output_root, &markdown_path)?;
-    ensure_inside(&output_root, &pdf_path)?;
     ensure_inside(&output_root, &theme_css_path)?;
     ensure_inside(&output_root, &diagrams_dir)?;
 
@@ -78,18 +87,32 @@ pub async fn generate_slides(
         &config,
         &theme,
         &request.instruction,
-        &title,
+        title_override.as_deref(),
         &source_bundle,
     );
-    provider_request.tools = tool_set.definitions;
-    provider_request.tool_executor = Some(tool_set.executor);
-    provider_request.event_sink = options.event_sink;
-    let (profile_name, profile) = config.resolve_model(Capability::Text)?;
-    provider_request.max_tool_rounds = model_tool_rounds(profile);
-    let selected_models =
-        std::collections::BTreeMap::from([("text".to_string(), profile_name.to_string())]);
+    provider_request.tools = tool_set.definitions.clone();
+    provider_request.tool_executor = Some(tool_set.executor.clone());
+    provider_request.event_sink = event_sink.clone();
+    let (draft_profile_name, draft_profile) = config.resolve_model(Capability::Text)?;
+    provider_request.max_tool_rounds = model_tool_rounds(draft_profile);
+    let reviewer_selection = review
+        .then(|| config.resolve_model_role(ModelRole::Reviewer))
+        .transpose()?;
+    let mut selected_models =
+        BTreeMap::from([("text".to_string(), draft_profile_name.to_string())]);
+    if let Some((reviewer_name, _)) = reviewer_selection {
+        selected_models.insert("reviewer".to_string(), reviewer_name.to_string());
+    }
+    let mut review_summary = if review {
+        SlideReviewSummary::enabled()
+    } else {
+        SlideReviewSummary::disabled()
+    };
 
-    if options.dry_run {
+    if dry_run {
+        let dry_run_title = title_override.as_deref().unwrap_or("model-generated-title");
+        let (markdown_path, _) = slide_artifact_paths(&slides_dir, dry_run_title)?;
+        ensure_inside(&output_root, &markdown_path)?;
         return Ok(GenerateSlidesResult {
             markdown_path,
             pdf_path: None,
@@ -98,6 +121,7 @@ pub async fn generate_slides(
                 models: selected_models,
                 tools: tool_summaries.clone(),
                 artifacts: Vec::new(),
+                review: review_summary,
             },
             prompt_preview: Some(provider_request.user_prompt),
             tool_summaries,
@@ -105,9 +129,312 @@ pub async fn generate_slides(
         });
     }
 
-    let provider = build_text_provider(&config, profile)?;
+    emit_stage(
+        &event_sink,
+        GenerationStage::Draft,
+        Some(draft_profile_name),
+    );
+    let provider = build_text_provider(&config, draft_profile)?;
     let response = provider.generate_text(provider_request).await?;
-    let markdown = normalize_marp_markdown(&response.text, &config, &title)?;
+    let title = match title_override {
+        Some(title) => title,
+        None => {
+            let title = extract_generated_title(&response.text).context(
+                "The drafter did not provide a title. Return a concise title as the first `# H1` on the title slide",
+            )?;
+            if titles_are_equivalent(&title, &request.instruction) {
+                bail!(
+                    "The drafter reused the instruction as the title. Generate a concise subject title in the first `# H1` instead"
+                );
+            }
+            title
+        }
+    };
+    let (markdown_path, pdf_path) = slide_artifact_paths(&slides_dir, &title)?;
+    let slug = slugify(&title);
+    ensure_inside(&output_root, &markdown_path)?;
+    ensure_inside(&output_root, &pdf_path)?;
+    let mut markdown = normalize_marp_markdown(&response.text, &config, &title)?;
+    let mut warnings = Vec::new();
+
+    let mut reviewer_provider: Option<Box<dyn TextGenerationProvider>> = None;
+    if let Some((reviewer_name, reviewer_profile)) = reviewer_selection {
+        match build_text_provider(&config, reviewer_profile) {
+            Ok(reviewer) => {
+                emit_stage(
+                    &event_sink,
+                    GenerationStage::SemanticReview,
+                    Some(reviewer_name),
+                );
+                let review_result = async {
+                    let document = SlideDeckDocument::from_marp(&markdown, &title)?;
+                    let snapshot = document.snapshot()?;
+                    let mut retry = None;
+                    for attempt in 1..=2 {
+                        let mut review_request = build_review_request(
+                            &config,
+                            &theme,
+                            &request.instruction,
+                            &source_bundle,
+                            &snapshot,
+                            retry.as_ref(),
+                        )?;
+                        review_request.tools = tool_set.definitions.clone();
+                        review_request.tool_executor = Some(tool_set.executor.clone());
+                        review_request.event_sink = event_sink.clone();
+                        review_request.max_tool_rounds = model_tool_rounds(reviewer_profile);
+                        let response = reviewer.generate_text(review_request).await?;
+                        let candidate: Result<String> = (|| {
+                            let patch = parse_json_patch(&response.text)?;
+                            let mut candidate = document.clone();
+                            candidate.apply_patch(&patch)?;
+                            let reviewed = candidate.render()?;
+                            let reviewed = normalize_marp_markdown(&reviewed, &config, &title)?;
+                            extract_mermaid_blocks(&reviewed)?;
+                            Ok(reviewed)
+                        })();
+                        let candidate = match candidate {
+                            Ok(reviewed) => validate_mermaid_candidate(&reviewed, &theme, &slug)
+                                .await
+                                .map(|()| reviewed),
+                            Err(error) => Err(error),
+                        };
+                        match candidate {
+                            Ok(reviewed) => return Ok(reviewed),
+                            Err(error) if attempt == 1 && should_retry_model_output(&error) => {
+                                let error = format!("{error:#}");
+                                emit_review_retry(&event_sink, attempt + 1, &error);
+                                retry = Some(ReviewRetryContext {
+                                    invalid_response: response.text,
+                                    error,
+                                });
+                            }
+                            Err(error) if attempt == 1 => {
+                                return Err(error)
+                                    .context("Reviewer output could not be validated");
+                            }
+                            Err(error) => {
+                                return Err(error).context(
+                                    "Reviewer returned an invalid patch after one corrective retry",
+                                );
+                            }
+                        }
+                    }
+                    unreachable!("review loop either returns a candidate or an error")
+                }
+                .await;
+                match review_result {
+                    Ok(reviewed) => {
+                        markdown = reviewed;
+                        review_summary.semantic_review = ReviewStatus::Completed;
+                    }
+                    Err(error) => {
+                        review_summary.semantic_review = ReviewStatus::Failed;
+                        warnings.push(format!(
+                            "Slide review failed; using the normalized draft: {error:#}"
+                        ));
+                    }
+                }
+                reviewer_provider = Some(reviewer);
+            }
+            Err(error) => {
+                review_summary.semantic_review = ReviewStatus::Failed;
+                warnings.push(format!(
+                    "Slide reviewer could not start; using the normalized draft: {error:#}"
+                ));
+            }
+        }
+
+        emit_stage(&event_sink, GenerationStage::LayoutCheck, None);
+        match inspect_candidate_layout(
+            &markdown,
+            &theme,
+            &slug,
+            config.marp.browser_path.as_deref(),
+        )
+        .await
+        {
+            Ok(issues) => {
+                review_summary.layout_check = ReviewStatus::Completed;
+                emit_layout_result(&event_sink, issues.len());
+                if issues.is_empty() {
+                    review_summary.repair = ReviewStatus::NotNeeded;
+                } else if let Some(reviewer) = reviewer_provider.as_ref() {
+                    emit_stage(
+                        &event_sink,
+                        GenerationStage::LayoutRepair,
+                        Some(reviewer_name),
+                    );
+                    let ranges = match slide_ranges(&markdown) {
+                        Ok(ranges) => ranges,
+                        Err(error) => {
+                            warnings.push(format!(
+                                "Could not map slides for focused layout repair: {error:#}"
+                            ));
+                            Vec::new()
+                        }
+                    };
+                    let mut replacements = Vec::new();
+                    for (position, issue) in
+                        issues.iter().enumerate().filter(|_| !ranges.is_empty())
+                    {
+                        let Some(range) = ranges
+                            .iter()
+                            .find(|range| range.number == issue.slide)
+                            .cloned()
+                        else {
+                            warnings.push(format!(
+                                "Could not locate slide {} for focused layout repair.",
+                                issue.slide
+                            ));
+                            continue;
+                        };
+                        emit_slide_repair(
+                            &event_sink,
+                            issue.slide,
+                            position + 1,
+                            issues.len(),
+                            reviewer_name,
+                        );
+                        let original_slide = markdown[range.start..range.end].trim().to_string();
+                        let mut retry = None;
+                        for attempt in 1..=2 {
+                            let repair_request = build_layout_repair_request(
+                                LayoutRepairRequestContext {
+                                    config: &config,
+                                    theme: &theme,
+                                    instruction: &request.instruction,
+                                    title: &title,
+                                    slide_markdown: &original_slide,
+                                    issue,
+                                },
+                                retry.as_ref(),
+                                event_sink.clone(),
+                            );
+                            let response = match reviewer.generate_text(repair_request).await {
+                                Ok(response) => response,
+                                Err(error) => {
+                                    warnings.push(format!(
+                                        "Focused layout repair failed for slide {}: {error:#}",
+                                        issue.slide
+                                    ));
+                                    break;
+                                }
+                            };
+                            let candidate = match normalize_slide_replacement(&response.text) {
+                                Ok(replacement) => {
+                                    let candidate = apply_slide_replacements(
+                                        &markdown,
+                                        vec![SlideReplacement {
+                                            range: range.clone(),
+                                            markdown: replacement.clone(),
+                                        }],
+                                    );
+                                    validate_mermaid_candidate(&candidate, &theme, &slug)
+                                        .await
+                                        .map(|()| replacement)
+                                }
+                                Err(error) => Err(error),
+                            };
+                            match candidate {
+                                Ok(replacement) => {
+                                    replacements.push(SlideReplacement {
+                                        range: range.clone(),
+                                        markdown: replacement,
+                                    });
+                                    break;
+                                }
+                                Err(error) if attempt == 1 && should_retry_model_output(&error) => {
+                                    let error = format!("{error:#}");
+                                    emit_layout_repair_retry(
+                                        &event_sink,
+                                        issue.slide,
+                                        attempt + 1,
+                                        &error,
+                                    );
+                                    retry = Some(LayoutRepairRetryContext {
+                                        invalid_response: response.text,
+                                        error,
+                                    });
+                                }
+                                Err(error) if attempt == 1 => {
+                                    warnings.push(format!(
+                                        "Focused layout repair could not be validated for slide {}: {error:#}",
+                                        issue.slide
+                                    ));
+                                    break;
+                                }
+                                Err(error) => {
+                                    warnings.push(format!(
+                                        "Focused layout repair failed for slide {} after one corrective retry: {error:#}",
+                                        issue.slide
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if replacements.is_empty() {
+                        review_summary.repair = ReviewStatus::Failed;
+                        review_summary.remaining_issues = issues;
+                    } else {
+                        let repaired = apply_slide_replacements(&markdown, replacements);
+                        match inspect_candidate_layout(
+                            &repaired,
+                            &theme,
+                            &slug,
+                            config.marp.browser_path.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(repaired_issues)
+                                if layout_score(&repaired_issues) < layout_score(&issues) =>
+                            {
+                                markdown = repaired;
+                                review_summary.repair = ReviewStatus::Accepted;
+                                review_summary.remaining_issues = repaired_issues;
+                            }
+                            Ok(_) => {
+                                review_summary.repair = ReviewStatus::Rejected;
+                                review_summary.remaining_issues = issues;
+                                warnings.push("Focused layout repairs did not improve the deck; keeping the reviewed version.".to_string());
+                            }
+                            Err(error) => {
+                                review_summary.repair = ReviewStatus::Failed;
+                                review_summary.remaining_issues = issues;
+                                warnings.push(format!(
+                                    "Could not validate the focused layout repairs: {error:#}"
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    review_summary.repair = ReviewStatus::Failed;
+                    review_summary.remaining_issues = issues;
+                    warnings.push(
+                        "Layout issues were detected, but the reviewer provider was unavailable."
+                            .to_string(),
+                    );
+                }
+            }
+            Err(error) => {
+                review_summary.layout_check = ReviewStatus::Skipped;
+                warnings.push(format!("Layout inspection skipped: {error:#}"));
+            }
+        }
+        if !review_summary.remaining_issues.is_empty() {
+            let slides = review_summary
+                .remaining_issues
+                .iter()
+                .map(|issue| issue.slide.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            warnings.push(format!(
+                "Layout review completed with overflow remaining on slide(s): {slides}"
+            ));
+        }
+    }
 
     fs::create_dir_all(&slides_dir)
         .with_context(|| format!("Could not create {}", slides_dir.display()))?;
@@ -117,7 +444,7 @@ pub async fn generate_slides(
     fs::write(&markdown_path, markdown)
         .with_context(|| format!("Could not write {}", markdown_path.display()))?;
 
-    let mut warnings = Vec::new();
+    emit_stage(&event_sink, GenerationStage::Rendering, None);
     let rendered_pdf = match marp::render_pdf(
         &markdown_path,
         &theme_css_path,
@@ -147,11 +474,79 @@ pub async fn generate_slides(
             models: selected_models,
             tools: tool_summaries.clone(),
             artifacts,
+            review: review_summary,
         },
         prompt_preview: None,
         tool_summaries,
         warnings,
     })
+}
+
+fn emit_stage(
+    sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    stage: GenerationStage,
+    profile: Option<&str>,
+) {
+    if let Some(sink) = sink {
+        sink(TextGenerationEvent::StageStarted {
+            stage,
+            profile: profile.map(ToOwned::to_owned),
+        });
+    }
+}
+
+fn emit_layout_result(
+    sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    issues: usize,
+) {
+    if let Some(sink) = sink {
+        sink(TextGenerationEvent::LayoutCheckCompleted { issues });
+    }
+}
+
+fn emit_slide_repair(
+    sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    slide: usize,
+    position: usize,
+    total: usize,
+    profile: &str,
+) {
+    if let Some(sink) = sink {
+        sink(TextGenerationEvent::LayoutSlideRepairStarted {
+            slide,
+            position,
+            total,
+            profile: profile.to_string(),
+        });
+    }
+}
+
+fn emit_review_retry(
+    sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    attempt: usize,
+    error: &str,
+) {
+    if let Some(sink) = sink {
+        sink(TextGenerationEvent::ReviewRetryStarted {
+            attempt,
+            error: error.to_string(),
+        });
+    }
+}
+
+fn emit_layout_repair_retry(
+    sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    slide: usize,
+    attempt: usize,
+    error: &str,
+) {
+    if let Some(sink) = sink {
+        sink(TextGenerationEvent::LayoutSlideRepairRetryStarted {
+            slide,
+            attempt,
+            error: error.to_string(),
+        });
+    }
 }
 
 fn summarize_tools(tools: &[ToolDefinition]) -> Vec<GenerationToolSummary> {
@@ -411,7 +806,7 @@ fn build_generation_request(
     config: &EffectiveConfig,
     theme: &ThemePackage,
     instruction: &str,
-    title: &str,
+    title: Option<&str>,
     source_bundle: &str,
 ) -> TextGenerationRequest {
     let learning_style = if config.user.learning_style.is_empty() {
@@ -423,9 +818,16 @@ fn build_generation_request(
     let system_prompt = format!(
         "You are Sfumato, a careful study-resource generator. Create clear, accurate Marp slide decks for Obsidian users. Use the user's learning preferences: {learning_style}. Prefer concise slides, useful examples, and presenter notes when they help."
     );
+    let title_requirement = match title {
+        Some(title) => format!(
+            "Use exactly \"{title}\" as the deck title and as the first `# H1` on the title slide."
+        ),
+        None => "Create a concise, specific deck title that describes the subject being taught. Do not copy or lightly rephrase the instruction as the title. Put your chosen title in the first `# H1` on the title slide; Sfumato will use it as the artifact filename."
+            .to_string(),
+    };
 
     let user_prompt = format!(
-        r#"Create a Marp Markdown slide deck titled "{title}".
+        r#"Create a Marp Markdown slide deck.
 
 Project: {project}
 Allowed filesystem root: {project_root}
@@ -435,6 +837,7 @@ Theme fonts: {theme_fonts}
 Instruction: {instruction}
 
 Requirements:
+- {title_requirement}
 - Return only Markdown.
 - Start the document with Marp frontmatter as the first bytes. Do not put a slide, title, blank `---`, or any text before it.
 - Do not include `style:`, inline CSS, or generated theme CSS in Marp frontmatter.
@@ -468,6 +871,206 @@ Source material:
     );
 
     TextGenerationRequest::new(system_prompt, user_prompt)
+}
+
+fn build_review_request(
+    config: &EffectiveConfig,
+    theme: &ThemePackage,
+    instruction: &str,
+    source_bundle: &str,
+    snapshot: &ReviewSnapshot,
+    retry: Option<&ReviewRetryContext>,
+) -> Result<TextGenerationRequest> {
+    let snapshot = serde_json::to_string_pretty(snapshot)
+        .context("Could not serialize slide deck review snapshot")?;
+    let system_prompt = "You are Sfumato's slide reviewer. Propose precise, conservative changes as an RFC 6902 JSON Patch. Never regenerate or return the complete deck.".to_string();
+    let retry_feedback = retry
+        .map(|retry| {
+            format!(
+                r#"
+Corrective retry:
+Your previous response was rejected by Sfumato.
+Validation error:
+{error}
+
+Previous invalid response:
+{invalid_response}
+
+Return a corrected JSON Patch against the original snapshot below. Do not patch or continue the rejected response.
+"#,
+                error = excerpt(&retry.error, 2_000),
+                invalid_response = excerpt(&retry.invalid_response, 12_000),
+            )
+        })
+        .unwrap_or_default();
+    let user_prompt = format!(
+        r#"Review this generated slide deck before it is published.
+
+Original instruction: {instruction}
+Project: {project}
+Theme: {theme_name}
+Theme colors: {theme_colors}
+Theme fonts: {theme_fonts}
+
+Review requirements:
+- Return only an RFC 6902 JSON Patch array. Do not use a Markdown code fence.
+- The patch target is the object inside `document`; paths therefore start at `/revision`, `/slides`, or `/order`, not `/document`.
+- Start with a `test` operation for `/revision` before any mutation.
+- Before replacing or removing a slide, test `/slides/<id>/revision` with the supplied value.
+- Prefer replacing only `/slides/<id>/markdown` for slides that genuinely need correction.
+- Do not return the complete deck or replace the document root.
+- Do not modify the title slide, title, frontmatter, IDs, revisions, headings, kinds, or element summaries.
+- Correct factual inconsistencies only when supported by the source material or filesystem tools.
+- Remove duplication and improve the learning sequence.
+- Keep one principal idea per slide and concise supporting content.
+- Add, remove, or reorder slides only when a targeted Markdown replacement cannot solve the problem.
+- Preserve useful explanations instead of deleting them merely to save space.
+- Keep MathJax math and Mermaid fences valid. Do not add inline CSS, raw HTML, or inline SVG.
+- Use the filesystem tools only when a claim cannot be checked from the supplied source excerpts.
+- Return `[]` when no changes are needed.
+{retry_feedback}
+
+Source material:
+{source_bundle}
+
+Structured review snapshot:
+{snapshot}
+"#,
+        project = config.project_name,
+        theme_name = theme.manifest.name,
+        theme_colors = format_tokens(&theme.manifest.tokens.colors),
+        theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
+    );
+    Ok(TextGenerationRequest::new(system_prompt, user_prompt))
+}
+
+struct ReviewRetryContext {
+    invalid_response: String,
+    error: String,
+}
+
+fn build_layout_repair_request(
+    context: LayoutRepairRequestContext<'_>,
+    retry: Option<&LayoutRepairRetryContext>,
+    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+) -> TextGenerationRequest {
+    let issue_report =
+        serde_json::to_string_pretty(context.issue).unwrap_or_else(|_| "{}".to_string());
+    let system_prompt = "You are Sfumato's focused Marp slide repairer. Improve only the supplied slide fragment and return only its replacement Markdown.".to_string();
+    let retry_feedback = retry
+        .map(|retry| {
+            format!(
+                r#"
+Corrective retry:
+Your previous replacement was rejected by Sfumato.
+Validation or rendering error:
+{error}
+
+Previous invalid replacement:
+{invalid_response}
+
+Return a corrected replacement for the original slide fragment below. Do not continue or patch the rejected replacement.
+"#,
+                error = excerpt(&retry.error, 4_000),
+                invalid_response = excerpt(&retry.invalid_response, 12_000),
+            )
+        })
+        .unwrap_or_default();
+    let user_prompt = format!(
+        r#"Repair the measured layout problem in this single Marp slide.
+
+Original instruction: {instruction}
+Deck title: {title}
+Project: {project}
+Theme: {theme_name}
+
+Measured layout issue:
+{issue_report}
+
+Requirements:
+- Return only replacement Markdown for the supplied slide, without a code fence.
+- Do not return Marp frontmatter or a leading/trailing `---` separator.
+- Preserve the slide's factual meaning and useful explanations.
+- Prefer concise wording when it resolves the overflow.
+- If necessary, split this slide into two coherent slides using one `---` separator between them.
+- Do not add inline CSS, raw HTML, or alter global theme settings.
+- Keep MathJax formulas and Mermaid diagrams valid.
+{retry_feedback}
+
+Exact slide fragment to replace:
+```markdown
+{slide_markdown}
+```
+"#,
+        instruction = context.instruction,
+        title = context.title,
+        project = context.config.project_name,
+        theme_name = context.theme.manifest.name,
+        slide_markdown = context.slide_markdown,
+    );
+    let mut request = TextGenerationRequest::new(system_prompt, user_prompt);
+    request.event_sink = event_sink;
+    request
+}
+
+struct LayoutRepairRequestContext<'a> {
+    config: &'a EffectiveConfig,
+    theme: &'a ThemePackage,
+    instruction: &'a str,
+    title: &'a str,
+    slide_markdown: &'a str,
+    issue: &'a SlideLayoutIssue,
+}
+
+struct LayoutRepairRetryContext {
+    invalid_response: String,
+    error: String,
+}
+
+async fn validate_mermaid_candidate(
+    markdown: &str,
+    theme: &ThemePackage,
+    slug: &str,
+) -> Result<()> {
+    let temp = tempfile::tempdir().context("Could not create Mermaid validation workspace")?;
+    let diagrams_dir = temp.path().join("diagrams");
+    render_mermaid_diagrams(markdown, &diagrams_dir, slug, theme)
+        .await
+        .map(|_| ())
+}
+
+fn should_retry_model_output(error: &anyhow::Error) -> bool {
+    let error = format!("{error:#}");
+    !error.contains("is not installed")
+        && !error.contains("Could not create Mermaid validation workspace")
+}
+
+async fn inspect_candidate_layout(
+    markdown: &str,
+    theme: &ThemePackage,
+    slug: &str,
+    browser_path: Option<&Path>,
+) -> Result<Vec<SlideLayoutIssue>> {
+    let temp = tempfile::tempdir().context("Could not create slide review workspace")?;
+    let markdown_path = temp.path().join("review.md");
+    let theme_path = temp.path().join("theme.css");
+    let diagrams_dir = temp.path().join("diagrams");
+    let html_path = temp.path().join("review.html");
+    let (rendered, _) = render_mermaid_diagrams(markdown, &diagrams_dir, slug, theme).await?;
+    copy_theme_css(theme, &theme_path)?;
+    fs::write(&markdown_path, rendered)
+        .with_context(|| format!("Could not write {}", markdown_path.display()))?;
+    marp::inspect_layout(&markdown_path, &theme_path, &html_path, browser_path).await
+}
+
+fn layout_score(issues: &[SlideLayoutIssue]) -> (usize, u64) {
+    let overflow = issues
+        .iter()
+        .map(|issue| {
+            u64::from(issue.vertical_overflow_px) + u64::from(issue.horizontal_overflow_px)
+        })
+        .sum();
+    (issues.len(), overflow)
 }
 
 fn model_tool_rounds(profile: &crate::config::ModelProfile) -> usize {
@@ -509,9 +1112,92 @@ fn collect_sources(inputs: &[PathBuf]) -> Result<Vec<SourceDocument>> {
     Ok(documents)
 }
 
-fn instruction_title(instruction: &str) -> String {
-    let compact = instruction.split_whitespace().collect::<Vec<_>>().join(" ");
-    compact.chars().take(60).collect()
+fn validate_title(title: &str) -> Result<String> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        bail!("Slide title cannot be empty");
+    }
+    if slugify(&title).is_empty() {
+        bail!("Slide title must contain characters that can be used in a filename");
+    }
+    Ok(title)
+}
+
+fn slide_artifact_paths(slides_dir: &Path, title: &str) -> Result<(PathBuf, PathBuf)> {
+    let title = validate_title(title)?;
+    let slug = slugify(title);
+    Ok((
+        slides_dir.join(format!("{slug}.md")),
+        slides_dir.join(format!("{slug}.pdf")),
+    ))
+}
+
+fn extract_generated_title(generated: &str) -> Option<String> {
+    let markdown = strip_code_fence(generated.trim());
+    let markdown = sanitize_marp_markdown(markdown);
+    let markdown = promote_marp_frontmatter(markdown);
+    let markdown = body_without_frontmatter(&markdown);
+    let mut code_fence: Option<(char, usize)> = None;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if let Some((marker, length)) = markdown_code_fence(trimmed) {
+            match code_fence {
+                Some((open_marker, open_length))
+                    if marker == open_marker && length >= open_length =>
+                {
+                    code_fence = None;
+                }
+                None => code_fence = Some((marker, length)),
+                _ => {}
+            }
+            continue;
+        }
+        if code_fence.is_some() {
+            continue;
+        }
+
+        if let Some(title) = trimmed.strip_prefix("# ") {
+            let title = clean_generated_title(title);
+            if let Ok(title) = validate_title(&title) {
+                return Some(title);
+            }
+        }
+    }
+
+    None
+}
+
+fn clean_generated_title(title: &str) -> String {
+    let mut title = title.trim().trim_end_matches('#').trim();
+    loop {
+        let mut changed = false;
+        for delimiter in ["**", "__", "`", "*", "_"] {
+            if let Some(inner) = title
+                .strip_prefix(delimiter)
+                .and_then(|value| value.strip_suffix(delimiter))
+            {
+                title = inner.trim();
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    title.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn titles_are_equivalent(title: &str, instruction: &str) -> bool {
+    let normalize = |value: &str| {
+        value
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    normalize(title) == normalize(instruction)
 }
 
 fn push_source_file(path: &Path, documents: &mut Vec<SourceDocument>) -> Result<()> {
@@ -579,9 +1265,7 @@ fn normalize_marp_markdown(
         bail!("Generated deck does not contain Marp slide separators.");
     }
 
-    if !markdown.to_lowercase().contains(&title.to_lowercase()) {
-        markdown = insert_title_slide(markdown, title);
-    }
+    markdown = ensure_title_slide(markdown, title)?;
 
     Ok(markdown)
 }
@@ -606,10 +1290,64 @@ fn insert_title_slide(markdown: String, title: &str) -> String {
     )
 }
 
+fn ensure_title_slide(mut markdown: String, title: &str) -> Result<String> {
+    let first_slide = slide_ranges(&markdown)?
+        .into_iter()
+        .next()
+        .context("Generated deck does not contain a title slide")?;
+    if let Some((start, end)) = first_h1_range(&markdown[first_slide.start..first_slide.end]) {
+        markdown.replace_range(
+            first_slide.start + start..first_slide.start + end,
+            &format!("# {title}"),
+        );
+        Ok(markdown)
+    } else {
+        Ok(insert_title_slide(markdown, title))
+    }
+}
+
+fn first_h1_range(markdown: &str) -> Option<(usize, usize)> {
+    let mut cursor = 0;
+    let mut code_fence: Option<(char, usize)> = None;
+    for line in markdown.split_inclusive('\n') {
+        let without_newline = line.trim_end_matches(['\n', '\r']);
+        let trimmed = without_newline.trim_start();
+        if let Some((marker, length)) = markdown_code_fence(trimmed) {
+            match code_fence {
+                Some((open_marker, open_length))
+                    if marker == open_marker && length >= open_length =>
+                {
+                    code_fence = None;
+                }
+                None => code_fence = Some((marker, length)),
+                _ => {}
+            }
+        } else if code_fence.is_none() && trimmed.starts_with("# ") {
+            let indentation = without_newline.len() - trimmed.len();
+            return Some((cursor + indentation, cursor + without_newline.len()));
+        }
+        cursor += line.len();
+    }
+    None
+}
+
 #[derive(Clone, Copy)]
 struct Fence {
     start: usize,
     end: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SlideRange {
+    number: usize,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Clone, Debug)]
+struct SlideReplacement {
+    range: SlideRange,
+    markdown: String,
 }
 
 fn promote_marp_frontmatter(markdown: String) -> String {
@@ -655,10 +1393,22 @@ fn promote_marp_frontmatter(markdown: String) -> String {
 fn markdown_fences(markdown: &str) -> Vec<Fence> {
     let mut fences = Vec::new();
     let mut cursor = 0;
+    let mut code_fence: Option<(char, usize)> = None;
 
     for line in markdown.split_inclusive('\n') {
         let line_without_newline = line.trim_end_matches('\n').trim_end_matches('\r');
-        if line_without_newline.trim() == "---" {
+        let trimmed = line_without_newline.trim_start();
+        if let Some((marker, length)) = markdown_code_fence(trimmed) {
+            match code_fence {
+                Some((open_marker, open_length))
+                    if marker == open_marker && length >= open_length =>
+                {
+                    code_fence = None;
+                }
+                None => code_fence = Some((marker, length)),
+                _ => {}
+            }
+        } else if code_fence.is_none() && line_without_newline.trim() == "---" {
             fences.push(Fence {
                 start: cursor,
                 end: cursor + line.len(),
@@ -675,6 +1425,95 @@ fn markdown_fences(markdown: &str) -> Vec<Fence> {
     }
 
     fences
+}
+
+fn markdown_code_fence(line: &str) -> Option<(char, usize)> {
+    let marker = line.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let length = line
+        .chars()
+        .take_while(|character| *character == marker)
+        .count();
+    (length >= 3).then_some((marker, length))
+}
+
+fn slide_ranges(markdown: &str) -> Result<Vec<SlideRange>> {
+    let fences = markdown_fences(markdown);
+    if fences.len() < 2
+        || fences[0].start != 0
+        || !frontmatter_contains_key(&markdown[fences[0].end..fences[1].start], "marp")
+    {
+        bail!("Cannot locate canonical Marp frontmatter for slide replacement");
+    }
+
+    let mut ranges = Vec::new();
+    let mut start = fences[1].end;
+    for (index, separator) in fences.iter().skip(2).enumerate() {
+        ranges.push(SlideRange {
+            number: index + 1,
+            start,
+            end: separator.start,
+        });
+        start = separator.end;
+    }
+    ranges.push(SlideRange {
+        number: ranges.len() + 1,
+        start,
+        end: markdown.len(),
+    });
+    Ok(ranges)
+}
+
+fn normalize_slide_replacement(generated: &str) -> Result<String> {
+    let mut fragment = strip_code_fence(generated.trim()).trim().to_string();
+    fragment = sanitize_marp_markdown(&fragment).trim().to_string();
+
+    let fences = markdown_fences(&fragment);
+    if fences.len() >= 2
+        && fences[0].start == 0
+        && frontmatter_contains_key(&fragment[fences[0].end..fences[1].start], "marp")
+    {
+        fragment = fragment[fences[1].end..].trim_start().to_string();
+    }
+
+    fragment = trim_outer_slide_separators(&fragment).to_string();
+    if fragment.trim().is_empty() {
+        bail!("Reviewer returned an empty slide replacement");
+    }
+    Ok(fragment.trim().to_string())
+}
+
+fn trim_outer_slide_separators(fragment: &str) -> &str {
+    let mut fragment = fragment.trim();
+    loop {
+        let fences = markdown_fences(fragment);
+        if fences.first().is_some_and(|fence| fence.start == 0) {
+            fragment = fragment[fences[0].end..].trim_start();
+            continue;
+        }
+        if fences
+            .last()
+            .is_some_and(|fence| fence.end == fragment.len())
+        {
+            fragment = fragment[..fences.last().expect("checked above").start].trim_end();
+            continue;
+        }
+        return fragment;
+    }
+}
+
+fn apply_slide_replacements(markdown: &str, mut replacements: Vec<SlideReplacement>) -> String {
+    replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.range.start));
+    let mut repaired = markdown.to_string();
+    for replacement in replacements {
+        repaired.replace_range(
+            replacement.range.start..replacement.range.end,
+            &format!("\n\n{}\n\n", replacement.markdown.trim()),
+        );
+    }
+    repaired
 }
 
 fn frontmatter_contains_key(frontmatter: &str, key: &str) -> bool {
@@ -863,16 +1702,21 @@ fn is_named_html_tag(tag: &str, tag_names: &[&str]) -> bool {
 }
 
 fn strip_code_fence(text: &str) -> &str {
-    let without_opening = text
-        .strip_prefix("```markdown")
-        .or_else(|| text.strip_prefix("```md"))
-        .or_else(|| text.strip_prefix("```"))
-        .unwrap_or(text);
-
-    without_opening
-        .strip_suffix("```")
-        .unwrap_or(without_opening)
-        .trim()
+    let text = text.trim();
+    for marker in ["```", "~~~"] {
+        let Some(after_marker) = text.strip_prefix(marker) else {
+            continue;
+        };
+        let Some(opening_line_end) = after_marker.find('\n') else {
+            continue;
+        };
+        let body = &after_marker[opening_line_end + 1..];
+        let Some(body) = body.trim_end().strip_suffix(marker) else {
+            continue;
+        };
+        return body.trim();
+    }
+    text
 }
 
 fn ensure_inside(root: &Path, path: &Path) -> Result<()> {

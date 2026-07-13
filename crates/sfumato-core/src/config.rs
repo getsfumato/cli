@@ -13,6 +13,7 @@ pub struct ConfigOverrides {
     pub project: Option<String>,
     pub theme: Option<String>,
     pub model_overrides: BTreeMap<Capability, String>,
+    pub reviewer_model: Option<String>,
     pub output_dir: Option<PathBuf>,
     pub pdf: bool,
 }
@@ -25,6 +26,8 @@ pub struct GlobalConfig {
     pub connectors: BTreeMap<String, OpenAiCompatibleConnectorConfig>,
     pub models: BTreeMap<String, ModelProfile>,
     pub defaults: ModelDefaults,
+    #[serde(default)]
+    pub model_roles: BTreeMap<ModelRole, String>,
     pub marp: MarpConfig,
 }
 
@@ -69,6 +72,8 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub model_defaults: BTreeMap<Capability, String>,
     #[serde(default)]
+    pub model_roles: BTreeMap<ModelRole, String>,
+    #[serde(default)]
     pub marp: Option<MarpConfig>,
 }
 
@@ -95,6 +100,37 @@ pub enum Capability {
     Video,
     Speech,
     Embedding,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelRole {
+    Reviewer,
+}
+
+impl ModelRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reviewer => "reviewer",
+        }
+    }
+
+    pub fn required_capability(self) -> Capability {
+        match self {
+            Self::Reviewer => Capability::Text,
+        }
+    }
+}
+
+impl FromStr for ModelRole {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.to_lowercase().as_str() {
+            "reviewer" => Ok(Self::Reviewer),
+            _ => bail!("Unknown model role '{value}'. Use reviewer."),
+        }
+    }
 }
 
 impl Capability {
@@ -158,6 +194,7 @@ pub struct EffectiveConfig {
     pub connectors: BTreeMap<String, OpenAiCompatibleConnectorConfig>,
     pub models: BTreeMap<String, ModelProfile>,
     pub model_defaults: BTreeMap<Capability, String>,
+    pub model_roles: BTreeMap<ModelRole, String>,
     pub marp: MarpConfig,
 }
 
@@ -244,6 +281,7 @@ impl GlobalConfig {
                 Capability::Text,
                 "local-text".to_string(),
             )])),
+            model_roles: BTreeMap::new(),
             marp: MarpConfig {
                 pdf: false,
                 browser_path: None,
@@ -311,6 +349,11 @@ impl EffectiveConfig {
             project.model_defaults.clone(),
             overrides.model_overrides,
         );
+        let model_roles = merge_model_roles(
+            global.model_roles.clone(),
+            project.model_roles.clone(),
+            overrides.reviewer_model,
+        );
 
         let output_dir = overrides
             .output_dir
@@ -331,6 +374,7 @@ impl EffectiveConfig {
             connectors: global.connectors,
             models: global.models,
             model_defaults,
+            model_roles,
             marp,
         })
     }
@@ -350,6 +394,36 @@ impl EffectiveConfig {
             bail!(
                 "Model profile '{profile_name}' does not support '{}' capability",
                 capability.as_str()
+            );
+        }
+        Ok((profile_name, profile))
+    }
+
+    pub fn resolve_model_role(&self, role: ModelRole) -> Result<(&str, &ModelProfile)> {
+        let fallback;
+        let profile_name = if let Some(profile_name) = self.model_roles.get(&role) {
+            profile_name.as_str()
+        } else {
+            fallback = self.resolve_model(role.required_capability())?.0;
+            fallback
+        };
+        let profile = self
+            .models
+            .get(profile_name)
+            .with_context(|| format!("Model profile '{profile_name}' was not found"))?;
+        if !self.connectors.contains_key(&profile.connector) {
+            bail!(
+                "Model profile '{profile_name}' selected for '{}' references missing connector '{}'",
+                role.as_str(),
+                profile.connector
+            );
+        }
+        let required = role.required_capability();
+        if !profile.capabilities.contains(&required) {
+            bail!(
+                "Model profile '{profile_name}' selected for '{}' does not support '{}' capability",
+                role.as_str(),
+                required.as_str()
             );
         }
         Ok((profile_name, profile))
@@ -427,6 +501,18 @@ fn merge_model_defaults(
 ) -> BTreeMap<Capability, String> {
     user.extend(project);
     user.extend(command);
+    user
+}
+
+fn merge_model_roles(
+    mut user: BTreeMap<ModelRole, String>,
+    project: BTreeMap<ModelRole, String>,
+    reviewer: Option<String>,
+) -> BTreeMap<ModelRole, String> {
+    user.extend(project);
+    if let Some(profile) = reviewer {
+        user.insert(ModelRole::Reviewer, profile);
+    }
     user
 }
 

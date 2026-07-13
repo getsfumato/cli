@@ -137,7 +137,7 @@ fn model_menu() -> Result<Option<Commands>> {
             })
         }
         "Use" => {
-            let Some(capability) = required_text("Capability", Some("text"))? else {
+            let Some(selector) = required_text("Capability or role", Some("text"))? else {
                 return Ok(None);
             };
             let Some(profile) = required_text("Model profile name", None)? else {
@@ -155,7 +155,7 @@ fn model_menu() -> Result<Option<Commands>> {
                 None
             };
             ModelCommands::Use(ModelUseArgs {
-                capability,
+                selector,
                 profile,
                 project,
             })
@@ -192,6 +192,8 @@ fn generate_menu() -> Result<Option<Commands>> {
     let model_overrides = optional_text("Model overrides, separated by commas", None)?
         .map(|value| parse_list(&value))
         .unwrap_or_default();
+    let review_model = optional_text("Reviewer model profile override", None)?;
+    let no_review = confirm("Skip semantic and layout review?", false)?;
     Ok(Some(Commands::Generate {
         command: GenerateCommands::Slides(SlidesArgs {
             inputs,
@@ -203,6 +205,8 @@ fn generate_menu() -> Result<Option<Commands>> {
             project,
             theme,
             model_overrides,
+            review_model,
+            no_review,
             json: confirm("Print machine-readable JSON output?", false)?,
         }),
     }))

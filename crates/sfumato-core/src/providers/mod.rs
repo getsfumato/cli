@@ -46,11 +46,65 @@ pub struct TextGenerationResponse {
 
 #[derive(Clone, Debug)]
 pub enum TextGenerationEvent {
-    RequestStarted { round: usize },
-    ToolCallRequested { name: String, arguments: Value },
-    ToolCallSucceeded { name: String, result: String },
-    ToolCallFailed { name: String, error: String },
+    StageStarted {
+        stage: GenerationStage,
+        profile: Option<String>,
+    },
+    RequestStarted {
+        round: usize,
+    },
+    ToolCallRequested {
+        name: String,
+        arguments: Value,
+    },
+    ToolCallSucceeded {
+        name: String,
+        result: String,
+    },
+    ToolCallFailed {
+        name: String,
+        error: String,
+    },
     ResponseCompleted,
+    ReviewRetryStarted {
+        attempt: usize,
+        error: String,
+    },
+    LayoutCheckCompleted {
+        issues: usize,
+    },
+    LayoutSlideRepairStarted {
+        slide: usize,
+        position: usize,
+        total: usize,
+        profile: String,
+    },
+    LayoutSlideRepairRetryStarted {
+        slide: usize,
+        attempt: usize,
+        error: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum GenerationStage {
+    Draft,
+    SemanticReview,
+    LayoutCheck,
+    LayoutRepair,
+    Rendering,
+}
+
+impl GenerationStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "drafting slides",
+            Self::SemanticReview => "reviewing content",
+            Self::LayoutCheck => "checking layout",
+            Self::LayoutRepair => "repairing layout",
+            Self::Rendering => "rendering artifacts",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

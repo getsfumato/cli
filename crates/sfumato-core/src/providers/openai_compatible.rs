@@ -102,12 +102,14 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
             request.emit(TextGenerationEvent::RequestStarted { round: round + 1 });
             let body = self.request_body_for_messages(messages.clone(), tools.clone());
             let parsed = self.send_chat_completion(&body).await?;
-            let assistant_message = parsed
+            let usage = parsed.usage;
+            let choice = parsed
                 .choices
                 .into_iter()
                 .next()
-                .map(|choice| choice.message)
                 .context("Connector response did not include any choices")?;
+            let finish_reason = choice.finish_reason;
+            let assistant_message = choice.message;
 
             if assistant_message.tool_calls.is_empty() {
                 let content = assistant_message
@@ -116,7 +118,11 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
                     .trim()
                     .to_string();
                 if content.is_empty() {
-                    bail!("Connector response did not include text content");
+                    bail!(empty_content_error(
+                        &self.profile,
+                        finish_reason.as_deref(),
+                        usage.as_ref()
+                    ));
                 }
                 request.emit(TextGenerationEvent::ResponseCompleted);
                 return Ok(TextGenerationResponse { text: content });
@@ -169,22 +175,25 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
         let parsed = self
             .send_chat_completion(&self.request_body_for_messages(messages, None))
             .await?;
-        let assistant_message = parsed
+        let usage = parsed.usage;
+        let choice = parsed
             .choices
             .into_iter()
             .next()
-            .map(|choice| choice.message)
             .context("Connector response did not include any choices")?;
+        let finish_reason = choice.finish_reason;
+        let assistant_message = choice.message;
         let content = assistant_message
             .content
             .unwrap_or_default()
             .trim()
             .to_string();
         if content.is_empty() {
-            bail!(
-                "Connector did not return final text after {} Sfumato tool rounds",
-                request.max_tool_rounds
-            );
+            bail!(empty_content_error(
+                &self.profile,
+                finish_reason.as_deref(),
+                usage.as_ref()
+            ));
         }
         request.emit(TextGenerationEvent::ResponseCompleted);
         Ok(TextGenerationResponse { text: content })
@@ -253,6 +262,33 @@ fn option_integer(profile: &ModelProfile, key: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+fn empty_content_error(
+    profile: &ModelProfile,
+    finish_reason: Option<&str>,
+    usage: Option<&CompletionUsage>,
+) -> String {
+    let max_tokens = option_integer(profile, "max_tokens", 4000);
+    let finish_reason = finish_reason.unwrap_or("unknown");
+    let completion_tokens = usage
+        .and_then(|usage| usage.completion_tokens)
+        .map(|tokens| format!(", completion tokens: {tokens}"))
+        .unwrap_or_default();
+    let reasoning_tokens = usage
+        .and_then(|usage| usage.completion_tokens_details.as_ref())
+        .and_then(|details| details.reasoning_tokens)
+        .map(|tokens| format!(", reasoning tokens: {tokens}"))
+        .unwrap_or_default();
+    let suggestion = (finish_reason == "length").then(|| {
+        format!(
+            " Increase the model profile's max_tokens option above {max_tokens}, or reduce its reasoning budget."
+        )
+    });
+    format!(
+        "Connector response did not include text content (finish reason: {finish_reason}{completion_tokens}{reasoning_tokens}).{}",
+        suggestion.unwrap_or_default()
+    )
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChatCompletionsRequest {
     pub model: String,
@@ -273,6 +309,10 @@ pub struct ChatMessage {
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_details: Option<serde_json::Value>,
 }
 
 impl ChatMessage {
@@ -282,6 +322,8 @@ impl ChatMessage {
             content: Some(content),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning: None,
+            reasoning_details: None,
         }
     }
 
@@ -291,6 +333,8 @@ impl ChatMessage {
             content: Some(content),
             tool_calls: Vec::new(),
             tool_call_id: tool_call.id,
+            reasoning: None,
+            reasoning_details: None,
         }
     }
 }
@@ -306,11 +350,29 @@ fn tool_error_json(tool_call: &ToolCall, error: String) -> String {
 #[derive(Debug, Deserialize)]
 struct ChatCompletionsResponse {
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<CompletionUsage>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompletionUsage {
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokenDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompletionTokenDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 fn initial_messages(request: &TextGenerationRequest) -> Vec<ChatMessage> {

@@ -71,6 +71,7 @@ fn assigns_user_and_project_defaults_and_protects_used_profiles() {
             theme: DEFAULT_THEME.to_string(),
             output_dir: PathBuf::from("Resources/Sfumato"),
             model_defaults: Default::default(),
+            model_roles: Default::default(),
             marp: None,
         },
     )
@@ -115,6 +116,36 @@ fn assigns_user_and_project_defaults_and_protects_used_profiles() {
             .get(&Capability::Code)
             .map(String::as_str),
         Some("local-gemma")
+    );
+}
+
+#[test]
+fn assigns_and_protects_reviewer_profiles() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut service = service(&temp);
+    service
+        .add(
+            "local-review".to_string(),
+            "ollama".to_string(),
+            "gemma3:latest".to_string(),
+            vec!["text".to_string()],
+            vec![],
+        )
+        .unwrap();
+
+    let changed = service
+        .use_default("reviewer", "local-review", None)
+        .unwrap();
+    assert_eq!(changed.selection, ModelSelection::Role(ModelRole::Reviewer));
+    assert_eq!(
+        service.config.model_roles.get(&ModelRole::Reviewer),
+        Some(&"local-review".to_string())
+    );
+    assert!(service.remove("local-review").is_err());
+    assert!(
+        service
+            .edit("local-review", None, None, vec!["code".to_string()], vec![],)
+            .is_err()
     );
 }
 

@@ -133,6 +133,7 @@ impl ProjectRepository for FilesystemProjectRepository {
             theme: DEFAULT_THEME.to_string(),
             output_dir: PathBuf::from("Resources/Sfumato"),
             model_defaults: Default::default(),
+            model_roles: Default::default(),
             marp: None,
         };
         write_toml(&config_path, &project)?;
