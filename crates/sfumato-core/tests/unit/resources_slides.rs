@@ -63,6 +63,88 @@ fn normalizes_existing_math_frontmatter_to_mathjax() {
 }
 
 #[test]
+fn promotes_late_marp_frontmatter_and_preserves_title_slide() {
+    let config = effective_config();
+    let markdown = normalize_marp_markdown(
+        "---\n\n# Demo\n\n---\nmarp: true\npaginate: true\n---\n\n## One",
+        &config,
+        "Demo",
+    )
+    .unwrap();
+
+    assert!(markdown.starts_with("---\n"));
+    assert!(markdown.contains("marp: true"));
+    assert!(markdown.contains("\n\n# Demo\n\n---\n\n## One"));
+    assert!(!markdown.starts_with("---\n\n# Demo\n\n---\nmarp: true"));
+}
+
+#[test]
+fn inserts_missing_title_after_canonical_frontmatter() {
+    let config = effective_config();
+    let markdown = normalize_marp_markdown(
+        "---\nmarp: true\n---\n\n## One\n\n---\n\n## Two",
+        &config,
+        "Demo",
+    )
+    .unwrap();
+
+    assert!(markdown.starts_with(
+        "---\nmarp: true\ntheme: sfumato-default\npaginate: true\nmath: mathjax\n---\n\n# Demo\n\n---\n\n## One"
+    ));
+    assert!(!markdown.starts_with("---\n\n# Demo\n\n---\nmarp: true"));
+}
+
+#[test]
+fn removes_generated_frontmatter_css() {
+    let config = effective_config();
+    let markdown = normalize_marp_markdown(
+        "---\nmarp: true\nstyle: |\n  section { color: red; }\n  h1 { color: blue; }\nmath: katex\ncustom: ignored\n---\n\n# Demo\n\n---\n\n## One",
+        &config,
+        "Demo",
+    )
+    .unwrap();
+
+    assert!(markdown.starts_with(
+        "---\nmarp: true\ntheme: sfumato-default\npaginate: true\nmath: mathjax\n---"
+    ));
+    assert!(!markdown.contains("style:"));
+    assert!(!markdown.contains("section { color: red; }"));
+    assert!(!markdown.contains("custom: ignored"));
+    assert!(markdown.contains("math: mathjax"));
+    assert!(!markdown.contains("math: katex"));
+}
+
+#[test]
+fn removes_generated_css_blocks_from_slide_body() {
+    let config = effective_config();
+    let markdown = normalize_marp_markdown(
+        "---\nmarp: true\n---\n\n<style>\nsection { color: red; }\n</style>\n\n```css\n@theme bad\nsection { color: blue; }\n```\n\n# Demo\n\n---\n\n## One",
+        &config,
+        "Demo",
+    )
+    .unwrap();
+
+    assert!(!markdown.contains("<style"));
+    assert!(!markdown.contains("@theme bad"));
+    assert!(!markdown.contains("color: blue"));
+    assert!(markdown.contains("# Demo"));
+}
+
+#[test]
+fn removes_duplicate_leading_title_only_slides() {
+    let config = effective_config();
+    let markdown = normalize_marp_markdown(
+        "---\nmarp: true\n---\n\n# Demo\n\n---\n\n<!-- _class: title -->\n\n# Demo\n\n## Real title slide\n\n---\n\n## One",
+        &config,
+        "Demo",
+    )
+    .unwrap();
+
+    assert!(!markdown.contains("# Demo\n\n---\n\n<!-- _class: title -->"));
+    assert!(markdown.contains("<!-- _class: title -->\n\n# Demo"));
+}
+
+#[test]
 fn removes_raw_svg_blocks_from_generated_decks() {
     let config = effective_config();
     let markdown = normalize_marp_markdown(
@@ -102,6 +184,22 @@ fn extracts_mermaid_fences_for_pre_rendering() {
         &markdown[blocks[0].start..blocks[0].end],
         "```mermaid\ngraph TD\n  A-->B\n```"
     );
+}
+
+#[test]
+fn normalizes_mermaid_labels_before_rendering() {
+    let source = "flowchart TB\n    A[\"a₀/2average heightDC offset\"]";
+    let normalized = normalize_mermaid_source(source);
+
+    assert!(normalized.contains("a₀/2 average height DC<br/>offset"));
+}
+
+#[test]
+fn preserves_existing_mermaid_label_breaks() {
+    let source = "flowchart TB\n    A[\"first line\\nsecond line\"]";
+    let normalized = normalize_mermaid_source(source);
+
+    assert!(normalized.contains("first line<br/>second line"));
 }
 
 #[test]

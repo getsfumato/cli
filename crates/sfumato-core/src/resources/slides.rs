@@ -199,7 +199,8 @@ async fn render_mermaid_diagrams(
         let diagram_index = index + 1;
         let source_path = diagrams_dir.join(format!("{slug}-diagram-{diagram_index}.mmd"));
         let artifact_path = diagrams_dir.join(format!("{slug}-diagram-{diagram_index}.svg"));
-        fs::write(&source_path, &block.source)
+        let source = normalize_mermaid_source(&block.source);
+        fs::write(&source_path, &source)
             .with_context(|| format!("Could not write {}", source_path.display()))?;
         let _svg = renderer
             .render_svg(&source_path, &artifact_path, &mermaid_theme)
@@ -257,6 +258,89 @@ fn mermaid_theme_config(tokens: &ThemeTokens) -> MermaidThemeConfig {
         ("noteTextColor".to_string(), text),
         ("noteBorderColor".to_string(), accent),
     ]))
+}
+
+fn normalize_mermaid_source(source: &str) -> String {
+    let mut normalized = String::new();
+    let mut rest = source;
+
+    while let Some(start) = rest.find("[\"") {
+        let label_start = start + 2;
+        normalized.push_str(&rest[..label_start]);
+        let Some(end) = rest[label_start..].find("\"]") else {
+            normalized.push_str(&rest[label_start..]);
+            return normalized;
+        };
+        let label_end = label_start + end;
+        normalized.push_str(&normalize_mermaid_label(&rest[label_start..label_end]));
+        rest = &rest[label_end..];
+    }
+
+    normalized.push_str(rest);
+    normalized
+}
+
+fn normalize_mermaid_label(label: &str) -> String {
+    let label = label.replace("\\n", "<br/>");
+    let spaced = insert_missing_label_spaces(&label);
+    wrap_mermaid_label(&spaced, 28)
+}
+
+fn insert_missing_label_spaces(label: &str) -> String {
+    let mut output = String::new();
+    let mut previous = None;
+
+    for current in label.chars() {
+        if let Some(previous) = previous
+            && should_insert_label_space(previous, current)
+        {
+            output.push(' ');
+        }
+        output.push(current);
+        previous = Some(current);
+    }
+
+    output
+}
+
+fn should_insert_label_space(previous: char, current: char) -> bool {
+    (previous.is_ascii_digit() && current.is_alphabetic())
+        || (previous == ')' && current.is_alphabetic())
+        || (previous.is_lowercase() && current.is_uppercase())
+}
+
+fn wrap_mermaid_label(label: &str, max_len: usize) -> String {
+    label
+        .split("<br/>")
+        .flat_map(|segment| wrap_mermaid_label_segment(segment, max_len))
+        .collect::<Vec<_>>()
+        .join("<br/>")
+}
+
+fn wrap_mermaid_label_segment(segment: &str, max_len: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in segment.split_whitespace() {
+        let next_len =
+            current.chars().count() + usize::from(!current.is_empty()) + word.chars().count();
+        if !current.is_empty() && next_len > max_len {
+            lines.push(current);
+            current = String::new();
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(segment.to_string());
+    }
+    lines
 }
 
 fn theme_token(tokens: &BTreeMap<String, String>, name: &str, fallback: &str) -> String {
@@ -352,11 +436,18 @@ Instruction: {instruction}
 
 Requirements:
 - Return only Markdown.
-- Include Marp frontmatter.
+- Start the document with Marp frontmatter as the first bytes. Do not put a slide, title, blank `---`, or any text before it.
+- Do not include `style:`, inline CSS, or generated theme CSS in Marp frontmatter.
 - Set Marp math rendering to MathJax with `math: mathjax`.
 - Use slide separators with ---.
 - Include a title slide.
+- Use `<!-- _class: lead -->` for title and section-divider slides.
+- Use `<!-- _class: compact -->` only for dense tables, formulas, or comparison slides.
+- Prefer `##` headings for normal content slides after the title slide.
 - You may use Mermaid diagrams in fenced ```mermaid blocks when a visual structure helps.
+- Keep Mermaid diagrams simple: at most 6 nodes, short quoted labels, and no formulas inside labels.
+- Put math formulas in normal Markdown outside Mermaid diagrams.
+- Use `<br/>` inside Mermaid labels when a label needs two short lines.
 - Do not use raw HTML, inline SVG, or HTML wrapper tags.
 - Include a short learning objective slide.
 - Explain the source material for a student.
@@ -478,37 +569,223 @@ fn normalize_marp_markdown(
 ) -> Result<String> {
     let mut markdown = strip_code_fence(generated.trim()).to_string();
     markdown = sanitize_marp_markdown(&markdown);
+    markdown = promote_marp_frontmatter(markdown);
+    let body = body_without_frontmatter(&markdown);
 
-    if !markdown.starts_with("---") {
-        markdown = format!(
-            "---\nmarp: true\ntheme: {}\npaginate: true\nmath: mathjax\n---\n\n{}",
-            config.theme, markdown
-        );
-    }
-
-    if !markdown.contains("marp: true") {
-        markdown = markdown.replacen("---", "---\nmarp: true", 1);
-    }
-    markdown = set_frontmatter_value(markdown, "theme", &config.theme);
-    markdown = set_frontmatter_value(markdown, "math", "mathjax");
+    markdown = canonical_marp_document(body, &config.theme);
+    markdown = remove_duplicate_leading_title_slides(markdown, title);
 
     if !markdown.contains("\n---") {
         bail!("Generated deck does not contain Marp slide separators.");
     }
 
     if !markdown.to_lowercase().contains(&title.to_lowercase()) {
-        markdown = markdown.replacen("---", &format!("---\n\n# {title}\n\n---"), 2);
+        markdown = insert_title_slide(markdown, title);
     }
 
     Ok(markdown)
 }
 
+fn canonical_marp_document(body: &str, theme: &str) -> String {
+    format!(
+        "---\nmarp: true\ntheme: {theme}\npaginate: true\nmath: mathjax\n---\n\n{}",
+        body.trim()
+    )
+}
+
+fn insert_title_slide(markdown: String, title: &str) -> String {
+    let fences = markdown_fences(&markdown);
+    if fences.len() < 2 || fences[0].start != 0 {
+        return format!("# {title}\n\n---\n\n{markdown}");
+    }
+
+    format!(
+        "{}\n\n# {title}\n\n---\n\n{}",
+        markdown[..fences[1].end].trim_end(),
+        markdown[fences[1].end..].trim_start()
+    )
+}
+
+#[derive(Clone, Copy)]
+struct Fence {
+    start: usize,
+    end: usize,
+}
+
+fn promote_marp_frontmatter(markdown: String) -> String {
+    let fences = markdown_fences(&markdown);
+    let Some(frontmatter_index) = fences.windows(2).position(|window| {
+        frontmatter_contains_key(&markdown[window[0].end..window[1].start], "marp")
+    }) else {
+        return markdown;
+    };
+    if frontmatter_index == 0 {
+        return markdown;
+    }
+
+    let frontmatter = markdown[fences[frontmatter_index].start..fences[frontmatter_index + 1].end]
+        .trim()
+        .to_string();
+    let prefix_body = if fences[0].start == 0 {
+        markdown[fences[0].end..fences[frontmatter_index].start]
+            .trim()
+            .to_string()
+    } else {
+        markdown[..fences[frontmatter_index].start]
+            .trim()
+            .to_string()
+    };
+    let suffix_body = markdown[fences[frontmatter_index + 1].end..].trim_start();
+    let suffix_body = if !prefix_body.is_empty()
+        && !suffix_body.is_empty()
+        && !suffix_body.trim_start().starts_with("---")
+    {
+        format!("---\n\n{suffix_body}")
+    } else {
+        suffix_body.to_string()
+    };
+
+    [frontmatter, prefix_body, suffix_body]
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn markdown_fences(markdown: &str) -> Vec<Fence> {
+    let mut fences = Vec::new();
+    let mut cursor = 0;
+
+    for line in markdown.split_inclusive('\n') {
+        let line_without_newline = line.trim_end_matches('\n').trim_end_matches('\r');
+        if line_without_newline.trim() == "---" {
+            fences.push(Fence {
+                start: cursor,
+                end: cursor + line.len(),
+            });
+        }
+        cursor += line.len();
+    }
+
+    if cursor < markdown.len() && markdown[cursor..].trim() == "---" {
+        fences.push(Fence {
+            start: cursor,
+            end: markdown.len(),
+        });
+    }
+
+    fences
+}
+
+fn frontmatter_contains_key(frontmatter: &str, key: &str) -> bool {
+    let prefix = format!("{key}:");
+    frontmatter
+        .lines()
+        .any(|line| line.trim_start().starts_with(&prefix))
+}
+
+fn body_without_frontmatter(markdown: &str) -> &str {
+    let fences = markdown_fences(markdown);
+    if fences.len() >= 2 && fences[0].start == 0 {
+        markdown[fences[1].end..].trim_start()
+    } else {
+        markdown.trim()
+    }
+}
+
+fn remove_duplicate_leading_title_slides(markdown: String, title: &str) -> String {
+    let mut markdown = markdown;
+
+    loop {
+        let fences = markdown_fences(&markdown);
+        if fences.len() < 3 || fences[0].start != 0 {
+            return markdown;
+        }
+
+        let first_slide = markdown[fences[1].end..fences[2].start].trim();
+        if !is_only_title_slide(first_slide, title) {
+            return markdown;
+        }
+
+        let remaining = markdown[fences[2].end..].trim_start();
+        if !remaining_starts_with_title_slide(remaining, title) {
+            return markdown;
+        }
+
+        markdown = format!("{}\n\n{}", markdown[..fences[1].end].trim_end(), remaining);
+    }
+}
+
+fn is_only_title_slide(slide: &str, title: &str) -> bool {
+    slide
+        .strip_prefix("# ")
+        .map(|heading| heading.trim().eq_ignore_ascii_case(title))
+        .unwrap_or(false)
+}
+
+fn remaining_starts_with_title_slide(remaining: &str, title: &str) -> bool {
+    let first_slide = remaining
+        .split_once("\n---")
+        .map(|(first, _)| first)
+        .unwrap_or(remaining);
+    first_slide.lines().any(|line| {
+        line.trim_start_matches("# ")
+            .trim()
+            .eq_ignore_ascii_case(title)
+    }) || first_slide.contains("<!-- _class: title -->")
+}
+
 fn sanitize_marp_markdown(markdown: &str) -> String {
     let without_svg = strip_html_blocks(markdown, "svg");
+    let without_style = strip_html_blocks(&without_svg, "style");
+    let without_css_fences =
+        strip_code_blocks_by_language(&without_style, &["css", "scss", "sass"]);
     remove_html_tags_by_names(
-        &without_svg,
-        &["article", "div", "section", "span", "p", "br", "svg"],
+        &without_css_fences,
+        &[
+            "article", "div", "section", "span", "p", "br", "svg", "style",
+        ],
     )
+}
+
+fn strip_code_blocks_by_language(markdown: &str, languages: &[&str]) -> String {
+    let mut output = String::new();
+    let mut cursor = 0;
+
+    while let Some(relative_start) = markdown[cursor..].find("```") {
+        let fence_start = cursor + relative_start;
+        output.push_str(&markdown[cursor..fence_start]);
+
+        let after_ticks = fence_start + 3;
+        let line_end = markdown[after_ticks..]
+            .find('\n')
+            .map(|offset| after_ticks + offset)
+            .unwrap_or(markdown.len());
+        let language = markdown[after_ticks..line_end].trim();
+
+        if !languages
+            .iter()
+            .any(|candidate| language.eq_ignore_ascii_case(candidate))
+        {
+            output.push_str(&markdown[fence_start..line_end]);
+            cursor = line_end;
+            continue;
+        }
+
+        let content_start = if line_end < markdown.len() {
+            line_end + 1
+        } else {
+            line_end
+        };
+        if let Some(relative_end) = markdown[content_start..].find("\n```") {
+            cursor = content_start + relative_end + "\n```".len();
+        } else {
+            cursor = markdown.len();
+        }
+    }
+
+    output.push_str(&markdown[cursor..]);
+    output
 }
 
 fn strip_html_blocks(markdown: &str, tag_name: &str) -> String {
@@ -583,36 +860,6 @@ fn is_named_html_tag(tag: &str, tag_names: &[&str]) -> bool {
     tag_names
         .iter()
         .any(|candidate| name.eq_ignore_ascii_case(candidate))
-}
-
-fn set_frontmatter_value(markdown: String, key: &str, value: &str) -> String {
-    let closing = markdown[3..]
-        .find("\n---")
-        .map(|index| index + 3)
-        .unwrap_or(markdown.len());
-    let (frontmatter, body) = markdown.split_at(closing);
-    let prefix = format!("{key}:");
-    if frontmatter
-        .lines()
-        .any(|line| line.trim_start().starts_with(&prefix))
-    {
-        let mut replaced = false;
-        let frontmatter = frontmatter
-            .lines()
-            .map(|line| {
-                if !replaced && line.trim_start().starts_with(&prefix) {
-                    replaced = true;
-                    format!("{key}: {value}")
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("{frontmatter}{body}")
-    } else {
-        markdown.replacen("---", &format!("---\n{key}: {value}"), 1)
-    }
 }
 
 fn strip_code_fence(text: &str) -> &str {
