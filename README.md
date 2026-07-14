@@ -87,6 +87,13 @@ cargo run -- model add cloud-gemini \
   --capability text \
   --capability code
 
+cargo run -- model add openrouter-image \
+  --connector openrouter \
+  --id openai/gpt-image-1 \
+  --capability image \
+  --option quality=high \
+  --option output_format=png
+
 cargo run -- model list
 cargo run -- model show local-gemma
 cargo run -- model edit local-gemma --id gemma4:e2b-mlx --option temperature=0.2
@@ -102,6 +109,7 @@ Choose user and project defaults by capability:
 ```bash
 cargo run -- model use text local-gemma
 cargo run -- model use text cloud-gemini --project university
+cargo run -- model use image openrouter-image --project university
 ```
 
 Model resolution order remains:
@@ -221,6 +229,13 @@ models. The model can ask Sfumato to list directories or read UTF-8 text files,
 but tool execution is restricted to the active project root and any source paths
 passed to the command.
 
+When the selected project has an `image` model default, slide generation also
+declares `sfumato_image_gen`. The drafter supplies a concrete educational image
+prompt, while Sfumato adds the selected theme's semantic colors and fonts before
+calling the connector's image endpoint. Generated images are stored under
+`slides/images/`, returned to the drafter as relative Markdown paths, and listed
+as generation artifacts. The reviewer does not receive this tool.
+
 Slide generation also allows Mermaid diagrams. The text model may return fenced
 `mermaid` blocks; before writing the deck, Sfumato renders each diagram to SVG,
 stores the `.mmd` source and `.svg` output as local artifacts under
@@ -265,6 +280,7 @@ the prompt preview:
 Injected tools:
 - sfumato_list_directory: List files and directories inside the allowed Sfumato project/source roots.
 - sfumato_read_file: Read a UTF-8 text file inside the allowed Sfumato project/source roots.
+- sfumato_image_gen: Generate a themed educational image and save it beside the slide deck.
 ```
 
 Return machine-readable output for agent callers:

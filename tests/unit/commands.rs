@@ -76,6 +76,19 @@ fn summarizes_file_tool_results_without_raw_content() {
     assert!(!plain.contains("\"content\""));
 }
 
+#[test]
+fn summarizes_generated_image_results_without_raw_json() {
+    let formatted = format_tool_result(
+        "sfumato_image_gen",
+        r#"{"markdown_path":"images/generated-01-wave.png","model_profile":"openrouter-image"}"#,
+    );
+
+    assert!(formatted.contains("created"));
+    assert!(formatted.contains("images/generated-01-wave.png"));
+    assert!(formatted.contains("openrouter-image"));
+    assert!(!formatted.contains("markdown_path"));
+}
+
 fn strip_ansi(value: &str) -> String {
     let mut output = String::new();
     let mut chars = value.chars().peekable();

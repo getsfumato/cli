@@ -1,11 +1,14 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::{
     config::{ModelProfile, OpenAiCompatibleConnectorConfig},
     providers::{
+        ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
         TextGenerationEvent, TextGenerationProvider, TextGenerationRequest, TextGenerationResponse,
         ToolCall, ToolDefinition, ToolExecutionRequest,
     },
@@ -138,10 +141,13 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
                     name: tool_call.function.name.clone(),
                     arguments: tool_call.function.arguments.clone(),
                 });
-                let result = match executor.execute(ToolExecutionRequest {
-                    name: tool_call.function.name.clone(),
-                    arguments: tool_call.function.arguments.clone(),
-                }) {
+                let result = match executor
+                    .execute(ToolExecutionRequest {
+                        name: tool_call.function.name.clone(),
+                        arguments: tool_call.function.arguments.clone(),
+                    })
+                    .await
+                {
                     Ok(result) => {
                         request.emit(TextGenerationEvent::ToolCallSucceeded {
                             name: tool_call.function.name.clone(),
@@ -198,6 +204,118 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
         request.emit(TextGenerationEvent::ResponseCompleted);
         Ok(TextGenerationResponse { text: content })
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct OpenAiCompatibleImageProvider {
+    connector: OpenAiCompatibleConnector,
+    profile: ModelProfile,
+}
+
+impl OpenAiCompatibleImageProvider {
+    pub fn new(
+        connector_name: String,
+        connector: OpenAiCompatibleConnectorConfig,
+        profile: ModelProfile,
+    ) -> Result<Self> {
+        Ok(Self {
+            connector: OpenAiCompatibleConnector::new(connector_name, connector)?,
+            profile,
+        })
+    }
+
+    pub fn request_body(&self, request: &ImageGenerationRequest) -> Result<ImageRequest> {
+        let mut options = BTreeMap::new();
+        for (key, value) in &self.profile.options {
+            if matches!(key.as_str(), "model" | "prompt" | "n" | "stream") {
+                bail!("Image model option '{key}' is reserved by Sfumato");
+            }
+            options.insert(
+                key.clone(),
+                serde_json::to_value(value)
+                    .with_context(|| format!("Could not serialize image model option '{key}'"))?,
+            );
+        }
+        Ok(ImageRequest {
+            model: self.profile.model.clone(),
+            prompt: request.prompt.clone(),
+            n: 1,
+            options,
+        })
+    }
+}
+
+#[async_trait]
+impl ImageGenerationProvider for OpenAiCompatibleImageProvider {
+    async fn generate_image(
+        &self,
+        request: ImageGenerationRequest,
+    ) -> Result<ImageGenerationResponse> {
+        let body = self.request_body(&request)?;
+        let response = self
+            .connector
+            .post("images")?
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "Could not reach OpenAI-compatible connector '{}' for image generation",
+                    self.connector.name
+                )
+            })?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .context("Could not read image generation response body")?;
+        if !status.is_success() {
+            bail!(
+                "OpenAI-compatible connector '{}' returned HTTP {}: {}",
+                self.connector.name,
+                status,
+                text
+            );
+        }
+        let parsed: ImageResponse =
+            serde_json::from_str(&text).context("Could not parse image generation response")?;
+        let image = parsed
+            .data
+            .into_iter()
+            .next()
+            .context("Image generation response did not include an image")?;
+        let bytes = STANDARD
+            .decode(&image.b64_json)
+            .context("Image generation response contained invalid base64")?;
+        if bytes.is_empty() {
+            bail!("Image generation response contained an empty image");
+        }
+        Ok(ImageGenerationResponse {
+            bytes,
+            media_type: image.media_type.unwrap_or_else(|| "image/png".to_string()),
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImageRequest {
+    pub model: String,
+    pub prompt: String,
+    pub n: u8,
+    #[serde(flatten)]
+    pub options: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImageResponse {
+    data: Vec<ImageResponseData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImageResponseData {
+    b64_json: String,
+    #[serde(default)]
+    media_type: Option<String>,
 }
 
 impl OpenAiCompatibleTextProvider {

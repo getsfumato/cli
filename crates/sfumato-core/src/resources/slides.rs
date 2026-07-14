@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
@@ -16,7 +17,7 @@ use crate::{
     },
     providers::{
         GenerationStage, TextGenerationEvent, TextGenerationProvider, TextGenerationRequest,
-        ToolDefinition, build_text_provider,
+        ToolDefinition, build_image_provider, build_text_provider,
     },
     renderers::{
         diagrams::{MermaidDiagramRenderer, MermaidThemeConfig},
@@ -24,7 +25,7 @@ use crate::{
     },
     review::{ReviewSnapshot, ReviewableDocument, decks::SlideDeckDocument, parse_json_patch},
     themes::{ThemePackage, ThemeService, ThemeTokens},
-    tools::default_filesystem_tools,
+    tools::{ImageToolConfig, generation_tools},
 };
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -74,13 +75,38 @@ pub async fn generate_slides(
         .join("themes")
         .join(format!("{}.css", config.theme));
     let diagrams_dir = slides_dir.join("diagrams");
+    let images_dir = slides_dir.join("images");
 
     ensure_inside(&output_root, &theme_css_path)?;
     ensure_inside(&output_root, &diagrams_dir)?;
+    ensure_inside(&output_root, &images_dir)?;
 
     let theme = ThemeService::load()?.resolve(&config.theme)?;
     let documents = collect_sources(&request.sources)?;
-    let tool_set = default_filesystem_tools(&config.project_root, &request.sources)?;
+    let image_selection = config
+        .model_defaults
+        .contains_key(&Capability::Image)
+        .then(|| config.resolve_model(Capability::Image))
+        .transpose()?;
+    let image_tool = image_selection
+        .map(|(profile_name, profile)| {
+            let provider: Arc<dyn crate::providers::ImageGenerationProvider> =
+                Arc::from(build_image_provider(&config, profile)?);
+            Ok::<ImageToolConfig, anyhow::Error>(ImageToolConfig {
+                provider,
+                profile_name: profile_name.to_string(),
+                output_dir: images_dir.clone(),
+                theme: theme.clone(),
+            })
+        })
+        .transpose()?;
+    let tool_set = generation_tools(&config.project_root, &request.sources, image_tool)?;
+    let review_tool_definitions = tool_set
+        .definitions
+        .iter()
+        .filter(|tool| tool.function.name != "sfumato_image_gen")
+        .cloned()
+        .collect::<Vec<_>>();
     let tool_summaries = summarize_tools(&tool_set.definitions);
     let source_bundle = build_source_bundle(&documents);
     let mut provider_request = build_generation_request(
@@ -89,6 +115,7 @@ pub async fn generate_slides(
         &request.instruction,
         title_override.as_deref(),
         &source_bundle,
+        image_selection.is_some(),
     );
     provider_request.tools = tool_set.definitions.clone();
     provider_request.tool_executor = Some(tool_set.executor.clone());
@@ -102,6 +129,9 @@ pub async fn generate_slides(
         BTreeMap::from([("text".to_string(), draft_profile_name.to_string())]);
     if let Some((reviewer_name, _)) = reviewer_selection {
         selected_models.insert("reviewer".to_string(), reviewer_name.to_string());
+    }
+    if let Some((image_profile_name, _)) = image_selection {
+        selected_models.insert("image".to_string(), image_profile_name.to_string());
     }
     let mut review_summary = if review {
         SlideReviewSummary::enabled()
@@ -138,17 +168,26 @@ pub async fn generate_slides(
     let response = provider.generate_text(provider_request).await?;
     let title = match title_override {
         Some(title) => title,
-        None => {
-            let title = extract_generated_title(&response.text).context(
-                "The drafter did not provide a title. Return a concise title as the first `# H1` on the title slide",
-            )?;
-            if titles_are_equivalent(&title, &request.instruction) {
-                bail!(
-                    "The drafter reused the instruction as the title. Generate a concise subject title in the first `# H1` instead"
+        None => match validate_draft_title(&response.text, &request.instruction) {
+            Ok(title) => title,
+            Err(error) => {
+                let error = format!("{error:#}");
+                emit_title_repair(&event_sink, &error);
+                let mut title_request = build_title_repair_request(
+                    &config,
+                    &request.instruction,
+                    &response.text,
+                    &error,
                 );
+                title_request.event_sink = event_sink.clone();
+                let repaired = provider
+                    .generate_text(title_request)
+                    .await
+                    .context("The drafter could not repair the missing deck title")?;
+                parse_repaired_title(&repaired.text, &request.instruction)
+                    .context("The drafter returned an invalid title after one focused repair")?
             }
-            title
-        }
+        },
     };
     let (markdown_path, pdf_path) = slide_artifact_paths(&slides_dir, &title)?;
     let slug = slugify(&title);
@@ -179,7 +218,7 @@ pub async fn generate_slides(
                             &snapshot,
                             retry.as_ref(),
                         )?;
-                        review_request.tools = tool_set.definitions.clone();
+                        review_request.tools = review_tool_definitions.clone();
                         review_request.tool_executor = Some(tool_set.executor.clone());
                         review_request.event_sink = event_sink.clone();
                         review_request.max_tool_rounds = model_tool_rounds(reviewer_profile);
@@ -461,6 +500,7 @@ pub async fn generate_slides(
     };
 
     let mut artifacts = vec![markdown_path.clone(), theme_css_path];
+    artifacts.extend(tool_set.generated_artifacts()?);
     artifacts.extend(diagram_artifacts);
     if let Some(pdf) = &rendered_pdf {
         artifacts.push(pdf.clone());
@@ -491,6 +531,17 @@ fn emit_stage(
         sink(TextGenerationEvent::StageStarted {
             stage,
             profile: profile.map(ToOwned::to_owned),
+        });
+    }
+}
+
+fn emit_title_repair(
+    sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    error: &str,
+) {
+    if let Some(sink) = sink {
+        sink(TextGenerationEvent::DraftTitleRepairStarted {
+            error: error.to_string(),
         });
     }
 }
@@ -808,6 +859,7 @@ fn build_generation_request(
     instruction: &str,
     title: Option<&str>,
     source_bundle: &str,
+    image_generation_available: bool,
 ) -> TextGenerationRequest {
     let learning_style = if config.user.learning_style.is_empty() {
         "not specified".to_string()
@@ -824,6 +876,11 @@ fn build_generation_request(
         ),
         None => "Create a concise, specific deck title that describes the subject being taught. Do not copy or lightly rephrase the instruction as the title. Put your chosen title in the first `# H1` on the title slide; Sfumato will use it as the artifact filename."
             .to_string(),
+    };
+    let image_requirement = if image_generation_available {
+        "- You may call `sfumato_image_gen` when a purpose-built educational illustration would teach better than text or Mermaid. Give it a precise subject, composition, labels, and learning purpose, then embed the returned `markdown_path` with standard Markdown image syntax. Sfumato applies the project theme automatically."
+    } else {
+        "- No image generation model is configured. Use Markdown and Mermaid for visuals."
     };
 
     let user_prompt = format!(
@@ -848,6 +905,7 @@ Requirements:
 - Use `<!-- _class: compact -->` only for dense tables, formulas, or comparison slides.
 - Prefer `##` headings for normal content slides after the title slide.
 - You may use Mermaid diagrams in fenced ```mermaid blocks when a visual structure helps.
+{image_requirement}
 - Keep Mermaid diagrams simple: at most 6 nodes, short quoted labels, and no formulas inside labels.
 - Put math formulas in normal Markdown outside Mermaid diagrams.
 - Use `<br/>` inside Mermaid labels when a label needs two short lines.
@@ -870,6 +928,46 @@ Source material:
         theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
     );
 
+    TextGenerationRequest::new(system_prompt, user_prompt)
+}
+
+fn build_title_repair_request(
+    config: &EffectiveConfig,
+    instruction: &str,
+    draft: &str,
+    validation_error: &str,
+) -> TextGenerationRequest {
+    let headings = markdown_headings(draft);
+    let headings = if headings.is_empty() {
+        "No usable headings were found in the draft.".to_string()
+    } else {
+        headings
+            .into_iter()
+            .take(20)
+            .map(|heading| format!("- {heading}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let system_prompt = "You repair one missing metadata field in an existing study deck. Return only a concise subject title on one plain-text line. Do not return Markdown, JSON, explanations, or tool calls.".to_string();
+    let user_prompt = format!(
+        r#"Create the missing title for an existing Marp deck.
+
+Project: {project}
+Original instruction: {instruction}
+Validation error: {validation_error}
+
+Existing deck headings:
+{headings}
+
+Requirements:
+- Return exactly one concise title on one line.
+- Describe the subject being taught, not the generation instruction.
+- Do not copy or lightly rephrase the original instruction.
+- Do not include `#`, quotes, a filename extension, or ending punctuation.
+- Do not regenerate or summarize the deck.
+"#,
+        project = config.project_name,
+    );
     TextGenerationRequest::new(system_prompt, user_prompt)
 }
 
@@ -1166,6 +1264,66 @@ fn extract_generated_title(generated: &str) -> Option<String> {
     }
 
     None
+}
+
+fn validate_draft_title(generated: &str, instruction: &str) -> Result<String> {
+    let title = extract_generated_title(generated).context(
+        "The drafter did not provide a title. Return a concise title as the first `# H1` on the title slide",
+    )?;
+    if titles_are_equivalent(&title, instruction) {
+        bail!(
+            "The drafter reused the instruction as the title. Generate a concise subject title instead"
+        );
+    }
+    Ok(title)
+}
+
+fn parse_repaired_title(response: &str, instruction: &str) -> Result<String> {
+    let line = strip_code_fence(response.trim())
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .context("Title repair response was empty")?;
+    let title = line
+        .trim()
+        .trim_start_matches('#')
+        .trim()
+        .trim_matches(['\'', '"', '`'])
+        .trim_end_matches(['.', ':', ';'])
+        .trim();
+    let title = validate_title(&clean_generated_title(title))?;
+    if titles_are_equivalent(&title, instruction) {
+        bail!("Title repair reused the generation instruction");
+    }
+    Ok(title)
+}
+
+fn markdown_headings(markdown: &str) -> Vec<String> {
+    let markdown = strip_code_fence(markdown.trim());
+    let mut code_fence: Option<(char, usize)> = None;
+    let mut headings = Vec::new();
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if let Some((marker, length)) = markdown_code_fence(trimmed) {
+            match code_fence {
+                Some((open_marker, open_length))
+                    if marker == open_marker && length >= open_length =>
+                {
+                    code_fence = None;
+                }
+                None => code_fence = Some((marker, length)),
+                _ => {}
+            }
+            continue;
+        }
+        if code_fence.is_some() {
+            continue;
+        }
+        let heading = trimmed.trim_start_matches('#').trim();
+        if trimmed.starts_with('#') && !heading.is_empty() {
+            headings.push(clean_generated_title(heading));
+        }
+    }
+    headings
 }
 
 fn clean_generated_title(title: &str) -> String {

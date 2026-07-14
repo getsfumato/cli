@@ -496,6 +496,13 @@ fn render_generation_event(event: TextGenerationEvent) {
                 green("response complete")
             );
         }
+        TextGenerationEvent::DraftTitleRepairStarted { error } => {
+            eprintln!(
+                "{} {}",
+                styled_label("title repair", ANSI_YELLOW),
+                yellow(&compact_preview(&error, 220))
+            );
+        }
         TextGenerationEvent::ReviewRetryStarted { attempt, error } => {
             eprintln!(
                 "{} attempt {attempt}: {}",
@@ -582,6 +589,9 @@ fn format_tool_arguments(arguments: &Value) -> String {
     if let Some(path) = arguments.get("path").and_then(Value::as_str) {
         return format!("path {}", italic(path));
     }
+    if let Some(prompt) = arguments.get("prompt").and_then(Value::as_str) {
+        return format!("prompt {}", italic(&compact_preview(prompt, 140)));
+    }
     dim(&compact_preview(&arguments.to_string(), 140))
 }
 
@@ -600,6 +610,19 @@ fn format_tool_result(name: &str, result: &str) -> String {
 
     if name == "sfumato_read_file" || value.get("content").is_some() {
         return summarize_file_read(&value);
+    }
+
+    if name == "sfumato_image_gen" || value.get("markdown_path").is_some() {
+        let path = value
+            .get("markdown_path")
+            .and_then(Value::as_str)
+            .unwrap_or("generated image");
+        let profile = value
+            .get("model_profile")
+            .and_then(Value::as_str)
+            .map(|profile| format!(" with {}", bold(profile)))
+            .unwrap_or_default();
+        return format!("created {}{}", italic(path), profile);
     }
 
     dim(&compact_preview(result, 180))

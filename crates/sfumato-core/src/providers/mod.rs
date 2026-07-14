@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::config::{Capability, EffectiveConfig, ModelProfile};
 
-pub use openai_compatible::OpenAiCompatibleTextProvider;
+pub use openai_compatible::{OpenAiCompatibleImageProvider, OpenAiCompatibleTextProvider};
 
 #[derive(Clone)]
 pub struct TextGenerationRequest {
@@ -66,6 +66,9 @@ pub enum TextGenerationEvent {
         error: String,
     },
     ResponseCompleted,
+    DraftTitleRepairStarted {
+        error: String,
+    },
     ReviewRetryStarted {
         attempt: usize,
         error: String,
@@ -127,8 +130,9 @@ pub struct ToolExecutionRequest {
     pub arguments: Value,
 }
 
+#[async_trait]
 pub trait ToolExecutor: Send + Sync {
-    fn execute(&self, request: ToolExecutionRequest) -> Result<String>;
+    async fn execute(&self, request: ToolExecutionRequest) -> Result<String>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -156,8 +160,24 @@ pub trait TextGenerationProvider: Send + Sync {
     -> Result<TextGenerationResponse>;
 }
 
-#[allow(dead_code)]
-pub trait ImageGenerationProvider: Send + Sync {}
+#[derive(Clone, Debug)]
+pub struct ImageGenerationRequest {
+    pub prompt: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImageGenerationResponse {
+    pub bytes: Vec<u8>,
+    pub media_type: String,
+}
+
+#[async_trait]
+pub trait ImageGenerationProvider: Send + Sync {
+    async fn generate_image(
+        &self,
+        request: ImageGenerationRequest,
+    ) -> Result<ImageGenerationResponse>;
+}
 #[allow(dead_code)]
 pub trait VideoGenerationProvider: Send + Sync {}
 #[allow(dead_code)]
@@ -177,6 +197,26 @@ pub fn build_text_provider(
         )
     })?;
     Ok(Box::new(OpenAiCompatibleTextProvider::new(
+        profile.connector.clone(),
+        connector.clone(),
+        profile.clone(),
+    )?))
+}
+
+pub fn build_image_provider(
+    config: &EffectiveConfig,
+    profile: &ModelProfile,
+) -> Result<Box<dyn ImageGenerationProvider>> {
+    if !profile.capabilities.contains(&Capability::Image) {
+        bail!("Selected model profile does not support image generation");
+    }
+    let connector = config.connectors.get(&profile.connector).with_context(|| {
+        format!(
+            "OpenAI-compatible connector '{}' was not found",
+            profile.connector
+        )
+    })?;
+    Ok(Box::new(OpenAiCompatibleImageProvider::new(
         profile.connector.clone(),
         connector.clone(),
         profile.clone(),

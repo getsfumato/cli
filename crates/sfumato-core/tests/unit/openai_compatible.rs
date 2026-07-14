@@ -11,6 +11,24 @@ fn profile(connector: &str) -> ModelProfile {
     }
 }
 
+fn image_profile(connector: &str) -> ModelProfile {
+    ModelProfile {
+        connector: connector.to_string(),
+        model: "openai/gpt-image-1".to_string(),
+        capabilities: vec![crate::config::Capability::Image],
+        options: BTreeMap::from([
+            (
+                "quality".to_string(),
+                toml::Value::String("high".to_string()),
+            ),
+            (
+                "background".to_string(),
+                toml::Value::String("transparent".to_string()),
+            ),
+        ]),
+    }
+}
+
 #[test]
 fn ollama_and_openrouter_use_the_same_connector_implementation() {
     let ollama = OpenAiCompatibleConnector::new(
@@ -69,6 +87,61 @@ fn serializes_chat_completion_from_model_profile() {
     assert_eq!(body.model, "llama3.2");
     assert_eq!(body.max_tokens, 100);
     assert_eq!(body.messages.len(), 2);
+}
+
+#[test]
+fn serializes_image_generation_from_model_profile() {
+    let provider = OpenAiCompatibleImageProvider::new(
+        "openrouter".to_string(),
+        OpenAiCompatibleConnectorConfig {
+            base_url: "https://openrouter.ai/api/v1".to_string(),
+            api_key: Some("test-key".to_string()),
+            api_key_env: None,
+            headers: BTreeMap::new(),
+        },
+        image_profile("openrouter"),
+    )
+    .unwrap();
+
+    let body = provider
+        .request_body(&ImageGenerationRequest {
+            prompt: "A Fourier series diagram".to_string(),
+        })
+        .unwrap();
+
+    assert_eq!(body.model, "openai/gpt-image-1");
+    assert_eq!(body.prompt, "A Fourier series diagram");
+    assert_eq!(body.n, 1);
+    assert_eq!(body.options["quality"], "high");
+    assert_eq!(body.options["background"], "transparent");
+}
+
+#[test]
+fn image_generation_rejects_reserved_profile_options() {
+    let mut profile = image_profile("openrouter");
+    profile.options.insert(
+        "prompt".to_string(),
+        toml::Value::String("override".to_string()),
+    );
+    let provider = OpenAiCompatibleImageProvider::new(
+        "openrouter".to_string(),
+        OpenAiCompatibleConnectorConfig {
+            base_url: "https://openrouter.ai/api/v1".to_string(),
+            api_key: Some("test-key".to_string()),
+            api_key_env: None,
+            headers: BTreeMap::new(),
+        },
+        profile,
+    )
+    .unwrap();
+
+    assert!(
+        provider
+            .request_body(&ImageGenerationRequest {
+                prompt: "Prompt".to_string(),
+            })
+            .is_err()
+    );
 }
 
 #[test]

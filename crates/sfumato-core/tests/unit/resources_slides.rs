@@ -316,7 +316,7 @@ fn prompt_mentions_allowed_filesystem_root() {
         },
     };
 
-    let request = build_generation_request(&config, &package, "Explain", None, "");
+    let request = build_generation_request(&config, &package, "Explain", None, "", false);
 
     assert!(
         request
@@ -356,6 +356,7 @@ fn generation_prompt_preserves_an_explicit_title() {
         "Explain this subject",
         Some("A Deliberate Title"),
         "",
+        false,
     );
 
     assert!(
@@ -367,6 +368,69 @@ fn generation_prompt_preserves_an_explicit_title() {
         request
             .user_prompt
             .contains("Instruction: Explain this subject")
+    );
+}
+
+#[test]
+fn generation_prompt_explains_how_to_embed_generated_images() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "gruvbox".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+
+    let request = build_generation_request(&config, &package, "Explain", None, "", true);
+
+    assert!(request.user_prompt.contains("`sfumato_image_gen`"));
+    assert!(request.user_prompt.contains("returned `markdown_path`"));
+    assert!(request.user_prompt.contains("project theme automatically"));
+}
+
+#[test]
+fn title_repair_prompt_requests_only_a_title_and_uses_deck_headings() {
+    let config = effective_config();
+    let request = build_title_repair_request(
+        &config,
+        "Explain Fourier series visually",
+        "---\nmarp: true\n---\n\n## Periodic signals\n\n---\n\n## Harmonic spectrum",
+        "The drafter did not provide a title",
+    );
+
+    assert!(request.system_prompt.contains("one plain-text line"));
+    assert!(request.user_prompt.contains("Periodic signals"));
+    assert!(request.user_prompt.contains("Harmonic spectrum"));
+    assert!(request.user_prompt.contains("Do not regenerate"));
+    assert!(request.tools.is_empty());
+}
+
+#[test]
+fn parses_a_focused_title_repair_response() {
+    let title = parse_repaired_title(
+        "# From Periodic Signals to Harmonic Spectra\n",
+        "Explain Fourier series visually",
+    )
+    .unwrap();
+
+    assert_eq!(title, "From Periodic Signals to Harmonic Spectra");
+}
+
+#[test]
+fn title_repair_rejects_the_original_instruction() {
+    assert!(
+        parse_repaired_title(
+            "Explain Fourier series visually",
+            "Explain Fourier series visually"
+        )
+        .is_err()
     );
 }
 

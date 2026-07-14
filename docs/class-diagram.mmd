@@ -32,6 +32,7 @@ classDiagram
         class SlidesPipeline
         class SlideReviewPipeline
         class FilesystemToolExecutor
+        class ImageGenerationTool
     }
 
     namespace RepositoryPorts {
@@ -115,12 +116,17 @@ classDiagram
             <<trait>>
             +generate_text(request) TextGenerationResponse
         }
+        class ImageGenerationProvider {
+            <<trait>>
+            +generate_image(request) ImageGenerationResponse
+        }
         class ToolExecutor {
             <<trait>>
             +execute(request) String
         }
         class ToolDefinition
         class OpenAiCompatibleTextProvider
+        class OpenAiCompatibleImageProvider
         class OpenAiCompatibleConnector
     }
 
@@ -184,10 +190,14 @@ classDiagram
     SlidesPipeline --> MarpRenderer
     SlidesPipeline --> MermaidDiagramRenderer
     SlidesPipeline --> FilesystemToolExecutor
+    SlidesPipeline --> ImageGenerationTool
 
     OpenAiCompatibleTextProvider ..|> TextGenerationProvider
+    OpenAiCompatibleImageProvider ..|> ImageGenerationProvider
     OpenAiCompatibleTextProvider --> ToolDefinition
     OpenAiCompatibleTextProvider --> ToolExecutor
     OpenAiCompatibleTextProvider --> OpenAiCompatibleConnector
+    OpenAiCompatibleImageProvider --> OpenAiCompatibleConnector
     OpenAiCompatibleTextProvider --> ModelProfile
     FilesystemToolExecutor ..|> ToolExecutor
+    ImageGenerationTool --> ImageGenerationProvider
