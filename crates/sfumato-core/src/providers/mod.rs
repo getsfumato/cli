@@ -5,10 +5,80 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use thiserror::Error;
 
 use crate::config::{Capability, EffectiveConfig, ModelProfile};
 
 pub use openai_compatible::{OpenAiCompatibleImageProvider, OpenAiCompatibleTextProvider};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextGenerationLimitKind {
+    Context,
+    Output,
+}
+
+#[derive(Clone, Debug, Error)]
+#[error("{message}")]
+pub struct TextGenerationLimitError {
+    pub kind: TextGenerationLimitKind,
+    pub model: String,
+    pub max_tokens: u64,
+    pub finish_reason: Option<String>,
+    pub completion_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    message: String,
+}
+
+impl TextGenerationLimitError {
+    pub(crate) fn output(
+        model: String,
+        max_tokens: u64,
+        finish_reason: Option<String>,
+        completion_tokens: Option<u64>,
+        reasoning_tokens: Option<u64>,
+        empty: bool,
+    ) -> Self {
+        let reason = finish_reason.as_deref().unwrap_or("unknown");
+        let completion = completion_tokens
+            .map(|tokens| format!(", completion tokens: {tokens}"))
+            .unwrap_or_default();
+        let reasoning = reasoning_tokens
+            .map(|tokens| format!(", reasoning tokens: {tokens}"))
+            .unwrap_or_default();
+        let message = if empty {
+            format!(
+                "Connector response did not include text content (finish reason: {reason}{completion}{reasoning}). Increase the model profile's max_tokens option above {max_tokens}, reduce its reasoning budget, or let Sfumato retry with compacted context."
+            )
+        } else {
+            format!(
+                "Connector truncated the '{model}' text response at max_tokens={max_tokens} (finish reason: {reason}{completion}{reasoning}). Sfumato refused to use the incomplete response."
+            )
+        };
+        Self {
+            kind: TextGenerationLimitKind::Output,
+            model,
+            max_tokens,
+            finish_reason,
+            completion_tokens,
+            reasoning_tokens,
+            message,
+        }
+    }
+
+    pub(crate) fn context(model: String, max_tokens: u64, detail: String) -> Self {
+        Self {
+            kind: TextGenerationLimitKind::Context,
+            model: model.clone(),
+            max_tokens,
+            finish_reason: None,
+            completion_tokens: None,
+            reasoning_tokens: None,
+            message: format!(
+                "Connector rejected the '{model}' request because its context token limit was exceeded: {detail}"
+            ),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct TextGenerationRequest {
@@ -72,6 +142,11 @@ pub enum TextGenerationEvent {
     ReviewRetryStarted {
         attempt: usize,
         error: String,
+    },
+    ContextCompactionStarted {
+        stage: GenerationStage,
+        original_chars: usize,
+        compacted_chars: usize,
     },
     LayoutCheckCompleted {
         issues: usize,

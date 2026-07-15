@@ -14,7 +14,7 @@ pub struct ConfigOverrides {
     pub theme: Option<String>,
     pub model_overrides: BTreeMap<Capability, String>,
     pub reviewer_model: Option<String>,
-    pub output_dir: Option<PathBuf>,
+    pub publish_dir: Option<PathBuf>,
     pub pdf: bool,
 }
 
@@ -68,7 +68,8 @@ pub struct ProjectConfig {
     pub schema_version: u32,
     pub name: String,
     pub theme: String,
-    pub output_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_dir: Option<PathBuf>,
     #[serde(default)]
     pub model_defaults: BTreeMap<Capability, String>,
     #[serde(default)]
@@ -189,7 +190,7 @@ pub struct EffectiveConfig {
     pub user: UserConfig,
     pub project_name: String,
     pub project_root: PathBuf,
-    pub output_dir: PathBuf,
+    pub publish_dir: Option<PathBuf>,
     pub theme: String,
     pub connectors: BTreeMap<String, OpenAiCompatibleConnectorConfig>,
     pub models: BTreeMap<String, ModelProfile>,
@@ -355,9 +356,7 @@ impl EffectiveConfig {
             overrides.reviewer_model,
         );
 
-        let output_dir = overrides
-            .output_dir
-            .unwrap_or_else(|| project.output_dir.clone());
+        let publish_dir = overrides.publish_dir.or(project.publish_dir);
         let theme = resolve_theme_name(&project.theme, overrides.theme);
         let marp = project.marp.unwrap_or_else(|| global.marp.clone());
         let marp = MarpConfig {
@@ -369,7 +368,7 @@ impl EffectiveConfig {
             user: global.user,
             project_name: project.name,
             project_root,
-            output_dir,
+            publish_dir,
             theme,
             connectors: global.connectors,
             models: global.models,
@@ -429,22 +428,21 @@ impl EffectiveConfig {
         Ok((profile_name, profile))
     }
 
-    pub fn output_root(&self) -> Result<PathBuf> {
-        let root = absolutize(&self.project_root)?;
-        let output = if self.output_dir.is_absolute() {
-            self.output_dir.clone()
-        } else {
-            root.join(&self.output_dir)
-        };
-        let output = absolutize(&output)?;
-        if !output.starts_with(&root) {
-            bail!(
-                "Configured output directory {} is outside project root {}",
-                output.display(),
-                root.display()
-            );
-        }
-        Ok(output)
+    pub fn artifact_root(&self) -> Result<PathBuf> {
+        project_artifact_root(&self.project_name)
+    }
+
+    pub fn publish_root(&self) -> Result<Option<PathBuf>> {
+        self.publish_dir
+            .as_ref()
+            .map(|publish_dir| {
+                if publish_dir.is_absolute() {
+                    Ok(publish_dir.clone())
+                } else {
+                    Ok(absolutize(&self.project_root)?.join(publish_dir))
+                }
+            })
+            .transpose()
     }
 }
 
@@ -458,6 +456,33 @@ pub fn projects_registry_path() -> Option<PathBuf> {
 
 pub fn themes_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("sfumato/themes"))
+}
+
+pub fn projects_artifact_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|dir| dir.join(".sfumato/Projects"))
+}
+
+pub fn project_artifact_root(project_name: &str) -> Result<PathBuf> {
+    validate_project_name(project_name)?;
+    Ok(projects_artifact_dir()
+        .context("Could not find the user home directory for Sfumato artifacts")?
+        .join(project_name))
+}
+
+pub fn validate_project_name(name: &str) -> Result<()> {
+    let path = Path::new(name);
+    if name.trim().is_empty() {
+        bail!("Project name cannot be empty");
+    }
+    if path.components().count() != 1
+        || !matches!(
+            path.components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+    {
+        bail!("Project name '{name}' cannot contain path separators or traversal");
+    }
+    Ok(())
 }
 
 pub fn project_config_path(project_root: &Path) -> PathBuf {
@@ -520,7 +545,7 @@ fn resolve_theme_name(project_theme: &str, command_theme: Option<String>) -> Str
     command_theme.unwrap_or_else(|| project_theme.to_string())
 }
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+pub const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 fn migrate_global_config(path: &Path) -> Result<()> {
     let mut value = read_toml_value(path)?;
@@ -681,12 +706,18 @@ fn migrate_project_config(path: &Path, fallback_theme: &str) -> Result<()> {
         .and_then(toml::Value::as_integer)
         == Some(CONFIG_SCHEMA_VERSION.into())
         && table.contains_key("theme")
+        && !table.contains_key("output_dir")
     {
         return Ok(());
     }
     table
         .entry("theme".to_string())
         .or_insert_with(|| toml::Value::String(fallback_theme.to_string()));
+    if let Some(output_dir) = table.remove("output_dir")
+        && output_dir.as_str() != Some("Resources/Sfumato")
+    {
+        table.entry("publish_dir".to_string()).or_insert(output_dir);
+    }
     if let Some(marp) = table.get_mut("marp").and_then(toml::Value::as_table_mut) {
         marp.remove("theme");
     }

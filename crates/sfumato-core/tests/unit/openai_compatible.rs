@@ -246,8 +246,62 @@ fn explains_empty_content_caused_by_reasoning_token_limit() {
     };
 
     let error = empty_content_error(&profile("openrouter"), Some("length"), Some(&usage));
+    let message = error.to_string();
 
-    assert!(error.contains("finish reason: length"));
-    assert!(error.contains("reasoning tokens: 4000"));
-    assert!(error.contains("Increase the model profile's max_tokens"));
+    assert!(message.contains("finish reason: length"));
+    assert!(message.contains("reasoning tokens: 4000"));
+    assert!(message.contains("Increase the model profile's max_tokens"));
+    let limit = error.downcast_ref::<TextGenerationLimitError>().unwrap();
+    assert_eq!(
+        limit.kind,
+        crate::providers::TextGenerationLimitKind::Output
+    );
+    assert_eq!(limit.completion_tokens, Some(4000));
+    assert_eq!(limit.reasoning_tokens, Some(4000));
+}
+
+#[test]
+fn rejects_nonempty_but_truncated_text_response() {
+    let usage = CompletionUsage {
+        completion_tokens: Some(4000),
+        completion_tokens_details: Some(CompletionTokenDetails {
+            reasoning_tokens: Some(900),
+        }),
+    };
+
+    let error = ensure_text_response_complete(&profile("openrouter"), Some("length"), Some(&usage))
+        .unwrap_err();
+
+    assert!(error.to_string().contains("refused to use"));
+    assert!(error.to_string().contains("max_tokens=100"));
+    assert!(error.to_string().contains("completion tokens: 4000"));
+    assert!(error.to_string().contains("reasoning tokens: 900"));
+    assert!(error.downcast_ref::<TextGenerationLimitError>().is_some());
+}
+
+#[test]
+fn accepts_completed_text_response() {
+    ensure_text_response_complete(&profile("openrouter"), Some("stop"), None).unwrap();
+}
+
+#[test]
+fn recognizes_structured_and_textual_context_limit_errors() {
+    assert!(is_context_limit_response(
+        r#"{"error":{"code":"context_length_exceeded","message":"Too large"}}"#
+    ));
+    assert!(is_context_limit_response(
+        r#"{"error":{"message":"This request exceeds the maximum context length"}}"#
+    ));
+    assert!(!is_context_limit_response(
+        r#"{"error":{"code":"invalid_model","message":"Unknown model"}}"#
+    ));
+}
+
+#[test]
+fn compacts_context_error_details() {
+    let detail = compact_error_detail(
+        r#"{"error":{"message":"The prompt is too long for this context window"}}"#,
+    );
+
+    assert_eq!(detail, "The prompt is too long for this context window");
 }

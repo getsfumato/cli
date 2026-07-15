@@ -122,6 +122,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
             profile_name: "openrouter-image".to_string(),
             output_dir: temp.path().join("slides/images"),
             theme,
+            project_instructions: Some("Use Spanish labels.".to_string()),
         }),
     )
     .unwrap();
@@ -154,6 +155,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
     assert!(prompt.contains("Theme: gruvbox"));
     assert!(prompt.contains("background=#282828"));
     assert!(prompt.contains("A labeled unit circle"));
+    assert!(prompt.contains("Use Spanish labels."));
 }
 
 #[test]

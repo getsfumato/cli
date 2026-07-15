@@ -4,7 +4,7 @@ use crate::config::{
     read_toml, write_toml,
 };
 use crate::themes::DEFAULT_THEME;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::collections::BTreeMap;
 
 fn service(temp: &tempfile::TempDir) -> ModelService {
     ModelService::load_from(
@@ -69,7 +69,7 @@ fn assigns_user_and_project_defaults_and_protects_used_profiles() {
             schema_version: CONFIG_SCHEMA_VERSION,
             name: "demo".to_string(),
             theme: DEFAULT_THEME.to_string(),
-            output_dir: PathBuf::from("Resources/Sfumato"),
+            publish_dir: None,
             model_defaults: Default::default(),
             model_roles: Default::default(),
             marp: None,

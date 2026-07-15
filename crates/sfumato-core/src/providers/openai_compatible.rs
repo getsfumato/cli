@@ -9,8 +9,9 @@ use crate::{
     config::{ModelProfile, OpenAiCompatibleConnectorConfig},
     providers::{
         ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
-        TextGenerationEvent, TextGenerationProvider, TextGenerationRequest, TextGenerationResponse,
-        ToolCall, ToolDefinition, ToolExecutionRequest,
+        TextGenerationEvent, TextGenerationLimitError, TextGenerationProvider,
+        TextGenerationRequest, TextGenerationResponse, ToolCall, ToolDefinition,
+        ToolExecutionRequest,
     },
 };
 
@@ -127,6 +128,11 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
                         usage.as_ref()
                     ));
                 }
+                ensure_text_response_complete(
+                    &self.profile,
+                    finish_reason.as_deref(),
+                    usage.as_ref(),
+                )?;
                 request.emit(TextGenerationEvent::ResponseCompleted);
                 return Ok(TextGenerationResponse { text: content });
             }
@@ -201,6 +207,7 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
                 usage.as_ref()
             ));
         }
+        ensure_text_response_complete(&self.profile, finish_reason.as_deref(), usage.as_ref())?;
         request.emit(TextGenerationEvent::ResponseCompleted);
         Ok(TextGenerationResponse { text: content })
     }
@@ -341,6 +348,14 @@ impl OpenAiCompatibleTextProvider {
             .await
             .context("Could not read connector response body")?;
         if !status.is_success() {
+            if is_context_limit_response(&text) {
+                return Err(TextGenerationLimitError::context(
+                    self.profile.model.clone(),
+                    option_integer(&self.profile, "max_tokens", 4000) as u64,
+                    compact_error_detail(&text),
+                )
+                .into());
+            }
             bail!(
                 "OpenAI-compatible connector '{}' returned HTTP {}: {}",
                 self.connector.name,
@@ -384,27 +399,83 @@ fn empty_content_error(
     profile: &ModelProfile,
     finish_reason: Option<&str>,
     usage: Option<&CompletionUsage>,
-) -> String {
-    let max_tokens = option_integer(profile, "max_tokens", 4000);
-    let finish_reason = finish_reason.unwrap_or("unknown");
-    let completion_tokens = usage
-        .and_then(|usage| usage.completion_tokens)
-        .map(|tokens| format!(", completion tokens: {tokens}"))
-        .unwrap_or_default();
-    let reasoning_tokens = usage
+) -> anyhow::Error {
+    if matches!(finish_reason, Some("length" | "max_tokens")) {
+        return TextGenerationLimitError::output(
+            profile.model.clone(),
+            option_integer(profile, "max_tokens", 4000) as u64,
+            finish_reason.map(ToOwned::to_owned),
+            usage.and_then(|usage| usage.completion_tokens),
+            reasoning_tokens(usage),
+            true,
+        )
+        .into();
+    }
+    anyhow::anyhow!(
+        "Connector response did not include text content (finish reason: {}).",
+        finish_reason.unwrap_or("unknown")
+    )
+}
+
+fn ensure_text_response_complete(
+    profile: &ModelProfile,
+    finish_reason: Option<&str>,
+    usage: Option<&CompletionUsage>,
+) -> Result<()> {
+    if !matches!(finish_reason, Some("length" | "max_tokens")) {
+        return Ok(());
+    }
+
+    Err(TextGenerationLimitError::output(
+        profile.model.clone(),
+        option_integer(profile, "max_tokens", 4000) as u64,
+        finish_reason.map(ToOwned::to_owned),
+        usage.and_then(|usage| usage.completion_tokens),
+        reasoning_tokens(usage),
+        false,
+    )
+    .into())
+}
+
+fn reasoning_tokens(usage: Option<&CompletionUsage>) -> Option<u64> {
+    usage
         .and_then(|usage| usage.completion_tokens_details.as_ref())
         .and_then(|details| details.reasoning_tokens)
-        .map(|tokens| format!(", reasoning tokens: {tokens}"))
-        .unwrap_or_default();
-    let suggestion = (finish_reason == "length").then(|| {
-        format!(
-            " Increase the model profile's max_tokens option above {max_tokens}, or reduce its reasoning budget."
-        )
-    });
-    format!(
-        "Connector response did not include text content (finish reason: {finish_reason}{completion_tokens}{reasoning_tokens}).{}",
-        suggestion.unwrap_or_default()
-    )
+}
+
+fn is_context_limit_response(body: &str) -> bool {
+    let normalized = body.to_ascii_lowercase();
+    let structured_code = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/code")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase)
+        });
+    matches!(
+        structured_code.as_deref(),
+        Some("context_length_exceeded" | "max_context_length" | "context_window_exceeded")
+    ) || normalized.contains("context length")
+        || normalized.contains("maximum context")
+        || normalized.contains("context window")
+        || normalized.contains("prompt is too long")
+        || normalized.contains("too many tokens")
+}
+
+fn compact_error_detail(body: &str) -> String {
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| body.to_string());
+    let mut compact = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    compact.truncate(compact.floor_char_boundary(500));
+    compact
 }
 
 #[derive(Debug, Serialize)]

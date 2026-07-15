@@ -6,7 +6,7 @@ fn effective_config() -> EffectiveConfig {
         user: global.user,
         project_name: "university".to_string(),
         project_root: PathBuf::from("/tmp/university"),
-        output_dir: PathBuf::from("Resources/Sfumato"),
+        publish_dir: None,
         theme: "sfumato-default".to_string(),
         connectors: global.connectors,
         models: global.models,
@@ -114,6 +114,7 @@ fn migrates_global_project_and_registry_configs_with_backups() {
     .unwrap();
     let project = load_project_config(&project_path, "legacy").unwrap();
     assert_eq!(project.theme, "legacy");
+    assert_eq!(project.publish_dir, None);
     assert!(project.marp.unwrap().pdf);
     assert!(PathBuf::from(format!("{}.bak", project_path.display())).exists());
 
@@ -122,6 +123,48 @@ fn migrates_global_project_and_registry_configs_with_backups() {
     let registry = ProjectRegistry::load_from(&registry_path).unwrap();
     assert_eq!(registry.schema_version, CONFIG_SCHEMA_VERSION);
     assert!(PathBuf::from(format!("{}.bak", registry_path.display())).exists());
+}
+
+#[test]
+fn migrates_a_custom_legacy_output_as_publish_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_path = temp.path().join("project.toml");
+    fs::write(
+        &project_path,
+        "schema_version = 2\nname = \"demo\"\ntheme = \"gruvbox\"\noutput_dir = \"Published\"\n",
+    )
+    .unwrap();
+
+    let project = load_project_config(&project_path, "legacy").unwrap();
+
+    assert_eq!(project.publish_dir, Some(PathBuf::from("Published")));
+    assert!(PathBuf::from(format!("{}.bak", project_path.display())).exists());
+}
+
+#[test]
+fn artifact_root_is_centralized_outside_the_project_source() {
+    let root = project_artifact_root("University").unwrap();
+
+    assert!(root.ends_with(".sfumato/Projects/University"));
+    assert!(validate_project_name("../University").is_err());
+}
+
+#[test]
+fn publish_root_resolves_relative_to_the_project_without_changing_artifacts() {
+    let mut config = effective_config();
+    config.project_root = PathBuf::from("/tmp/source-vault");
+    config.publish_dir = Some(PathBuf::from("Published Slides"));
+
+    assert_eq!(
+        config.publish_root().unwrap(),
+        Some(PathBuf::from("/tmp/source-vault/Published Slides"))
+    );
+    assert!(
+        config
+            .artifact_root()
+            .unwrap()
+            .ends_with(".sfumato/Projects/university")
+    );
 }
 
 #[test]

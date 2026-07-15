@@ -245,7 +245,7 @@ pub struct ConfigDeleteArgs {
     pub project: Option<String>,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 pub struct SlidesArgs {
     pub inputs: Vec<PathBuf>,
 
@@ -255,7 +255,10 @@ pub struct SlidesArgs {
     #[arg(long)]
     pub title: Option<String>,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Publish the rendered PDF to this folder; working artifacts remain in Sfumato's project workspace"
+    )]
     pub out: Option<PathBuf>,
 
     #[arg(long, hide = true)]

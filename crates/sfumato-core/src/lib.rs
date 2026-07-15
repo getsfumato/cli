@@ -2,6 +2,7 @@ pub mod config;
 pub mod config_editor;
 pub mod connectors;
 pub mod generation;
+pub mod instructions;
 pub mod models;
 pub mod projects;
 pub mod providers;

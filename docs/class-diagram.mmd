@@ -17,7 +17,16 @@ classDiagram
             <<trait>>
             +run() Result
         }
-        class InteractiveMenu
+        class RatatuiApplication {
+            +Screen screen
+            +handleKey(KeyEvent)
+            +draw(Frame)
+        }
+        class NestedRegistryViews
+        class GenerationForm
+        class LiveGenerationView
+        class TerminalImagePreview
+        class TransitionEffects
         class InitPrompts
         class OutputFormatter
     }
@@ -30,9 +39,21 @@ classDiagram
         class ModelService
         class ThemeService
         class SlidesPipeline
+        class ProjectArtifactWorkspace
+        class ProcessedArtifactPublisher
         class SlideReviewPipeline
+        class ContextCompactor {
+            +compactSources()
+            +compactDeckSnapshot()
+            +compactLayoutRequest()
+        }
         class FilesystemToolExecutor
         class ImageGenerationTool
+        class ProjectInstructions {
+            +PathBuf path
+            +String content
+            +load(projectRoot) Result
+        }
     }
 
     namespace RepositoryPorts {
@@ -116,6 +137,11 @@ classDiagram
             <<trait>>
             +generate_text(request) TextGenerationResponse
         }
+        class TextGenerationLimitError {
+            +Context|Output kind
+            +String model
+            +u64 maxTokens
+        }
         class ImageGenerationProvider {
             <<trait>>
             +generate_image(request) ImageGenerationResponse
@@ -132,7 +158,19 @@ classDiagram
 
     Cli *-- Commands
     Commands ..|> RunnableCommand
-    InteractiveMenu --> Commands
+    Cli --> RatatuiApplication : no subcommand
+    RatatuiApplication --> NestedRegistryViews
+    RatatuiApplication --> GenerationForm
+    RatatuiApplication --> LiveGenerationView
+    LiveGenerationView --> TerminalImagePreview
+    RatatuiApplication --> TransitionEffects
+    NestedRegistryViews --> ProjectService
+    NestedRegistryViews --> ConnectorService
+    NestedRegistryViews --> ModelService
+    NestedRegistryViews --> ThemeService
+    NestedRegistryViews --> ConfigService
+    GenerationForm --> SlidesPipeline
+    SlidesPipeline --> LiveGenerationView : TextGenerationEvent
     InitPrompts --> SetupService
     Commands --> SetupService
     Commands --> ConfigService
@@ -171,6 +209,7 @@ classDiagram
     SlidesPipeline --> ThemeService
     SlidesPipeline --> TextGenerationProvider
     SlidesPipeline --> SlideReviewPipeline
+    SlidesPipeline --> ContextCompactor : token-limit recovery
     SlideReviewPipeline --> ModelRole
     SlideReviewPipeline --> TextGenerationProvider
     SlideReviewPipeline --> ReviewSnapshot
@@ -187,12 +226,16 @@ classDiagram
     MarpLayoutInspector --> MermaidDiagramRenderer
     SlidesPipeline --> SourceReader
     SlidesPipeline --> ArtifactWriter
+    SlidesPipeline --> ProjectArtifactWorkspace
+    SlidesPipeline --> ProcessedArtifactPublisher
     SlidesPipeline --> MarpRenderer
     SlidesPipeline --> MermaidDiagramRenderer
     SlidesPipeline --> FilesystemToolExecutor
     SlidesPipeline --> ImageGenerationTool
+    SlidesPipeline --> ProjectInstructions : loads and injects
 
     OpenAiCompatibleTextProvider ..|> TextGenerationProvider
+    OpenAiCompatibleTextProvider --> TextGenerationLimitError
     OpenAiCompatibleImageProvider ..|> ImageGenerationProvider
     OpenAiCompatibleTextProvider --> ToolDefinition
     OpenAiCompatibleTextProvider --> ToolExecutor

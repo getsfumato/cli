@@ -65,7 +65,7 @@ fn assigns_theme_to_active_or_explicit_project() {
                 schema_version: crate::config::CONFIG_SCHEMA_VERSION,
                 name: name.to_string(),
                 theme: DEFAULT_THEME.to_string(),
-                output_dir: PathBuf::from("Resources/Sfumato"),
+                publish_dir: None,
                 model_defaults: Default::default(),
                 model_roles: Default::default(),
                 marp: None,

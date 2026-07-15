@@ -15,9 +15,11 @@ use crate::{
         GenerationOutput, GenerationRequest, GenerationToolSummary, ReviewStatus, SlideLayoutIssue,
         SlideReviewSummary,
     },
+    instructions::ProjectInstructions,
     providers::{
-        GenerationStage, TextGenerationEvent, TextGenerationProvider, TextGenerationRequest,
-        ToolDefinition, build_image_provider, build_text_provider,
+        GenerationStage, TextGenerationEvent, TextGenerationLimitError, TextGenerationProvider,
+        TextGenerationRequest, TextGenerationResponse, ToolDefinition, build_image_provider,
+        build_text_provider,
     },
     renderers::{
         diagrams::{MermaidDiagramRenderer, MermaidThemeConfig},
@@ -31,6 +33,7 @@ use crate::{
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "md", "txt", "rs", "py", "js", "ts", "html", "css", "json", "toml", "yaml", "yml",
 ];
+const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
 
 pub struct GenerateSlidesOptions {
     pub title: Option<String>,
@@ -43,6 +46,7 @@ pub struct GenerateSlidesOptions {
 pub struct GenerateSlidesResult {
     pub markdown_path: PathBuf,
     pub pdf_path: Option<PathBuf>,
+    pub published_pdf_path: Option<PathBuf>,
     pub output: GenerationOutput,
     pub prompt_preview: Option<String>,
     pub tool_summaries: Vec<GenerationToolSummary>,
@@ -66,8 +70,9 @@ pub async fn generate_slides(
         review,
         event_sink,
     } = options;
-    let output_root = config.output_root()?;
-    let slides_dir = output_root.join("slides");
+    let artifact_root = config.artifact_root()?;
+    let publish_root = config.publish_root()?;
+    let slides_dir = artifact_root.join("slides");
     let title_override = title_override
         .map(|title| validate_title(&title))
         .transpose()?;
@@ -77,10 +82,18 @@ pub async fn generate_slides(
     let diagrams_dir = slides_dir.join("diagrams");
     let images_dir = slides_dir.join("images");
 
-    ensure_inside(&output_root, &theme_css_path)?;
-    ensure_inside(&output_root, &diagrams_dir)?;
-    ensure_inside(&output_root, &images_dir)?;
+    ensure_inside(&artifact_root, &theme_css_path)?;
+    ensure_inside(&artifact_root, &diagrams_dir)?;
+    ensure_inside(&artifact_root, &images_dir)?;
 
+    let project_instructions = ProjectInstructions::load(&config.project_root)?;
+    let project_instructions_prompt = project_instructions
+        .as_ref()
+        .map(ProjectInstructions::prompt_section)
+        .unwrap_or_else(|| "Project instructions: no SFUMATO.md was found.".to_string());
+    let project_instructions_path = project_instructions
+        .as_ref()
+        .map(|instructions| instructions.path.clone());
     let theme = ThemeService::load()?.resolve(&config.theme)?;
     let documents = collect_sources(&request.sources)?;
     let image_selection = config
@@ -97,6 +110,9 @@ pub async fn generate_slides(
                 profile_name: profile_name.to_string(),
                 output_dir: images_dir.clone(),
                 theme: theme.clone(),
+                project_instructions: project_instructions
+                    .as_ref()
+                    .map(|instructions| instructions.content.clone()),
             })
         })
         .transpose()?;
@@ -109,6 +125,7 @@ pub async fn generate_slides(
         .collect::<Vec<_>>();
     let tool_summaries = summarize_tools(&tool_set.definitions);
     let source_bundle = build_source_bundle(&documents);
+    let compact_source_bundle = build_compact_source_bundle(&documents, 12_000);
     let mut provider_request = build_generation_request(
         &config,
         &theme,
@@ -116,6 +133,7 @@ pub async fn generate_slides(
         title_override.as_deref(),
         &source_bundle,
         image_selection.is_some(),
+        &project_instructions_prompt,
     );
     provider_request.tools = tool_set.definitions.clone();
     provider_request.tool_executor = Some(tool_set.executor.clone());
@@ -138,24 +156,28 @@ pub async fn generate_slides(
     } else {
         SlideReviewSummary::disabled()
     };
+    let mut warnings = Vec::new();
 
     if dry_run {
         let dry_run_title = title_override.as_deref().unwrap_or("model-generated-title");
         let (markdown_path, _) = slide_artifact_paths(&slides_dir, dry_run_title)?;
-        ensure_inside(&output_root, &markdown_path)?;
+        ensure_inside(&artifact_root, &markdown_path)?;
         return Ok(GenerateSlidesResult {
             markdown_path,
             pdf_path: None,
             output: GenerationOutput {
                 project: config.project_name,
+                project_instructions: project_instructions_path,
                 models: selected_models,
                 tools: tool_summaries.clone(),
                 artifacts: Vec::new(),
+                published_artifacts: Vec::new(),
                 review: review_summary,
             },
             prompt_preview: Some(provider_request.user_prompt),
             tool_summaries,
             warnings: Vec::new(),
+            published_pdf_path: None,
         });
     }
 
@@ -165,7 +187,30 @@ pub async fn generate_slides(
         Some(draft_profile_name),
     );
     let provider = build_text_provider(&config, draft_profile)?;
-    let response = provider.generate_text(provider_request).await?;
+    let compact_request = build_compact_generation_request(
+        &config,
+        &theme,
+        &request.instruction,
+        title_override.as_deref(),
+        &compact_source_bundle,
+        &project_instructions_prompt,
+        event_sink.clone(),
+    );
+    let draft_outcome = generate_with_compact_retry(
+        provider.as_ref(),
+        provider_request,
+        compact_request,
+        GenerationStage::Draft,
+        &event_sink,
+    )
+    .await
+    .context("Draft generation failed")?;
+    if let Some(error) = draft_outcome.limit_error {
+        warnings.push(format!(
+            "Draft generation exceeded the model limit and was retried with compacted context: {error}"
+        ));
+    }
+    let response = draft_outcome.response;
     let title = match title_override {
         Some(title) => title,
         None => match validate_draft_title(&response.text, &request.instruction) {
@@ -178,6 +223,7 @@ pub async fn generate_slides(
                     &request.instruction,
                     &response.text,
                     &error,
+                    &project_instructions_prompt,
                 );
                 title_request.event_sink = event_sink.clone();
                 let repaired = provider
@@ -191,11 +237,10 @@ pub async fn generate_slides(
     };
     let (markdown_path, pdf_path) = slide_artifact_paths(&slides_dir, &title)?;
     let slug = slugify(&title);
-    ensure_inside(&output_root, &markdown_path)?;
-    ensure_inside(&output_root, &pdf_path)?;
+    ensure_inside(&artifact_root, &markdown_path)?;
+    ensure_inside(&artifact_root, &pdf_path)?;
     let mut markdown = normalize_marp_markdown(&response.text, &config, &title)?;
-    let mut warnings = Vec::new();
-
+    validate_normalized_deck(&markdown, &title)?;
     let mut reviewer_provider: Option<Box<dyn TextGenerationProvider>> = None;
     if let Some((reviewer_name, reviewer_profile)) = reviewer_selection {
         match build_text_provider(&config, reviewer_profile) {
@@ -205,24 +250,77 @@ pub async fn generate_slides(
                     GenerationStage::SemanticReview,
                     Some(reviewer_name),
                 );
+                let mut compaction_status = ReviewStatus::NotNeeded;
                 let review_result = async {
                     let document = SlideDeckDocument::from_marp(&markdown, &title)?;
                     let snapshot = document.snapshot()?;
                     let mut retry = None;
-                    for attempt in 1..=2 {
-                        let mut review_request = build_review_request(
-                            &config,
-                            &theme,
-                            &request.instruction,
-                            &source_bundle,
-                            &snapshot,
-                            retry.as_ref(),
-                        )?;
-                        review_request.tools = review_tool_definitions.clone();
-                        review_request.tool_executor = Some(tool_set.executor.clone());
+                    let mut compacted = false;
+                    let mut validation_retried = false;
+                    loop {
+                        let mut review_request = if compacted {
+                            build_compact_review_request(
+                                &config,
+                                &theme,
+                                &request.instruction,
+                                &compact_source_bundle,
+                                &snapshot,
+                                retry.as_ref(),
+                                &project_instructions_prompt,
+                            )?
+                        } else {
+                            build_review_request(
+                                &config,
+                                &theme,
+                                &request.instruction,
+                                &source_bundle,
+                                &snapshot,
+                                retry.as_ref(),
+                                &project_instructions_prompt,
+                            )?
+                        };
+                        if !compacted {
+                            review_request.tools = review_tool_definitions.clone();
+                            review_request.tool_executor = Some(tool_set.executor.clone());
+                            review_request.max_tool_rounds = model_tool_rounds(reviewer_profile);
+                        }
                         review_request.event_sink = event_sink.clone();
-                        review_request.max_tool_rounds = model_tool_rounds(reviewer_profile);
-                        let response = reviewer.generate_text(review_request).await?;
+                        let original_chars = request_chars(&review_request);
+                        let response = match reviewer.generate_text(review_request).await {
+                            Ok(response) => response,
+                            Err(error)
+                                if !compacted && generation_limit(&error).is_some() =>
+                            {
+                                compacted = true;
+                                compaction_status = ReviewStatus::Pending;
+                                let compact_request = build_compact_review_request(
+                                    &config,
+                                    &theme,
+                                    &request.instruction,
+                                    &compact_source_bundle,
+                                    &snapshot,
+                                    retry.as_ref(),
+                                    &project_instructions_prompt,
+                                )?;
+                                emit_context_compaction(
+                                    &event_sink,
+                                    GenerationStage::SemanticReview,
+                                    original_chars,
+                                    request_chars(&compact_request),
+                                );
+                                continue;
+                            }
+                            Err(error) => {
+                                if compacted && generation_limit(&error).is_some() {
+                                    compaction_status = ReviewStatus::Failed;
+                                }
+                                return Err(error).context(if compacted {
+                                    "Semantic review still exceeded the model limit after compacting context"
+                                } else {
+                                    "Semantic review request failed"
+                                });
+                            }
+                        };
                         let candidate: Result<String> = (|| {
                             let patch = parse_json_patch(&response.text)?;
                             let mut candidate = document.clone();
@@ -239,16 +337,24 @@ pub async fn generate_slides(
                             Err(error) => Err(error),
                         };
                         match candidate {
-                            Ok(reviewed) => return Ok(reviewed),
-                            Err(error) if attempt == 1 && should_retry_model_output(&error) => {
+                            Ok(reviewed) => {
+                                if compacted {
+                                    compaction_status = ReviewStatus::Completed;
+                                }
+                                return Ok(reviewed);
+                            }
+                            Err(error)
+                                if !validation_retried && should_retry_model_output(&error) =>
+                            {
                                 let error = format!("{error:#}");
-                                emit_review_retry(&event_sink, attempt + 1, &error);
+                                validation_retried = true;
+                                emit_review_retry(&event_sink, 2, &error);
                                 retry = Some(ReviewRetryContext {
                                     invalid_response: response.text,
                                     error,
                                 });
                             }
-                            Err(error) if attempt == 1 => {
+                            Err(error) if !validation_retried => {
                                 return Err(error)
                                     .context("Reviewer output could not be validated");
                             }
@@ -259,15 +365,18 @@ pub async fn generate_slides(
                             }
                         }
                     }
-                    unreachable!("review loop either returns a candidate or an error")
                 }
                 .await;
+                review_summary.context_compaction = compaction_status;
                 match review_result {
                     Ok(reviewed) => {
                         markdown = reviewed;
                         review_summary.semantic_review = ReviewStatus::Completed;
                     }
                     Err(error) => {
+                        if review_summary.context_compaction == ReviewStatus::Pending {
+                            review_summary.context_compaction = ReviewStatus::Failed;
+                        }
                         review_summary.semantic_review = ReviewStatus::Failed;
                         warnings.push(format!(
                             "Slide review failed; using the normalized draft: {error:#}"
@@ -337,6 +446,7 @@ pub async fn generate_slides(
                         );
                         let original_slide = markdown[range.start..range.end].trim().to_string();
                         let mut retry = None;
+                        let mut compacted_context = false;
                         for attempt in 1..=2 {
                             let repair_request = build_layout_repair_request(
                                 LayoutRepairRequestContext {
@@ -346,18 +456,69 @@ pub async fn generate_slides(
                                     title: &title,
                                     slide_markdown: &original_slide,
                                     issue,
+                                    project_instructions: &project_instructions_prompt,
                                 },
                                 retry.as_ref(),
                                 event_sink.clone(),
                             );
-                            let response = match reviewer.generate_text(repair_request).await {
-                                Ok(response) => response,
-                                Err(error) => {
-                                    warnings.push(format!(
-                                        "Focused layout repair failed for slide {}: {error:#}",
-                                        issue.slide
-                                    ));
-                                    break;
+                            let compact_repair_request = build_compact_layout_repair_request(
+                                LayoutRepairRequestContext {
+                                    config: &config,
+                                    theme: &theme,
+                                    instruction: &request.instruction,
+                                    title: &title,
+                                    slide_markdown: &original_slide,
+                                    issue,
+                                    project_instructions: &project_instructions_prompt,
+                                },
+                                retry.as_ref(),
+                                event_sink.clone(),
+                            );
+                            let response = if compacted_context {
+                                match reviewer.generate_text(compact_repair_request).await {
+                                    Ok(response) => response,
+                                    Err(error) => {
+                                        review_summary.context_compaction = ReviewStatus::Failed;
+                                        warnings.push(format!(
+                                            "Focused compact layout repair failed for slide {}: {error:#}",
+                                            issue.slide
+                                        ));
+                                        break;
+                                    }
+                                }
+                            } else {
+                                match generate_with_compact_retry(
+                                    reviewer.as_ref(),
+                                    repair_request,
+                                    compact_repair_request,
+                                    GenerationStage::LayoutRepair,
+                                    &event_sink,
+                                )
+                                .await
+                                {
+                                    Ok(outcome) => {
+                                        if outcome.limit_error.is_some() {
+                                            compacted_context = true;
+                                            if review_summary.context_compaction
+                                                != ReviewStatus::Failed
+                                            {
+                                                review_summary.context_compaction =
+                                                    ReviewStatus::Completed;
+                                            }
+                                        }
+                                        outcome.response
+                                    }
+                                    Err(error) => {
+                                        if compact_retry_failed(&error) {
+                                            review_summary.context_compaction =
+                                                ReviewStatus::Failed;
+                                        }
+                                        warnings.push(format!(
+                                            "Focused layout repair failed for slide {}: {error:#}",
+                                            issue.slide
+                                        ));
+                                        break;
+                                    }
                                 }
                             };
                             let candidate = match normalize_slide_replacement(&response.text) {
@@ -505,21 +666,48 @@ pub async fn generate_slides(
     if let Some(pdf) = &rendered_pdf {
         artifacts.push(pdf.clone());
     }
+    let published_pdf_path = match (&rendered_pdf, publish_root) {
+        (Some(pdf), Some(destination)) => Some(publish_artifact(pdf, &destination)?),
+        _ => None,
+    };
+    let published_artifacts = published_pdf_path.iter().cloned().collect();
 
     Ok(GenerateSlidesResult {
         markdown_path,
         pdf_path: rendered_pdf,
+        published_pdf_path,
         output: GenerationOutput {
             project: config.project_name,
+            project_instructions: project_instructions_path,
             models: selected_models,
             tools: tool_summaries.clone(),
             artifacts,
+            published_artifacts,
             review: review_summary,
         },
         prompt_preview: None,
         tool_summaries,
         warnings,
     })
+}
+
+fn publish_artifact(artifact: &Path, destination_dir: &Path) -> Result<PathBuf> {
+    let filename = artifact
+        .file_name()
+        .context("Published artifact must have a filename")?;
+    fs::create_dir_all(destination_dir)
+        .with_context(|| format!("Could not create {}", destination_dir.display()))?;
+    let destination = destination_dir.join(filename);
+    if artifact != destination {
+        fs::copy(artifact, &destination).with_context(|| {
+            format!(
+                "Could not publish {} to {}",
+                artifact.display(),
+                destination.display()
+            )
+        })?;
+    }
+    Ok(destination)
 }
 
 fn emit_stage(
@@ -535,6 +723,65 @@ fn emit_stage(
     }
 }
 
+#[derive(Debug)]
+struct CompactRetryOutcome {
+    response: TextGenerationResponse,
+    limit_error: Option<String>,
+}
+
+#[derive(Debug)]
+struct CompactRetryError(anyhow::Error);
+
+impl std::fmt::Display for CompactRetryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Model request failed after compacting context: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for CompactRetryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+async fn generate_with_compact_retry(
+    provider: &dyn TextGenerationProvider,
+    request: TextGenerationRequest,
+    compact_request: TextGenerationRequest,
+    stage: GenerationStage,
+    event_sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+) -> Result<CompactRetryOutcome> {
+    let original_chars = request_chars(&request);
+    match provider.generate_text(request).await {
+        Ok(response) => Ok(CompactRetryOutcome {
+            response,
+            limit_error: None,
+        }),
+        Err(error) if generation_limit(&error).is_some() => {
+            emit_context_compaction(
+                event_sink,
+                stage,
+                original_chars,
+                request_chars(&compact_request),
+            );
+            let limit_error = format!("{error:#}");
+            let response = provider
+                .generate_text(compact_request)
+                .await
+                .map_err(CompactRetryError)?;
+            Ok(CompactRetryOutcome {
+                response,
+                limit_error: Some(limit_error),
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn emit_title_repair(
     sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
     error: &str,
@@ -542,6 +789,21 @@ fn emit_title_repair(
     if let Some(sink) = sink {
         sink(TextGenerationEvent::DraftTitleRepairStarted {
             error: error.to_string(),
+        });
+    }
+}
+
+fn emit_context_compaction(
+    sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    stage: GenerationStage,
+    original_chars: usize,
+    compacted_chars: usize,
+) {
+    if let Some(sink) = sink {
+        sink(TextGenerationEvent::ContextCompactionStarted {
+            stage,
+            original_chars,
+            compacted_chars,
         });
     }
 }
@@ -860,6 +1122,7 @@ fn build_generation_request(
     title: Option<&str>,
     source_bundle: &str,
     image_generation_available: bool,
+    project_instructions: &str,
 ) -> TextGenerationRequest {
     let learning_style = if config.user.learning_style.is_empty() {
         "not specified".to_string()
@@ -878,7 +1141,7 @@ fn build_generation_request(
             .to_string(),
     };
     let image_requirement = if image_generation_available {
-        "- You may call `sfumato_image_gen` when a purpose-built educational illustration would teach better than text or Mermaid. Give it a precise subject, composition, labels, and learning purpose, then embed the returned `markdown_path` with standard Markdown image syntax. Sfumato applies the project theme automatically."
+        "- You may call `sfumato_image_gen` when a purpose-built educational illustration would teach better than text or Mermaid. Give it a precise subject, composition, labels, and learning purpose. Embed the returned `markdown_path` with Marp's `![height:420px](images/file.png)` syntax so the image fits within the slide. Sfumato applies the project theme automatically."
     } else {
         "- No image generation model is configured. Use Markdown and Mermaid for visuals."
     };
@@ -893,9 +1156,12 @@ Theme colors: {theme_colors}
 Theme fonts: {theme_fonts}
 Instruction: {instruction}
 
+{project_instructions}
+
 Requirements:
 - {title_requirement}
 - Return only Markdown.
+- Return raw Marp Markdown. Never wrap the deck in a `marp`, `markdown`, or `md` code fence.
 - Start the document with Marp frontmatter as the first bytes. Do not put a slide, title, blank `---`, or any text before it.
 - Do not include `style:`, inline CSS, or generated theme CSS in Marp frontmatter.
 - Set Marp math rendering to MathJax with `math: mathjax`.
@@ -931,12 +1197,43 @@ Source material:
     TextGenerationRequest::new(system_prompt, user_prompt)
 }
 
+fn build_compact_generation_request(
+    config: &EffectiveConfig,
+    theme: &ThemePackage,
+    instruction: &str,
+    title: Option<&str>,
+    compact_source_bundle: &str,
+    project_instructions: &str,
+    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+) -> TextGenerationRequest {
+    let mut request = build_generation_request(
+        config,
+        theme,
+        instruction,
+        title,
+        compact_source_bundle,
+        false,
+        &excerpt(project_instructions, 4_000),
+    );
+    request.system_prompt.push_str(
+        " This is a token-limit recovery request. Plan briefly, then return a concise and complete deck without exhaustive internal analysis.",
+    );
+    request.user_prompt = format!(
+        "Token-limit recovery requirements:\n- Follow the original instruction exactly.\n- Produce a complete deck of at most 14 slides.\n- Keep each slide to one principal idea and at most 5 short bullets.\n- Do not call tools; use only the compact evidence supplied below.\n- Prefer completeness over exhaustive coverage.\n\n{}",
+        request.user_prompt
+    );
+    request.event_sink = event_sink;
+    request
+}
+
 fn build_title_repair_request(
     config: &EffectiveConfig,
     instruction: &str,
     draft: &str,
     validation_error: &str,
+    project_instructions: &str,
 ) -> TextGenerationRequest {
+    let project_instructions = excerpt(project_instructions, 1_500);
     let headings = markdown_headings(draft);
     let headings = if headings.is_empty() {
         "No usable headings were found in the draft.".to_string()
@@ -955,6 +1252,8 @@ fn build_title_repair_request(
 Project: {project}
 Original instruction: {instruction}
 Validation error: {validation_error}
+
+{project_instructions}
 
 Existing deck headings:
 {headings}
@@ -978,6 +1277,7 @@ fn build_review_request(
     source_bundle: &str,
     snapshot: &ReviewSnapshot,
     retry: Option<&ReviewRetryContext>,
+    project_instructions: &str,
 ) -> Result<TextGenerationRequest> {
     let snapshot = serde_json::to_string_pretty(snapshot)
         .context("Could not serialize slide deck review snapshot")?;
@@ -1010,6 +1310,8 @@ Theme: {theme_name}
 Theme colors: {theme_colors}
 Theme fonts: {theme_fonts}
 
+{project_instructions}
+
 Review requirements:
 - Return only an RFC 6902 JSON Patch array. Do not use a Markdown code fence.
 - The patch target is the object inside `document`; paths therefore start at `/revision`, `/slides`, or `/order`, not `/document`.
@@ -1040,6 +1342,115 @@ Structured review snapshot:
         theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
     );
     Ok(TextGenerationRequest::new(system_prompt, user_prompt))
+}
+
+fn build_compact_review_request(
+    config: &EffectiveConfig,
+    theme: &ThemePackage,
+    instruction: &str,
+    compact_source_bundle: &str,
+    snapshot: &ReviewSnapshot,
+    retry: Option<&ReviewRetryContext>,
+    project_instructions: &str,
+) -> Result<TextGenerationRequest> {
+    let snapshot = compact_review_snapshot(snapshot)?;
+    let retry_feedback = retry
+        .map(|retry| {
+            format!(
+                "\nCorrective retry:\nThe previous compact patch was invalid: {}\nPrevious response: {}\n",
+                excerpt(&retry.error, 1_000),
+                excerpt(&retry.invalid_response, 4_000),
+            )
+        })
+        .unwrap_or_default();
+    let system_prompt = "You are Sfumato's focused slide reviewer recovering from a token-limit failure. Return a small RFC 6902 JSON Patch without analysis or a Markdown fence.".to_string();
+    let user_prompt = format!(
+        r#"Perform a focused review of this generated slide deck.
+
+Original instruction: {instruction}
+Project: {project}
+Theme: {theme_name}
+Theme colors: {theme_colors}
+Theme fonts: {theme_fonts}
+
+{project_instructions}
+
+Token-limit recovery requirements:
+- Do not perform an exhaustive review. Select at most 3 highest-impact factual, duplication, or sequencing corrections.
+- Return only an RFC 6902 JSON Patch array and keep the response under 4,000 tokens.
+- Start with a `test` operation for `/revision` before any mutation.
+- Test `/slides/<id>/revision` before replacing or removing that slide.
+- Prefer replacing only `/slides/<id>/markdown`.
+- The compact snapshot is a read-only reference for the original document; patch paths still start at `/revision`, `/slides`, or `/order`.
+- Replace a slide only when `markdown_complete` is true, because a truncated excerpt cannot safely reconstruct the original slide.
+- Do not modify the title slide, metadata, IDs, revisions, headings, kinds, or element summaries.
+- Use only the compact evidence below. Do not call filesystem tools.
+- Return `[]` when no high-confidence correction is necessary.
+{retry_feedback}
+
+Compact source evidence:
+{compact_source_bundle}
+
+Compact deck snapshot:
+{snapshot}
+"#,
+        project = config.project_name,
+        theme_name = theme.manifest.name,
+        theme_colors = format_tokens(&theme.manifest.tokens.colors),
+        theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
+        project_instructions = excerpt(project_instructions, 4_000),
+    );
+    Ok(TextGenerationRequest::new(system_prompt, user_prompt))
+}
+
+fn compact_review_snapshot(snapshot: &ReviewSnapshot) -> Result<String> {
+    let document = snapshot
+        .document
+        .as_object()
+        .context("Slide review snapshot document must be an object")?;
+    let slides = document
+        .get("slides")
+        .and_then(serde_json::Value::as_object)
+        .context("Slide review snapshot is missing slides")?;
+    let order = document
+        .get("order")
+        .and_then(serde_json::Value::as_array)
+        .context("Slide review snapshot is missing slide order")?;
+    let per_slide_budget = (30_000 / slides.len().max(1)).clamp(500, 1_800);
+    let compact_slides = order
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter_map(|id| {
+            slides
+                .get(id)
+                .and_then(serde_json::Value::as_object)
+                .map(|slide| (id, slide))
+        })
+        .map(|(id, slide)| {
+            let markdown = slide
+                .get("markdown")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            serde_json::json!({
+                "id": id,
+                "revision": slide.get("revision"),
+                "kind": slide.get("kind"),
+                "heading": slide.get("heading"),
+                "elements": slide.get("elements"),
+                "markdown": excerpt(markdown, per_slide_budget),
+                "markdown_complete": markdown.chars().count() <= per_slide_budget,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": snapshot.schema_version,
+        "format": snapshot.format,
+        "revision": snapshot.revision,
+        "title": document.get("title"),
+        "order": order,
+        "slides": compact_slides,
+    }))
+    .context("Could not serialize compact slide review snapshot")
 }
 
 struct ReviewRetryContext {
@@ -1082,6 +1493,8 @@ Deck title: {title}
 Project: {project}
 Theme: {theme_name}
 
+{project_instructions}
+
 Measured layout issue:
 {issue_report}
 
@@ -1090,6 +1503,7 @@ Requirements:
 - Do not return Marp frontmatter or a leading/trailing `---` separator.
 - Preserve the slide's factual meaning and useful explanations.
 - Prefer concise wording when it resolves the overflow.
+- If a generated image contributes to overflow, reduce its native Marp `height:` directive. Keep its aspect ratio and do not replace it with raw HTML.
 - If necessary, split this slide into two coherent slides using one `---` separator between them.
 - Do not add inline CSS, raw HTML, or alter global theme settings.
 - Keep MathJax formulas and Mermaid diagrams valid.
@@ -1104,10 +1518,39 @@ Exact slide fragment to replace:
         title = context.title,
         project = context.config.project_name,
         theme_name = context.theme.manifest.name,
+        project_instructions = context.project_instructions,
         slide_markdown = context.slide_markdown,
     );
     let mut request = TextGenerationRequest::new(system_prompt, user_prompt);
     request.event_sink = event_sink;
+    request
+}
+
+fn build_compact_layout_repair_request(
+    context: LayoutRepairRequestContext<'_>,
+    retry: Option<&LayoutRepairRetryContext>,
+    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+) -> TextGenerationRequest {
+    let compact_retry = retry.map(|retry| LayoutRepairRetryContext {
+        invalid_response: excerpt(&retry.invalid_response, 2_000),
+        error: excerpt(&retry.error, 1_000),
+    });
+    let compact_instructions = excerpt(context.project_instructions, 1_500);
+    let mut request = build_layout_repair_request(
+        LayoutRepairRequestContext {
+            project_instructions: &compact_instructions,
+            ..context
+        },
+        compact_retry.as_ref(),
+        event_sink,
+    );
+    request.system_prompt.push_str(
+        " This is a token-limit recovery request. Do not explain or reason aloud; return the direct replacement immediately.",
+    );
+    request.user_prompt = format!(
+        "Token-limit recovery: preserve the original teaching point and make the smallest layout correction that fixes the measured overflow. Keep the response under 1,200 tokens.\n\n{}",
+        request.user_prompt
+    );
     request
 }
 
@@ -1118,6 +1561,7 @@ struct LayoutRepairRequestContext<'a> {
     title: &'a str,
     slide_markdown: &'a str,
     issue: &'a SlideLayoutIssue,
+    project_instructions: &'a str,
 }
 
 struct LayoutRepairRetryContext {
@@ -1398,6 +1842,47 @@ fn build_source_bundle(documents: &[SourceDocument]) -> String {
         .join("\n")
 }
 
+fn build_compact_source_bundle(documents: &[SourceDocument], max_chars: usize) -> String {
+    if documents.is_empty() {
+        return "No explicit source files were supplied.".to_string();
+    }
+    let index = documents
+        .iter()
+        .map(|document| format!("- {}", document.path.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let index_chars = index.chars().count();
+    let remaining = max_chars.saturating_sub(index_chars + 32);
+    let per_document = (remaining / documents.len().max(1)).clamp(200, 1_200);
+    let excerpts = documents
+        .iter()
+        .map(|document| {
+            format!(
+                "\n--- {} ---\n{}",
+                document.path.display(),
+                excerpt(&document.content, per_document)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    excerpt(
+        &format!("Source index:\n{index}\n\nDistributed excerpts:{excerpts}"),
+        max_chars,
+    )
+}
+
+fn request_chars(request: &TextGenerationRequest) -> usize {
+    request.system_prompt.chars().count() + request.user_prompt.chars().count()
+}
+
+fn generation_limit(error: &anyhow::Error) -> Option<&TextGenerationLimitError> {
+    error.downcast_ref::<TextGenerationLimitError>()
+}
+
+fn compact_retry_failed(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<CompactRetryError>().is_some()
+}
+
 fn excerpt(content: &str, max_chars: usize) -> String {
     let mut excerpt = content.chars().take(max_chars).collect::<String>();
     if content.chars().count() > max_chars {
@@ -1418,6 +1903,7 @@ fn normalize_marp_markdown(
 
     markdown = canonical_marp_document(body, &config.theme);
     markdown = remove_duplicate_leading_title_slides(markdown, title);
+    markdown = constrain_generated_images(&markdown);
 
     if !markdown.contains("\n---") {
         bail!("Generated deck does not contain Marp slide separators.");
@@ -1426,6 +1912,12 @@ fn normalize_marp_markdown(
     markdown = ensure_title_slide(markdown, title)?;
 
     Ok(markdown)
+}
+
+fn validate_normalized_deck(markdown: &str, title: &str) -> Result<()> {
+    SlideDeckDocument::from_marp(markdown, title)
+        .context("Generated slide deck is invalid after normalization")?;
+    Ok(())
 }
 
 fn canonical_marp_document(body: &str, theme: &str) -> String {
@@ -1637,6 +2129,7 @@ fn normalize_slide_replacement(generated: &str) -> Result<String> {
     }
 
     fragment = trim_outer_slide_separators(&fragment).to_string();
+    fragment = constrain_generated_images(&fragment);
     if fragment.trim().is_empty() {
         bail!("Reviewer returned an empty slide replacement");
     }
@@ -1743,6 +2236,58 @@ fn sanitize_marp_markdown(markdown: &str) -> String {
             "article", "div", "section", "span", "p", "br", "svg", "style",
         ],
     )
+}
+
+fn constrain_generated_images(markdown: &str) -> String {
+    let mut output = String::with_capacity(markdown.len());
+    let mut cursor = 0;
+
+    while let Some(relative_start) = markdown[cursor..].find("![") {
+        let image_start = cursor + relative_start;
+        output.push_str(&markdown[cursor..image_start]);
+
+        let alt_start = image_start + 2;
+        let Some(relative_alt_end) = markdown[alt_start..].find("](") else {
+            output.push_str(&markdown[image_start..]);
+            return output;
+        };
+        let alt_end = alt_start + relative_alt_end;
+        let target_start = alt_end + 2;
+        let Some(relative_target_end) = markdown[target_start..].find(')') else {
+            output.push_str(&markdown[image_start..]);
+            return output;
+        };
+        let target_end = target_start + relative_target_end;
+        let alt = &markdown[alt_start..alt_end];
+        let target = markdown[target_start..target_end].trim();
+
+        if is_generated_image_target(target) && !has_marp_image_layout(alt) {
+            output.push_str(&format!(
+                "![height:{GENERATED_IMAGE_MARP_HEIGHT}]({target})"
+            ));
+        } else {
+            output.push_str(&markdown[image_start..=target_end]);
+        }
+        cursor = target_end + 1;
+    }
+
+    output.push_str(&markdown[cursor..]);
+    output
+}
+
+fn is_generated_image_target(target: &str) -> bool {
+    target.starts_with("images/") || target.starts_with("./images/")
+}
+
+fn has_marp_image_layout(alt: &str) -> bool {
+    alt.split_whitespace().any(|part| {
+        let option = part.to_ascii_lowercase();
+        option == "bg"
+            || option.starts_with("bg:")
+            || ["width:", "height:", "w:", "h:"]
+                .iter()
+                .any(|prefix| option.starts_with(prefix))
+    })
 }
 
 fn strip_code_blocks_by_language(markdown: &str, languages: &[&str]) -> String {
@@ -1868,13 +2413,40 @@ fn strip_code_fence(text: &str) -> &str {
         let Some(opening_line_end) = after_marker.find('\n') else {
             continue;
         };
+        let language = after_marker[..opening_line_end].trim();
         let body = &after_marker[opening_line_end + 1..];
+        if is_markdown_document_language(language) {
+            return strip_optional_document_closing_fence(body, marker);
+        }
         let Some(body) = body.trim_end().strip_suffix(marker) else {
             continue;
         };
         return body.trim();
     }
     text
+}
+
+fn is_markdown_document_language(language: &str) -> bool {
+    matches!(
+        language.to_ascii_lowercase().as_str(),
+        "marp" | "markdown" | "md"
+    )
+}
+
+fn strip_optional_document_closing_fence<'a>(body: &'a str, marker: &str) -> &'a str {
+    let marker_character = marker.chars().next().unwrap_or('`');
+    let marker_count = body
+        .lines()
+        .filter_map(|line| markdown_code_fence(line.trim_start()))
+        .filter(|(character, length)| *character == marker_character && *length >= marker.len())
+        .count();
+    let body = body.trim();
+
+    if marker_count % 2 == 1 {
+        body.strip_suffix(marker).map(str::trim_end).unwrap_or(body)
+    } else {
+        body
+    }
 }
 
 fn ensure_inside(root: &Path, path: &Path) -> Result<()> {

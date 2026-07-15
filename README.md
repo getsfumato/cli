@@ -8,12 +8,25 @@ Claude Code.
 The current class diagram is available in
 [docs/class-diagram.mmd](docs/class-diagram.mmd).
 
-Run `sfumato` without arguments to open the interactive command launcher. Its
-nested menus collect command arguments and execute the same commands exposed by
-Clap:
+Run `sfumato` without arguments to open the Ratatui workspace:
 
 ```bash
 cargo run
+```
+
+The workspace provides nested setup, project, model, connector, theme, and
+configuration views with in-place forms and actions. Slide generation uses an
+in-terminal request form and a live pipeline view with stage progress, readable
+model/tool activity, warnings, artifact paths, and previews for generated
+images when the terminal supports them. Screen transitions use TachyonFX; the
+header and scrollable activity surfaces use `tui-widgets`.
+
+Explicit Clap commands remain available for scripts, agents, shell history, and
+machine-readable `--json` output. They do not enter the alternate-screen TUI:
+
+```bash
+sfumato project list
+sfumato generate slides --instruction "Explain Fourier series visually" --json
 ```
 
 ## Mental Model
@@ -44,6 +57,18 @@ Each project keeps portable settings in:
 ```text
 <project-root>/.sfumato/project.toml
 ```
+
+Projects may also define model guidance in the registered project root:
+
+```text
+<project-root>/SFUMATO.md
+```
+
+Slide generation loads this optional UTF-8 file before collecting sources and
+injects it into the drafter, title recovery, semantic reviewer, focused layout
+repairer, and image-generation prompts. Sfumato reads only the file at the exact
+project root, limits it to 64 KiB, and keeps it separate from source material.
+Dry-run and JSON output report the loaded instruction path.
 
 Reusable themes live in:
 
@@ -201,16 +226,32 @@ cargo run -- generate slides \
 ```
 
 Generated decks include a copied theme CSS artifact under
-`slides/themes/<theme-name>.css`. Normal generation writes both Marp Markdown
-and a PDF. PDF export passes the copied CSS for the configured project theme
-directly to Marp:
+`~/.sfumato/Projects/<project>/slides/themes/<theme-name>.css`. Every generation
+writes its Markdown, generated images, Mermaid sources, theme CSS, and rendered
+PDF into this central project workspace. The registered project path remains a
+read-only source root apart from its portable `.sfumato/project.toml` config.
+
+PDF export passes the copied CSS for the configured project theme directly to
+Marp:
 
 ```text
-marp --theme <output>/slides/themes/<theme-name>.css <deck.md> -o <deck.pdf>
+marp --theme ~/.sfumato/Projects/<project>/slides/themes/<theme-name>.css <deck.md> -o <deck.pdf>
 ```
 
 If Marp CLI is not installed, Sfumato keeps the Markdown and theme CSS artifacts
 and prints a clear PDF export warning.
+
+Use `--out` to publish only the processed PDF to another folder while retaining
+the complete generation workspace centrally:
+
+```bash
+cargo run -- generate slides \
+  --instruction "Explain Fourier series visually" \
+  --out "/path/to/Obsidian/Published Slides"
+```
+
+A persistent project publication destination can be configured with
+`publish_dir`. Relative values are resolved from the registered project root.
 
 If Marp needs an explicit browser executable, configure it in the global or
 project Marp settings:
@@ -224,6 +265,26 @@ browser_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 Sfumato uses `browser_path` first, then tries common local Chromium browser
 locations, then lets Marp use its own defaults.
 
+Text connectors must finish with a complete response. If an OpenAI-compatible
+connector reports `finish_reason: length` or `max_tokens`, or rejects a request
+because its context window is full, Sfumato rejects the partial response and
+starts one stage-specific compact recovery request:
+
+- Draft recovery distributes a bounded evidence digest across the supplied
+  files, trims project guidance, disables additional tools, and asks for a
+  complete deck of at most 14 slides.
+- Semantic-review recovery sends a bounded deck snapshot and source digest,
+  disables tools, and requests at most three high-impact RFC 6902 changes.
+  Slides with truncated Markdown are explicitly protected from replacement.
+- Layout recovery sends only the overflowing slide, measured issue, and trimmed
+  project guidance, requesting a direct replacement under 1,200 tokens.
+
+The terminal reports the original and compacted prompt sizes when recovery
+starts. JSON output exposes the result as `review.context_compaction`. If the
+single compact retry also fails, Sfumato preserves the normalized draft or last
+valid reviewed deck and reports the remaining issue; truncated Markdown is
+never published as a valid artifact.
+
 During generation, Sfumato declares read-only filesystem tools to compatible
 models. The model can ask Sfumato to list directories or read UTF-8 text files,
 but tool execution is restricted to the active project root and any source paths
@@ -234,7 +295,12 @@ declares `sfumato_image_gen`. The drafter supplies a concrete educational image
 prompt, while Sfumato adds the selected theme's semantic colors and fonts before
 calling the connector's image endpoint. Generated images are stored under
 `slides/images/`, returned to the drafter as relative Markdown paths, and listed
-as generation artifacts. The reviewer does not receive this tool.
+as generation artifacts. Sfumato adds a `height:420px` Marp constraint when the
+drafter does not provide one, preserving the original full-resolution image. If
+the composed slide still overflows, the local layout check sends only that slide
+to the focused reviewer, which may reduce the image height or split the content;
+the repair is accepted only when a second browser measurement improves it. The
+reviewer does not receive the image-generation tool.
 
 Slide generation also allows Mermaid diagrams. The text model may return fenced
 `mermaid` blocks; before writing the deck, Sfumato renders each diagram to SVG,
@@ -289,8 +355,8 @@ Return machine-readable output for agent callers:
 cargo run -- generate slides --instruction "Explain Fourier series" --json
 ```
 
-Successful JSON includes the selected project, selected model profiles, and
-declared tool summaries, and artifact paths:
+Successful JSON distinguishes internal workspace artifacts from published
+processed artifacts:
 
 ```json
 {
@@ -309,7 +375,11 @@ declared tool summaries, and artifact paths:
     }
   ],
   "artifacts": [
-    "/path/to/vault/Resources/Sfumato/slides/explain-fourier-series.md"
+    "/Users/alex/.sfumato/Projects/university/slides/explain-fourier-series.md",
+    "/Users/alex/.sfumato/Projects/university/slides/explain-fourier-series.pdf"
+  ],
+  "published_artifacts": [
+    "/path/to/vault/Published Slides/explain-fourier-series.pdf"
   ]
 }
 ```
@@ -335,7 +405,8 @@ cargo run -- config set models.cloud-text.model openai/gpt-4o-mini
 Edit the active or named project:
 
 ```bash
-cargo run -- config set output_dir "Resources/Sfumato" --scope project
+cargo run -- config set publish_dir "Published Slides" --scope project
+cargo run -- config delete publish_dir --scope project
 cargo run -- config set model_defaults.text cloud-text --scope project --project university
 cargo run -- config delete model_defaults.text --scope project --project university
 ```

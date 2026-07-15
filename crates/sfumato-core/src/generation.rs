@@ -27,9 +27,11 @@ pub enum ResourceKind {
 #[derive(Debug, Serialize)]
 pub struct GenerationOutput {
     pub project: String,
+    pub project_instructions: Option<PathBuf>,
     pub models: BTreeMap<String, String>,
     pub tools: Vec<GenerationToolSummary>,
     pub artifacts: Vec<PathBuf>,
+    pub published_artifacts: Vec<PathBuf>,
     pub review: SlideReviewSummary,
 }
 
@@ -43,6 +45,7 @@ pub struct GenerationToolSummary {
 pub struct SlideReviewSummary {
     pub enabled: bool,
     pub semantic_review: ReviewStatus,
+    pub context_compaction: ReviewStatus,
     pub layout_check: ReviewStatus,
     pub repair: ReviewStatus,
     pub remaining_issues: Vec<SlideLayoutIssue>,
@@ -53,6 +56,7 @@ impl SlideReviewSummary {
         Self {
             enabled: false,
             semantic_review: ReviewStatus::Skipped,
+            context_compaction: ReviewStatus::Skipped,
             layout_check: ReviewStatus::Skipped,
             repair: ReviewStatus::Skipped,
             remaining_issues: Vec::new(),
@@ -63,6 +67,7 @@ impl SlideReviewSummary {
         Self {
             enabled: true,
             semantic_review: ReviewStatus::Pending,
+            context_compaction: ReviewStatus::NotNeeded,
             layout_check: ReviewStatus::Pending,
             repair: ReviewStatus::NotNeeded,
             remaining_issues: Vec::new(),

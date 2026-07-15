@@ -22,7 +22,7 @@ use sfumato_core::{
     models::ModelService,
     projects::ProjectService,
     providers::TextGenerationEvent,
-    resources::slides::{GenerateSlidesOptions, generate_slides},
+    resources::slides::{GenerateSlidesOptions, GenerateSlidesResult, generate_slides},
     themes::ThemeService,
 };
 
@@ -359,8 +359,15 @@ impl RunnableCommand for GenerateCommands {
 impl RunnableCommand for SlidesArgs {
     async fn run(self) -> Result<()> {
         let json = self.json;
-        match self.execute().await {
-            Ok(()) => Ok(()),
+        let dry_run = self.dry_run;
+        let event_sink = (!json && !dry_run)
+            .then_some(std::sync::Arc::new(render_generation_event)
+                as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
+        match execute_slides(self, event_sink).await {
+            Ok(result) => {
+                render_slides_result(result, json, dry_run)?;
+                Ok(())
+            }
             Err(error) if json => {
                 println!("{}", serde_json::json!({ "error": format!("{error:#}") }));
                 Err(error)
@@ -370,79 +377,88 @@ impl RunnableCommand for SlidesArgs {
     }
 }
 
-impl SlidesArgs {
-    async fn execute(self) -> Result<()> {
-        if self.instruction.trim().is_empty() {
-            bail!("Instruction cannot be empty");
-        }
-        let model_overrides = parse_model_overrides(&self.model_overrides)?;
-        let config = EffectiveConfig::load(ConfigOverrides {
-            project: self.project.clone(),
-            theme: self.theme,
-            model_overrides: model_overrides.clone(),
-            reviewer_model: self.review_model,
-            output_dir: self.out,
-            pdf: self.pdf,
-        })?;
-        let request = GenerationRequest {
-            instruction: self.instruction,
-            sources: self.inputs,
-            resource_kind: ResourceKind::Slides,
-            project: self.project,
-            model_overrides,
-        };
-        let result = generate_slides(
-            config,
-            request,
-            GenerateSlidesOptions {
-                title: self.title,
-                dry_run: self.dry_run,
-                review: !self.no_review,
-                event_sink: (!self.json && !self.dry_run)
-                    .then_some(std::sync::Arc::new(render_generation_event)
-                        as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>),
-            },
-        )
-        .await?;
-        for warning in &result.warnings {
-            eprintln!("{warning}");
-        }
-
-        if self.json {
-            println!("{}", serde_json::to_string_pretty(&result.output)?);
-        } else if self.dry_run {
-            if !result.tool_summaries.is_empty() {
-                println!("Injected tools:");
-                for tool in &result.tool_summaries {
-                    println!("- {}: {}", tool.name, tool.description);
-                }
-                println!();
-            }
-            if let Some(prompt) = result.prompt_preview {
-                println!("{prompt}");
-            }
-            if result.output.review.enabled {
-                let reviewer = result
-                    .output
-                    .models
-                    .get("reviewer")
-                    .map(String::as_str)
-                    .unwrap_or("draft model");
-                println!(
-                    "Review: enabled with model profile '{reviewer}' (semantic review and conditional layout repair)."
-                );
-            } else {
-                println!("Review: disabled.");
-            }
-            println!("Dry run complete; no files were written.");
-        } else {
-            println!("Wrote {}", result.markdown_path.display());
-            if let Some(pdf_path) = result.pdf_path {
-                println!("Wrote {}", pdf_path.display());
-            }
-        }
-        Ok(())
+pub(crate) async fn execute_slides(
+    args: SlidesArgs,
+    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+) -> Result<GenerateSlidesResult> {
+    if args.instruction.trim().is_empty() {
+        bail!("Instruction cannot be empty");
     }
+    let model_overrides = parse_model_overrides(&args.model_overrides)?;
+    let config = EffectiveConfig::load(ConfigOverrides {
+        project: args.project.clone(),
+        theme: args.theme,
+        model_overrides: model_overrides.clone(),
+        reviewer_model: args.review_model,
+        publish_dir: args.out,
+        pdf: args.pdf,
+    })?;
+    let request = GenerationRequest {
+        instruction: args.instruction,
+        sources: args.inputs,
+        resource_kind: ResourceKind::Slides,
+        project: args.project,
+        model_overrides,
+    };
+    generate_slides(
+        config,
+        request,
+        GenerateSlidesOptions {
+            title: args.title,
+            dry_run: args.dry_run,
+            review: !args.no_review,
+            event_sink,
+        },
+    )
+    .await
+}
+
+fn render_slides_result(result: GenerateSlidesResult, json: bool, dry_run: bool) -> Result<()> {
+    for warning in &result.warnings {
+        eprintln!("{warning}");
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result.output)?);
+    } else if dry_run {
+        match &result.output.project_instructions {
+            Some(path) => println!("Project instructions: {}\n", path.display()),
+            None => println!("Project instructions: no SFUMATO.md found\n"),
+        }
+        if !result.tool_summaries.is_empty() {
+            println!("Injected tools:");
+            for tool in &result.tool_summaries {
+                println!("- {}: {}", tool.name, tool.description);
+            }
+            println!();
+        }
+        if let Some(prompt) = &result.prompt_preview {
+            println!("{prompt}");
+        }
+        if result.output.review.enabled {
+            let reviewer = result
+                .output
+                .models
+                .get("reviewer")
+                .map(String::as_str)
+                .unwrap_or("draft model");
+            println!(
+                "Review: enabled with model profile '{reviewer}' (semantic review and conditional layout repair)."
+            );
+        } else {
+            println!("Review: disabled.");
+        }
+        println!("Dry run complete; no files were written.");
+    } else {
+        println!("Wrote {}", result.markdown_path.display());
+        if let Some(pdf_path) = &result.pdf_path {
+            println!("Wrote {}", pdf_path.display());
+        }
+        if let Some(published_pdf_path) = &result.published_pdf_path {
+            println!("Published {}", published_pdf_path.display());
+        }
+    }
+    Ok(())
 }
 
 fn render_generation_event(event: TextGenerationEvent) {
@@ -508,6 +524,19 @@ fn render_generation_event(event: TextGenerationEvent) {
                 "{} attempt {attempt}: {}",
                 styled_label("review retry", ANSI_YELLOW),
                 yellow(&compact_preview(&error, 220))
+            );
+        }
+        TextGenerationEvent::ContextCompactionStarted {
+            stage,
+            original_chars,
+            compacted_chars,
+        } => {
+            eprintln!(
+                "{} {} context from {} to {} characters",
+                styled_label("recovery", ANSI_YELLOW),
+                stage.as_str(),
+                yellow(&original_chars.to_string()),
+                green(&compacted_chars.to_string())
             );
         }
         TextGenerationEvent::LayoutCheckCompleted { issues } => {

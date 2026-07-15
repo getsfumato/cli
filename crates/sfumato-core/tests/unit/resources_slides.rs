@@ -1,4 +1,6 @@
 use super::*;
+
+const PROJECT_INSTRUCTIONS: &str = "Project instructions loaded from /tmp/demo/SFUMATO.md:\n<sfumato_project_instructions>\nTeach visually in Spanish.\n</sfumato_project_instructions>";
 use crate::config::GlobalConfig;
 
 fn effective_config() -> EffectiveConfig {
@@ -7,7 +9,7 @@ fn effective_config() -> EffectiveConfig {
         user: global.user,
         project_name: "demo".to_string(),
         project_root: PathBuf::from("/tmp/demo"),
-        output_dir: PathBuf::from("Resources/Sfumato"),
+        publish_dir: None,
         theme: "sfumato-default".to_string(),
         connectors: global.connectors,
         models: global.models,
@@ -28,6 +30,112 @@ fn supports_no_source_files() {
     assert!(collect_sources(&[]).unwrap().is_empty());
 }
 
+struct LimitThenSuccessProvider {
+    prompts: std::sync::Mutex<Vec<String>>,
+}
+
+struct ImmediateFailureProvider {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl TextGenerationProvider for ImmediateFailureProvider {
+    async fn generate_text(
+        &self,
+        _request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        anyhow::bail!("connector unavailable")
+    }
+}
+
+#[async_trait::async_trait]
+impl TextGenerationProvider for LimitThenSuccessProvider {
+    async fn generate_text(
+        &self,
+        request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse> {
+        let mut prompts = self.prompts.lock().unwrap();
+        prompts.push(request.user_prompt);
+        if prompts.len() == 1 {
+            return Err(TextGenerationLimitError::output(
+                "reviewer".to_string(),
+                16_000,
+                Some("length".to_string()),
+                Some(16_000),
+                Some(11_504),
+                true,
+            )
+            .into());
+        }
+        Ok(TextGenerationResponse {
+            text: "compact response".to_string(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn token_limit_retries_once_with_the_compact_request() {
+    let provider = LimitThenSuccessProvider {
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let event_log = events.clone();
+    let sink = Some(std::sync::Arc::new(move |event| {
+        event_log.lock().unwrap().push(event);
+    })
+        as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
+
+    let outcome = generate_with_compact_retry(
+        &provider,
+        TextGenerationRequest::new("system".into(), "full payload".into()),
+        TextGenerationRequest::new("system".into(), "compact payload".into()),
+        GenerationStage::SemanticReview,
+        &sink,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.response.text, "compact response");
+    assert!(
+        outcome
+            .limit_error
+            .unwrap()
+            .contains("reasoning tokens: 11504")
+    );
+    assert_eq!(
+        provider.prompts.lock().unwrap().as_slice(),
+        ["full payload", "compact payload"]
+    );
+    assert!(matches!(
+        events.lock().unwrap().as_slice(),
+        [TextGenerationEvent::ContextCompactionStarted {
+            stage: GenerationStage::SemanticReview,
+            ..
+        }]
+    ));
+}
+
+#[tokio::test]
+async fn unrelated_provider_errors_do_not_trigger_compaction() {
+    let provider = ImmediateFailureProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+
+    let error = generate_with_compact_retry(
+        &provider,
+        TextGenerationRequest::new("system".into(), "full payload".into()),
+        TextGenerationRequest::new("system".into(), "compact payload".into()),
+        GenerationStage::Draft,
+        &None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("connector unavailable"));
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 #[test]
 fn strips_markdown_code_fence() {
     let text = "```markdown\n---\nmarp: true\n---\n# Title\n```";
@@ -44,6 +152,26 @@ fn strips_marp_code_fence_without_leaving_the_language_label() {
 }
 
 #[test]
+fn strips_unclosed_marp_document_fence() {
+    let text = "```marp\n---\nmarp: true\n---\n\n# Demo\n\n---\n\n## Concept";
+
+    let stripped = strip_code_fence(text);
+
+    assert!(stripped.starts_with("---\nmarp: true"));
+    assert!(stripped.ends_with("## Concept"));
+    assert!(!stripped.contains("```marp"));
+}
+
+#[test]
+fn preserves_inner_fences_when_outer_marp_fence_is_unclosed() {
+    let text = "```marp\n---\nmarp: true\n---\n\n# Demo\n\n---\n\n```mermaid\ngraph LR\nA-->B\n```";
+
+    let stripped = strip_code_fence(text);
+
+    assert!(stripped.contains("```mermaid\ngraph LR\nA-->B\n```"));
+}
+
+#[test]
 fn normalizes_a_fenced_marp_deck_without_metadata_slides() {
     let mut config = effective_config();
     config.theme = "gruvbox".to_string();
@@ -57,8 +185,58 @@ fn normalizes_a_fenced_marp_deck_without_metadata_slides() {
 }
 
 #[test]
-fn rejects_paths_outside_output_root() {
+fn normalizes_an_unclosed_fenced_marp_deck() {
+    let mut config = effective_config();
+    config.theme = "gruvbox".to_string();
+    let generated =
+        "```marp\n---\nmarp: true\n---\n\n# Fourier Series\n\n---\n\n## Intuition\n\nContent.";
+
+    let markdown = normalize_marp_markdown(generated, &config, "Fourier Series").unwrap();
+
+    validate_normalized_deck(&markdown, "Fourier Series").unwrap();
+    assert!(!markdown.contains("```marp"));
+    assert!(markdown.contains("## Intuition"));
+}
+
+#[test]
+fn normalizes_unclosed_document_wrapper_without_consuming_mermaid_fence() {
+    let config = effective_config();
+    let generated = "```marp\n---\nmarp: true\n---\n\n# Demo\n\n---\n\n## Flow\n\n```mermaid\ngraph LR\nA-->B\n```";
+
+    let markdown = normalize_marp_markdown(generated, &config, "Demo").unwrap();
+    let diagrams = extract_mermaid_blocks(&markdown).unwrap();
+
+    validate_normalized_deck(&markdown, "Demo").unwrap();
+    assert_eq!(diagrams.len(), 1);
+    assert_eq!(diagrams[0].source, "graph LR\nA-->B");
+}
+
+#[test]
+fn rejects_invalid_normalized_deck_before_rendering() {
+    let markdown = "---\nmarp: true\n---\n\n# Demo\n\n---\n\n```rust\nfn main() {}";
+
+    let error = validate_normalized_deck(markdown, "Demo").unwrap_err();
+
+    assert!(error.to_string().contains("invalid after normalization"));
+}
+
+#[test]
+fn rejects_paths_outside_artifact_root() {
     assert!(ensure_inside(Path::new("/tmp/out"), Path::new("/tmp/elsewhere/a.md")).is_err());
+}
+
+#[test]
+fn publishes_only_the_requested_processed_artifact() {
+    let temp = tempfile::tempdir().unwrap();
+    let artifact = temp.path().join("workspace/deck.pdf");
+    fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    fs::write(&artifact, b"pdf").unwrap();
+
+    let published = publish_artifact(&artifact, &temp.path().join("published")).unwrap();
+
+    assert_eq!(published, temp.path().join("published/deck.pdf"));
+    assert_eq!(fs::read(published).unwrap(), b"pdf");
+    assert!(artifact.is_file());
 }
 
 #[test]
@@ -316,7 +494,15 @@ fn prompt_mentions_allowed_filesystem_root() {
         },
     };
 
-    let request = build_generation_request(&config, &package, "Explain", None, "", false);
+    let request = build_generation_request(
+        &config,
+        &package,
+        "Explain",
+        None,
+        "",
+        false,
+        PROJECT_INSTRUCTIONS,
+    );
 
     assert!(
         request
@@ -331,6 +517,7 @@ fn prompt_mentions_allowed_filesystem_root() {
             .contains("Do not copy or lightly rephrase the instruction")
     );
     assert!(request.user_prompt.contains("first `# H1`"));
+    assert!(request.user_prompt.contains("Teach visually in Spanish."));
 }
 
 #[test]
@@ -357,6 +544,7 @@ fn generation_prompt_preserves_an_explicit_title() {
         Some("A Deliberate Title"),
         "",
         false,
+        PROJECT_INSTRUCTIONS,
     );
 
     assert!(
@@ -388,11 +576,51 @@ fn generation_prompt_explains_how_to_embed_generated_images() {
         },
     };
 
-    let request = build_generation_request(&config, &package, "Explain", None, "", true);
+    let request = build_generation_request(
+        &config,
+        &package,
+        "Explain",
+        None,
+        "",
+        true,
+        PROJECT_INSTRUCTIONS,
+    );
 
     assert!(request.user_prompt.contains("`sfumato_image_gen`"));
     assert!(request.user_prompt.contains("returned `markdown_path`"));
+    assert!(request.user_prompt.contains("![height:420px]"));
     assert!(request.user_prompt.contains("project theme automatically"));
+}
+
+#[test]
+fn constrains_unsized_generated_images_for_marp() {
+    let markdown = "## Visual\n\n![Fourier illustration](images/generated-fourier.png)";
+
+    assert_eq!(
+        constrain_generated_images(markdown),
+        "## Visual\n\n![height:420px](images/generated-fourier.png)"
+    );
+}
+
+#[test]
+fn preserves_explicit_generated_image_dimensions() {
+    let markdown = "![height:320px](images/generated-fourier.png)";
+
+    assert_eq!(constrain_generated_images(markdown), markdown);
+}
+
+#[test]
+fn preserves_generated_background_image_layout() {
+    let markdown = "![bg contain](images/generated-fourier.png)";
+
+    assert_eq!(constrain_generated_images(markdown), markdown);
+}
+
+#[test]
+fn does_not_constrain_unmanaged_images() {
+    let markdown = "![Architecture](../course-assets/architecture.png)";
+
+    assert_eq!(constrain_generated_images(markdown), markdown);
 }
 
 #[test]
@@ -403,12 +631,14 @@ fn title_repair_prompt_requests_only_a_title_and_uses_deck_headings() {
         "Explain Fourier series visually",
         "---\nmarp: true\n---\n\n## Periodic signals\n\n---\n\n## Harmonic spectrum",
         "The drafter did not provide a title",
+        PROJECT_INSTRUCTIONS,
     );
 
     assert!(request.system_prompt.contains("one plain-text line"));
     assert!(request.user_prompt.contains("Periodic signals"));
     assert!(request.user_prompt.contains("Harmonic spectrum"));
     assert!(request.user_prompt.contains("Do not regenerate"));
+    assert!(request.user_prompt.contains("Teach visually in Spanish."));
     assert!(request.tools.is_empty());
 }
 
@@ -531,6 +761,7 @@ fn review_prompt_requests_targeted_json_patch_with_grounding() {
         "SOURCE: notes.md",
         &snapshot,
         None,
+        PROJECT_INSTRUCTIONS,
     )
     .unwrap();
 
@@ -539,6 +770,7 @@ fn review_prompt_requests_targeted_json_patch_with_grounding() {
     assert!(request.user_prompt.contains("Definition"));
     assert!(request.user_prompt.contains("RFC 6902 JSON Patch"));
     assert!(request.user_prompt.contains("/slides/<id>/revision"));
+    assert!(request.user_prompt.contains("Teach visually in Spanish."));
     assert!(!request.user_prompt.contains("complete revised Marp"));
 }
 
@@ -576,6 +808,7 @@ fn review_retry_prompt_returns_the_validation_error_to_the_model() {
         "",
         &snapshot,
         Some(&retry),
+        PROJECT_INSTRUCTIONS,
     )
     .unwrap();
 
@@ -591,6 +824,106 @@ fn review_retry_prompt_returns_the_validation_error_to_the_model() {
             .user_prompt
             .contains("against the original snapshot")
     );
+}
+
+#[test]
+fn compact_source_bundle_distributes_a_fixed_budget_across_files() {
+    let documents = (1..=4)
+        .map(|index| SourceDocument {
+            path: PathBuf::from(format!("/tmp/source-{index}.md")),
+            content: format!("# Source {index}\n{}", "evidence ".repeat(2_000)),
+        })
+        .collect::<Vec<_>>();
+
+    let compact = build_compact_source_bundle(&documents, 4_000);
+
+    assert!(compact.chars().count() <= 4_030);
+    for index in 1..=4 {
+        assert!(compact.contains(&format!("source-{index}.md")));
+    }
+    assert!(compact.contains("[...truncated by sfumato...]"));
+}
+
+#[test]
+fn compact_review_request_is_focused_bounded_and_tool_free() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+    let slides = (2..=26)
+        .map(|index| {
+            format!(
+                "## Slide {index}\n\n{}",
+                format!("Detailed explanation {index}. ").repeat(120)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
+    let deck = SlideDeckDocument::from_marp(
+        &format!("---\nmarp: true\n---\n\n# Demo\n\n---\n\n{slides}"),
+        "Demo",
+    )
+    .unwrap();
+    let snapshot = deck.snapshot().unwrap();
+    let request = build_compact_review_request(
+        &config,
+        &package,
+        "Explain the specific course topic",
+        &"source evidence ".repeat(700),
+        &snapshot,
+        None,
+        &"project guidance ".repeat(700),
+    )
+    .unwrap();
+
+    assert!(request.user_prompt.contains("at most 3 highest-impact"));
+    assert!(request.user_prompt.contains("under 4,000 tokens"));
+    assert!(request.user_prompt.contains("\"markdown_complete\": false"));
+    assert!(request.tools.is_empty());
+    assert!(request_chars(&request) < 55_000);
+}
+
+#[test]
+fn compact_draft_request_caps_scope_and_disables_tools() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+
+    let request = build_compact_generation_request(
+        &config,
+        &package,
+        "Explain Fourier series",
+        None,
+        "compact evidence",
+        &"project guidance ".repeat(1_000),
+        None,
+    );
+
+    assert!(request.user_prompt.contains("at most 14 slides"));
+    assert!(request.user_prompt.contains("Do not call tools"));
+    assert!(request.tools.is_empty());
+    assert!(request.user_prompt.chars().count() < 12_000);
 }
 
 #[test]
@@ -622,6 +955,7 @@ fn layout_repair_request_has_no_filesystem_tools() {
                 vertical_overflow_px: 80,
                 horizontal_overflow_px: 0,
             },
+            project_instructions: PROJECT_INSTRUCTIONS,
         },
         None,
         None,
@@ -630,12 +964,58 @@ fn layout_repair_request_has_no_filesystem_tools() {
     assert!(request.tools.is_empty());
     assert!(request.user_prompt.contains("vertical_overflow_px"));
     assert!(request.user_prompt.contains("## Dense"));
+    assert!(request.user_prompt.contains("Teach visually in Spanish."));
     assert!(!request.user_prompt.contains("complete revised Marp"));
     assert!(
         request
             .user_prompt
             .contains("split this slide into two coherent slides")
     );
+}
+
+#[test]
+fn compact_layout_repair_trims_guidance_and_demands_a_direct_answer() {
+    let config = effective_config();
+    let package = ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: crate::themes::ThemeManifest {
+            schema_version: crate::themes::THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "Demo".to_string(),
+            tokens: Default::default(),
+            adapters: crate::themes::ThemeAdapters {
+                marp_css: PathBuf::from("theme.css"),
+                html: None,
+            },
+        },
+    };
+    let long_guidance = "project guidance ".repeat(2_000);
+    let request = build_compact_layout_repair_request(
+        LayoutRepairRequestContext {
+            config: &config,
+            theme: &package,
+            instruction: "Explain",
+            title: "Explain",
+            slide_markdown: "## Dense\n\n- Too much content",
+            issue: &SlideLayoutIssue {
+                slide: 2,
+                title: "Dense".to_string(),
+                vertical_overflow_px: 80,
+                horizontal_overflow_px: 0,
+            },
+            project_instructions: &long_guidance,
+        },
+        None,
+        None,
+    );
+
+    assert!(request.user_prompt.contains("under 1,200 tokens"));
+    assert!(
+        request
+            .system_prompt
+            .contains("Do not explain or reason aloud")
+    );
+    assert!(request.user_prompt.chars().count() < 4_500);
 }
 
 #[test]
@@ -671,6 +1051,7 @@ fn layout_repair_retry_prompt_includes_mermaid_error_and_original_slide() {
                 vertical_overflow_px: 40,
                 horizontal_overflow_px: 0,
             },
+            project_instructions: PROJECT_INSTRUCTIONS,
         },
         Some(&retry),
         None,
@@ -800,4 +1181,12 @@ fn model_tool_rounds_uses_profile_option_or_default() {
         .insert("max_tool_rounds".to_string(), toml::Value::Integer(12));
 
     assert_eq!(model_tool_rounds(&profile), 12);
+}
+
+#[test]
+fn review_summary_reports_context_compaction_for_json_callers() {
+    let summary = SlideReviewSummary::enabled();
+    let json = serde_json::to_value(summary).unwrap();
+
+    assert_eq!(json["context_compaction"], "not_needed");
 }

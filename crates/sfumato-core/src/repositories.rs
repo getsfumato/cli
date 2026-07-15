@@ -117,9 +117,7 @@ impl ProjectRepository for FilesystemProjectRepository {
         if registry.projects.contains_key(&name) {
             bail!("Project '{name}' is already registered");
         }
-        if name.trim().is_empty() {
-            bail!("Project name cannot be empty");
-        }
+        crate::config::validate_project_name(&name)?;
         let root = absolute_path(&path)?;
         fs::create_dir_all(&root)
             .with_context(|| format!("Could not create project root {}", root.display()))?;
@@ -131,7 +129,7 @@ impl ProjectRepository for FilesystemProjectRepository {
             schema_version: CONFIG_SCHEMA_VERSION,
             name: name.clone(),
             theme: DEFAULT_THEME.to_string(),
-            output_dir: PathBuf::from("Resources/Sfumato"),
+            publish_dir: None,
             model_defaults: Default::default(),
             model_roles: Default::default(),
             marp: None,

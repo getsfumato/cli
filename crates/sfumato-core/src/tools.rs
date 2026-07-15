@@ -169,6 +169,7 @@ pub struct ImageToolConfig {
     pub profile_name: String,
     pub output_dir: PathBuf,
     pub theme: ThemePackage,
+    pub project_instructions: Option<String>,
 }
 
 struct ImageGenerationTool {
@@ -176,6 +177,7 @@ struct ImageGenerationTool {
     profile_name: String,
     output_dir: PathBuf,
     theme_prompt: String,
+    project_instructions: Option<String>,
     artifacts: Arc<Mutex<Vec<PathBuf>>>,
 }
 
@@ -184,8 +186,17 @@ impl ImageGenerationTool {
         let prompt = string_arg(arguments, "prompt")?;
         let alt_text = optional_string_arg(arguments, "alt_text")?
             .unwrap_or_else(|| "Generated educational illustration".to_string());
+        let project_instructions = self
+            .project_instructions
+            .as_deref()
+            .map(|instructions| {
+                format!(
+                    "\n\nProject instructions from SFUMATO.md:\n<sfumato_project_instructions>\n{instructions}\n</sfumato_project_instructions>"
+                )
+            })
+            .unwrap_or_default();
         let themed_prompt = format!(
-            "{prompt}\n\nSfumato project visual direction:\n{}\nCreate one clear educational visual suitable for a presentation slide. Keep labels concise and do not add a decorative frame.",
+            "{prompt}\n\nSfumato project visual direction:\n{}{project_instructions}\nCreate one clear educational visual suitable for a presentation slide. Keep labels concise and do not add a decorative frame.",
             self.theme_prompt
         );
         let response = self
@@ -286,6 +297,7 @@ pub fn generation_tools(
             profile_name: image.profile_name,
             output_dir: image.output_dir,
             theme_prompt: theme_prompt(&image.theme),
+            project_instructions: image.project_instructions,
             artifacts: artifacts.clone(),
         }
     });
