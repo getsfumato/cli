@@ -8,16 +8,18 @@ use std::{
 use anyhow::{Context, Result, bail};
 use sfumato_core::{
     config::{
-        CONFIG_SCHEMA_VERSION, GlobalConfig, ProjectConfig, ProjectRegistry, RegisteredProject,
-        validate_project_name,
+        GlobalConfig, ProjectConfig, ProjectRegistry, RegisteredProject, validate_project_name,
     },
     repositories::{GlobalConfigRepository, ProjectRepository, RepositorySnapshot},
     themes::DEFAULT_THEME,
 };
 
-use crate::config_files::{
-    ConfigPaths, edit_toml, project_config_path, read_versioned, read_versioned_snapshot,
-    write_toml, write_toml_if_revision,
+use crate::{
+    config_dto::{GlobalConfigDto, ProjectConfigDto, ProjectRegistryDto},
+    config_files::{
+        ConfigPaths, edit_toml, project_config_path, read_versioned, read_versioned_snapshot,
+        write_toml, write_toml_if_revision,
+    },
 };
 
 /// Filesystem-backed global configuration repository.
@@ -45,19 +47,19 @@ impl GlobalConfigRepository for FilesystemGlobalConfigRepository {
         if !self.path.exists() {
             return Ok(GlobalConfig::default_config());
         }
-        let config: GlobalConfig = read_versioned(&self.path, "global").with_context(|| {
-            format!(
-                "Could not load {}. Run `sfumato init user --force` to create a v0.2 configuration.",
-                self.path.display()
-            )
-        })?;
-        config.validate()?;
-        Ok(config)
+        let persisted: GlobalConfigDto =
+            read_versioned(&self.path, "global").with_context(|| {
+                format!(
+                    "Could not load {}. Run `sfumato init user --force` to create a v0.2 configuration.",
+                    self.path.display()
+                )
+            })?;
+        persisted.into_domain()
     }
 
     fn save(&self, config: &GlobalConfig) -> Result<()> {
         config.validate()?;
-        write_toml(&self.path, config)
+        write_toml(&self.path, &GlobalConfigDto::from_domain(config))
     }
 
     fn load_snapshot(&self) -> Result<RepositorySnapshot<GlobalConfig>> {
@@ -67,15 +69,17 @@ impl GlobalConfigRepository for FilesystemGlobalConfigRepository {
                 revision: "missing".to_string(),
             });
         }
-        let snapshot: RepositorySnapshot<GlobalConfig> =
+        let snapshot: RepositorySnapshot<GlobalConfigDto> =
             read_versioned_snapshot(&self.path, "global")?;
-        snapshot.value.validate()?;
-        Ok(snapshot)
+        Ok(RepositorySnapshot {
+            value: snapshot.value.into_domain()?,
+            revision: snapshot.revision,
+        })
     }
 
     fn save_if_revision(&self, config: &GlobalConfig, expected: &str) -> Result<String> {
         config.validate()?;
-        write_toml_if_revision(&self.path, config, expected)
+        write_toml_if_revision(&self.path, &GlobalConfigDto::from_domain(config), expected)
     }
 }
 
@@ -100,12 +104,13 @@ impl FilesystemProjectRepository {
             let mut registry = if table.is_empty() {
                 ProjectRegistry::default()
             } else {
-                toml::Value::Table(table.clone())
+                let persisted: ProjectRegistryDto = toml::Value::Table(table.clone())
                     .try_into()
-                    .context("Could not parse project registry")?
+                    .context("Could not parse project registry")?;
+                persisted.into_domain()?
             };
             output = Some(edit(&mut registry)?);
-            *table = toml::Value::try_from(&registry)
+            *table = toml::Value::try_from(ProjectRegistryDto::from_domain(&registry))
                 .context("Could not serialize project registry")?
                 .as_table()
                 .cloned()
@@ -121,7 +126,9 @@ impl ProjectRepository for FilesystemProjectRepository {
         if !self.registry_path.exists() {
             return Ok(ProjectRegistry::default());
         }
-        read_versioned(&self.registry_path, "project registry")
+        let persisted: ProjectRegistryDto =
+            read_versioned(&self.registry_path, "project registry")?;
+        persisted.into_domain()
     }
 
     fn list(&self) -> Result<Vec<(String, RegisteredProject, bool)>> {
@@ -139,9 +146,8 @@ impl ProjectRepository for FilesystemProjectRepository {
     fn load(&self, name: Option<&str>) -> Result<ProjectConfig> {
         let registry = self.registry()?;
         let (_, root) = registry.selected(name)?;
-        let project: ProjectConfig = read_versioned(&project_config_path(&root), "project")?;
-        project.validate()?;
-        Ok(project)
+        let persisted: ProjectConfigDto = read_versioned(&project_config_path(&root), "project")?;
+        persisted.into_domain()
     }
 
     fn save(&self, project: &ProjectConfig) -> Result<()> {
@@ -151,16 +157,21 @@ impl ProjectRepository for FilesystemProjectRepository {
             .projects
             .get(&project.name)
             .with_context(|| format!("Project '{}' is not registered", project.name))?;
-        write_toml(&project_config_path(&registered.path), project)
+        write_toml(
+            &project_config_path(&registered.path),
+            &ProjectConfigDto::from_domain(project),
+        )
     }
 
     fn load_snapshot(&self, name: Option<&str>) -> Result<RepositorySnapshot<ProjectConfig>> {
         let registry = self.registry()?;
         let (_, root) = registry.selected(name)?;
-        let snapshot: RepositorySnapshot<ProjectConfig> =
+        let snapshot: RepositorySnapshot<ProjectConfigDto> =
             read_versioned_snapshot(&project_config_path(&root), "project")?;
-        snapshot.value.validate()?;
-        Ok(snapshot)
+        Ok(RepositorySnapshot {
+            value: snapshot.value.into_domain()?,
+            revision: snapshot.revision,
+        })
     }
 
     fn save_if_revision(&self, project: &ProjectConfig, expected: &str) -> Result<String> {
@@ -170,7 +181,11 @@ impl ProjectRepository for FilesystemProjectRepository {
             .projects
             .get(&project.name)
             .with_context(|| format!("Project '{}' is not registered", project.name))?;
-        write_toml_if_revision(&project_config_path(&registered.path), project, expected)
+        write_toml_if_revision(
+            &project_config_path(&registered.path),
+            &ProjectConfigDto::from_domain(project),
+            expected,
+        )
     }
 
     fn register(&self, name: String, path: PathBuf, activate: bool) -> Result<ProjectConfig> {
@@ -180,7 +195,6 @@ impl ProjectRepository for FilesystemProjectRepository {
             .with_context(|| format!("Could not create project root {}", root.display()))?;
         let config_path = project_config_path(&root);
         let project = ProjectConfig {
-            schema_version: CONFIG_SCHEMA_VERSION,
             name: name.clone(),
             theme: DEFAULT_THEME.to_string(),
             publish_dir: None,
@@ -195,7 +209,7 @@ impl ProjectRepository for FilesystemProjectRepository {
             if config_path.exists() {
                 bail!("Project config already exists at {}", config_path.display());
             }
-            write_toml(&config_path, &project)?;
+            write_toml(&config_path, &ProjectConfigDto::from_domain(&project))?;
             registry
                 .projects
                 .insert(name.clone(), RegisteredProject { path: root });
@@ -222,7 +236,9 @@ impl ProjectRepository for FilesystemProjectRepository {
                 .projects
                 .remove(name)
                 .with_context(|| format!("Project '{name}' is not registered"))?;
-            let project = read_versioned(&project_config_path(&registered.path), "project")?;
+            let persisted: ProjectConfigDto =
+                read_versioned(&project_config_path(&registered.path), "project")?;
+            let project = persisted.into_domain()?;
             if registry.active.as_deref() == Some(name) {
                 registry.active = None;
             }

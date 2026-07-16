@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sfumato_domain::{ArtifactKind, JobId, RevisionId};
+pub use sfumato_domain::{ArtifactId, ArtifactKind, JobId, ProjectName, RevisionId};
 use thiserror::Error;
 
 use crate::prompts::PromptProvenance;

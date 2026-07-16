@@ -383,7 +383,7 @@ fn validate_profile_name(name: &str) -> Result<()> {
 fn parse_capabilities(values: &[String]) -> Result<Vec<Capability>> {
     let mut parsed = values
         .iter()
-        .map(|value| Capability::from_str(value.trim()))
+        .map(|value| Capability::from_str(value.trim()).map_err(anyhow::Error::from))
         .collect::<Result<Vec<_>>>()?;
     parsed.sort();
     parsed.dedup();
@@ -402,16 +402,18 @@ fn parse_options(values: &[String]) -> Result<ModelOptions> {
         let key = key.trim();
         let raw = raw.trim();
         match key {
-            "temperature" => options.temperature = Some(parse_option(raw, key)?),
-            "max_tokens" => options.max_tokens = Some(parse_option(raw, key)?),
-            "max_tool_rounds" => options.max_tool_rounds = Some(parse_option(raw, key)?),
-            "top_p" => options.top_p = Some(parse_option(raw, key)?),
-            "seed" => options.seed = Some(parse_option(raw, key)?),
-            "quality" => options.quality = Some(required_option_string(raw, key)?),
-            "background" => options.background = Some(required_option_string(raw, key)?),
-            "size" => options.size = Some(required_option_string(raw, key)?),
-            "aspect_ratio" => options.aspect_ratio = Some(required_option_string(raw, key)?),
-            "output_format" => options.output_format = Some(required_option_string(raw, key)?),
+            "temperature" => options.text.temperature = Some(parse_option(raw, key)?),
+            "max_tokens" => options.text.max_tokens = Some(parse_option(raw, key)?),
+            "max_tool_rounds" => options.text.max_tool_rounds = Some(parse_option(raw, key)?),
+            "top_p" => options.text.top_p = Some(parse_option(raw, key)?),
+            "seed" => options.text.seed = Some(parse_option(raw, key)?),
+            "quality" => options.image.quality = Some(required_option_string(raw, key)?),
+            "background" => options.image.background = Some(required_option_string(raw, key)?),
+            "size" => options.image.size = Some(required_option_string(raw, key)?),
+            "aspect_ratio" => options.image.aspect_ratio = Some(required_option_string(raw, key)?),
+            "output_format" => {
+                options.image.output_format = Some(required_option_string(raw, key)?)
+            }
             "" => bail!("Model option key cannot be empty"),
             _ => bail!(
                 "Unknown model option '{key}'. Supported options: temperature, max_tokens, max_tool_rounds, top_p, seed, quality, background, size, aspect_ratio, output_format."

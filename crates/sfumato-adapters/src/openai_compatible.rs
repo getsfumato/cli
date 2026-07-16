@@ -145,8 +145,8 @@ impl OpenAiCompatibleTextProvider {
             tools,
             temperature: self.profile.options.text_temperature(),
             max_tokens: self.profile.options.text_max_tokens(),
-            top_p: self.profile.options.top_p,
-            seed: self.profile.options.seed,
+            top_p: self.profile.options.text.top_p,
+            seed: self.profile.options.text.seed,
             stream: false,
         }
     }
@@ -219,18 +219,22 @@ impl OpenAiCompatibleImageProvider {
 
     pub fn request_body(&self, request: &ImageGenerationRequest) -> Result<ImageRequest> {
         let mut options = BTreeMap::new();
-        insert_image_option(&mut options, "quality", &self.profile.options.quality);
-        insert_image_option(&mut options, "background", &self.profile.options.background);
-        insert_image_option(&mut options, "size", &self.profile.options.size);
+        insert_image_option(&mut options, "quality", &self.profile.options.image.quality);
+        insert_image_option(
+            &mut options,
+            "background",
+            &self.profile.options.image.background,
+        );
+        insert_image_option(&mut options, "size", &self.profile.options.image.size);
         insert_image_option(
             &mut options,
             "aspect_ratio",
-            &self.profile.options.aspect_ratio,
+            &self.profile.options.image.aspect_ratio,
         );
         insert_image_option(
             &mut options,
             "output_format",
-            &self.profile.options.output_format,
+            &self.profile.options.image.output_format,
         );
         Ok(ImageRequest {
             model: self.profile.model.clone(),
@@ -568,3 +572,7 @@ struct CompletionTokenDetails {
     #[serde(default)]
     reasoning_tokens: Option<u64>,
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/openai_compatible.rs"]
+mod tests;

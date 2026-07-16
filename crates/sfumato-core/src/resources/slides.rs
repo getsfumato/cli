@@ -30,14 +30,20 @@ use crate::{
     renderers::{DiagramRenderer, MermaidThemeConfig, SlideRenderer},
     repositories::ThemeRepository,
     review::{ReviewSnapshot, decks::SlideDeckDocument, parse_json_patch},
-    sources::{SourceDocument, SourceReader},
+    sources::SourceReader,
     themes::{ThemePackage, ThemeTokens},
     tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
 
 mod edit;
+mod layout;
+mod source_bundle;
 
 pub use edit::{EditSlidesOptions, EditSlidesRequest, EditSlidesResult, edit_slides};
+use layout::LayoutAssessment;
+#[cfg(test)]
+use layout::layout_score;
+use source_bundle::{build_compact_source_bundle, build_source_bundle};
 
 const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
 const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
@@ -533,24 +539,28 @@ pub async fn generate_slides(
                         GenerationStage::LayoutRepair,
                         Some(reviewer_name),
                     );
-                    let ranges = match slide_ranges(&markdown) {
-                        Ok(ranges) => ranges,
+                    let mut repair_document = match SlideDeckDocument::from_marp(&markdown, &title)
+                    {
+                        Ok(document) => Some(document),
                         Err(error) => {
                             warnings.push(format!(
-                                "Could not map slides for focused layout repair: {error:#}"
+                                "Could not parse the deck for focused layout repair: {error:#}"
                             ));
-                            Vec::new()
+                            None
                         }
                     };
-                    let mut replacements = Vec::new();
-                    for (position, issue) in
-                        issues.iter().enumerate().filter(|_| !ranges.is_empty())
-                    {
-                        let Some(range) = ranges
-                            .iter()
-                            .find(|range| range.number == issue.slide)
-                            .cloned()
-                        else {
+                    let mut repaired_markdown = markdown.clone();
+                    let mut assessment = LayoutAssessment::new(issues.clone());
+                    let mut accepted_repairs = 0usize;
+                    let mut valid_but_rejected = 0usize;
+                    for (position, original_issue) in issues.iter().enumerate() {
+                        let Some(document) = repair_document.as_ref() else {
+                            break;
+                        };
+                        let Some(issue) = assessment.issue_for_slide(original_issue.slide) else {
+                            continue;
+                        };
+                        let Some((_, slide)) = document.slide_at(issue.slide) else {
                             warnings.push(format!(
                                 "Could not locate slide {} for focused layout repair.",
                                 issue.slide
@@ -564,7 +574,7 @@ pub async fn generate_slides(
                             issues.len(),
                             reviewer_name,
                         );
-                        let original_slide = markdown[range.start..range.end].trim().to_string();
+                        let original_slide = slide.markdown.clone();
                         let mut retry = None;
                         let mut compacted_context = false;
                         for attempt in 1..=2 {
@@ -576,7 +586,7 @@ pub async fn generate_slides(
                                     instruction: &request.instruction,
                                     title: &title,
                                     slide_markdown: &original_slide,
-                                    issue,
+                                    issue: &issue,
                                     project_instructions: &project_instructions_prompt,
                                 },
                                 retry.as_ref(),
@@ -590,7 +600,7 @@ pub async fn generate_slides(
                                     instruction: &request.instruction,
                                     title: &title,
                                     slide_markdown: &original_slide,
-                                    issue,
+                                    issue: &issue,
                                     project_instructions: &project_instructions_prompt,
                                 },
                                 retry.as_ref(),
@@ -652,33 +662,53 @@ pub async fn generate_slides(
                                     }
                                 }
                             };
-                            let candidate = match normalize_slide_replacement(&response.text) {
-                                Ok(replacement) => {
-                                    let candidate = apply_slide_replacements(
-                                        &markdown,
-                                        vec![SlideReplacement {
-                                            range: range.clone(),
-                                            markdown: replacement.clone(),
-                                        }],
-                                    );
-                                    validate_mermaid_candidate(
-                                        &candidate,
-                                        &theme,
-                                        diagram_renderer.as_ref(),
-                                        workspace.as_ref(),
-                                        &operation,
-                                    )
-                                    .await
-                                    .map(|()| replacement)
-                                }
-                                Err(error) => Err(error),
-                            };
+                            let candidate = async {
+                                let replacement = normalize_slide_replacement(&response.text)?;
+                                let mut candidate_document = repair_document
+                                    .as_ref()
+                                    .context("Focused repair document is unavailable")?
+                                    .clone();
+                                candidate_document
+                                    .replace_slide_fragment_at(issue.slide, replacement)?;
+                                let candidate_markdown = candidate_document.render()?;
+                                validate_mermaid_candidate(
+                                    &candidate_markdown,
+                                    &theme,
+                                    diagram_renderer.as_ref(),
+                                    workspace.as_ref(),
+                                    &operation,
+                                )
+                                .await?;
+                                let candidate_issues = inspect_candidate_layout(
+                                    &candidate_markdown,
+                                    &theme,
+                                    config.marp.browser_path.as_deref(),
+                                    diagram_renderer.as_ref(),
+                                    slide_renderer.as_ref(),
+                                    workspace.as_ref(),
+                                    &operation,
+                                )
+                                .await?;
+                                Ok::<_, anyhow::Error>((
+                                    candidate_document,
+                                    candidate_markdown,
+                                    candidate_issues,
+                                ))
+                            }
+                            .await;
                             match candidate {
-                                Ok(replacement) => {
-                                    replacements.push(SlideReplacement {
-                                        range: range.clone(),
-                                        markdown: replacement,
-                                    });
+                                Ok((candidate_document, candidate_markdown, candidate_issues)) => {
+                                    if assessment.accept_if_improved(candidate_issues) {
+                                        repair_document = Some(candidate_document);
+                                        repaired_markdown = candidate_markdown;
+                                        accepted_repairs += 1;
+                                    } else {
+                                        valid_but_rejected += 1;
+                                        warnings.push(format!(
+                                            "Focused layout repair for slide {} did not improve measured overflow; keeping the previous slide.",
+                                            issue.slide
+                                        ));
+                                    }
                                     break;
                                 }
                                 Err(error) if attempt == 1 && should_retry_model_output(&error) => {
@@ -712,42 +742,16 @@ pub async fn generate_slides(
                         }
                     }
 
-                    if replacements.is_empty() {
-                        review_summary.repair = ReviewStatus::Failed;
+                    if accepted_repairs > 0 {
+                        markdown = repaired_markdown;
+                        review_summary.repair = ReviewStatus::Accepted;
+                        review_summary.remaining_issues = assessment.into_issues();
+                    } else if valid_but_rejected > 0 {
+                        review_summary.repair = ReviewStatus::Rejected;
                         review_summary.remaining_issues = issues;
                     } else {
-                        let repaired = apply_slide_replacements(&markdown, replacements);
-                        match inspect_candidate_layout(
-                            &repaired,
-                            &theme,
-                            config.marp.browser_path.as_deref(),
-                            diagram_renderer.as_ref(),
-                            slide_renderer.as_ref(),
-                            workspace.as_ref(),
-                            &operation,
-                        )
-                        .await
-                        {
-                            Ok(repaired_issues)
-                                if layout_score(&repaired_issues) < layout_score(&issues) =>
-                            {
-                                markdown = repaired;
-                                review_summary.repair = ReviewStatus::Accepted;
-                                review_summary.remaining_issues = repaired_issues;
-                            }
-                            Ok(_) => {
-                                review_summary.repair = ReviewStatus::Rejected;
-                                review_summary.remaining_issues = issues;
-                                warnings.push("Focused layout repairs did not improve the deck; keeping the reviewed version.".to_string());
-                            }
-                            Err(error) => {
-                                review_summary.repair = ReviewStatus::Failed;
-                                review_summary.remaining_issues = issues;
-                                warnings.push(format!(
-                                    "Could not validate the focused layout repairs: {error:#}"
-                                ));
-                            }
-                        }
+                        review_summary.repair = ReviewStatus::Failed;
+                        review_summary.remaining_issues = issues;
                     }
                 } else {
                     review_summary.repair = ReviewStatus::Failed;
@@ -805,22 +809,26 @@ pub async fn generate_slides(
     workspace.write(&markdown_path, markdown.as_bytes())?;
 
     emit_stage(&event_sink, GenerationStage::Rendering, None);
-    let rendered_pdf_result = slide_renderer
-        .render_pdf(
-            &markdown_path,
-            &theme_css_path,
-            &pdf_path,
-            config.marp.browser_path.as_deref(),
-            &operation,
-        )
-        .await;
-    operation.checkpoint(OperationStage::Render)?;
-    let rendered_pdf = match rendered_pdf_result {
-        Ok(()) => Some(pdf_path),
-        Err(error) => {
-            warnings.push(format!("PDF export skipped: {error}"));
-            None
+    let rendered_pdf = if config.marp.pdf {
+        let rendered_pdf_result = slide_renderer
+            .render_pdf(
+                &markdown_path,
+                &theme_css_path,
+                &pdf_path,
+                config.marp.browser_path.as_deref(),
+                &operation,
+            )
+            .await;
+        operation.checkpoint(OperationStage::Render)?;
+        match rendered_pdf_result {
+            Ok(()) => Some(pdf_path.clone()),
+            Err(error) => {
+                warnings.push(format!("PDF export skipped: {error}"));
+                None
+            }
         }
+    } else {
+        None
     };
     operation.emit(
         OperationStage::Render,
@@ -892,10 +900,38 @@ pub async fn generate_slides(
         .collect::<Result<Vec<_>>>()?;
     artifacts.push(committed.manifest_path.clone());
     operation.checkpoint(OperationStage::Publish)?;
-    let published_pdf_path = match (&committed_pdf, publish_root) {
-        (Some(pdf), Some(destination)) => Some(workspace.publish_atomic(pdf, &destination)?),
-        _ => None,
-    };
+    operation.emit(
+        OperationStage::Publish,
+        OperationEventKind::Started,
+        BTreeMap::new(),
+    );
+    let mut published_pdf_path = None;
+    if let Some(destination) = publish_root {
+        if let Some(pdf) = &committed_pdf {
+            match workspace.publish_atomic(pdf, &destination) {
+                Ok(path) => published_pdf_path = Some(path),
+                Err(error) => warnings.push(format!(
+                    "Committed the workspace revision, but could not publish its PDF: {error:#}"
+                )),
+            }
+        } else {
+            let stale_pdf = destination.join(
+                pdf_path
+                    .file_name()
+                    .context("Generated PDF path must have a filename")?,
+            );
+            if let Err(error) = workspace.remove_file(&stale_pdf) {
+                warnings.push(format!(
+                    "No PDF was generated and the stale published PDF could not be removed: {error:#}"
+                ));
+            }
+        }
+    }
+    operation.emit(
+        OperationStage::Publish,
+        OperationEventKind::Completed,
+        BTreeMap::from([("pdf".to_string(), published_pdf_path.is_some().to_string())]),
+    );
     let published_artifacts = published_pdf_path.iter().cloned().collect();
 
     Ok(GenerateSlidesResult {
@@ -1873,16 +1909,6 @@ async fn inspect_candidate_layout(
         .await
 }
 
-fn layout_score(issues: &[SlideLayoutIssue]) -> (usize, u64) {
-    let overflow = issues
-        .iter()
-        .map(|issue| {
-            u64::from(issue.vertical_overflow_px) + u64::from(issue.horizontal_overflow_px)
-        })
-        .sum();
-    (issues.len(), overflow)
-}
-
 fn model_tool_rounds(profile: &crate::config::ModelProfile) -> usize {
     profile.options.tool_rounds()
 }
@@ -2043,55 +2069,6 @@ fn titles_are_equivalent(title: &str, instruction: &str) -> bool {
     normalize(title) == normalize(instruction)
 }
 
-fn build_source_bundle(documents: &[SourceDocument]) -> String {
-    if documents.is_empty() {
-        return "No explicit source files were supplied.".to_string();
-    }
-    let per_document = (MAX_SOURCE_BUNDLE_CHARS / documents.len().max(1)).clamp(500, 6_000);
-    let bundle = documents
-        .iter()
-        .map(|document| {
-            let excerpt = excerpt(&document.content, per_document);
-            format!(
-                "\n--- SOURCE: {} ---\n{}\n",
-                document.path.display(),
-                excerpt
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    excerpt(&bundle, MAX_SOURCE_BUNDLE_CHARS)
-}
-
-fn build_compact_source_bundle(documents: &[SourceDocument], max_chars: usize) -> String {
-    if documents.is_empty() {
-        return "No explicit source files were supplied.".to_string();
-    }
-    let index = documents
-        .iter()
-        .map(|document| format!("- {}", document.path.display()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let index_chars = index.chars().count();
-    let remaining = max_chars.saturating_sub(index_chars + 32);
-    let per_document = (remaining / documents.len().max(1)).clamp(200, 1_200);
-    let excerpts = documents
-        .iter()
-        .map(|document| {
-            format!(
-                "\n--- {} ---\n{}",
-                document.path.display(),
-                excerpt(&document.content, per_document)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    excerpt(
-        &format!("Source index:\n{index}\n\nDistributed excerpts:{excerpts}"),
-        max_chars,
-    )
-}
-
 fn request_chars(request: &TextGenerationRequest) -> usize {
     request.system_prompt.chars().count() + request.user_prompt.chars().count()
 }
@@ -2210,15 +2187,8 @@ struct Fence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SlideRange {
-    number: usize,
     start: usize,
     end: usize,
-}
-
-#[derive(Clone, Debug)]
-struct SlideReplacement {
-    range: SlideRange,
-    markdown: String,
 }
 
 fn promote_marp_frontmatter(markdown: String) -> String {
@@ -2321,16 +2291,14 @@ fn slide_ranges(markdown: &str) -> Result<Vec<SlideRange>> {
 
     let mut ranges = Vec::new();
     let mut start = fences[1].end;
-    for (index, separator) in fences.iter().skip(2).enumerate() {
+    for separator in fences.iter().skip(2) {
         ranges.push(SlideRange {
-            number: index + 1,
             start,
             end: separator.start,
         });
         start = separator.end;
     }
     ranges.push(SlideRange {
-        number: ranges.len() + 1,
         start,
         end: markdown.len(),
     });
@@ -2374,18 +2342,6 @@ fn trim_outer_slide_separators(fragment: &str) -> &str {
         }
         return fragment;
     }
-}
-
-fn apply_slide_replacements(markdown: &str, mut replacements: Vec<SlideReplacement>) -> String {
-    replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.range.start));
-    let mut repaired = markdown.to_string();
-    for replacement in replacements {
-        repaired.replace_range(
-            replacement.range.start..replacement.range.end,
-            &format!("\n\n{}\n\n", replacement.markdown.trim()),
-        );
-    }
-    repaired
 }
 
 fn frontmatter_contains_key(frontmatter: &str, key: &str) -> bool {

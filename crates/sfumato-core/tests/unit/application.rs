@@ -28,3 +28,26 @@ fn redacts_secret_like_tokens_from_adapter_failures() {
     assert!(actual.message.contains("[REDACTED]"));
     assert_eq!(actual.stage, Some(OperationStage::Draft));
 }
+
+#[test]
+fn facade_service_errors_receive_stable_public_codes() {
+    let error = public_result::<()>(
+        Err(anyhow::anyhow!("model profile was not found")),
+        ErrorCode::NotFound,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert!(!error.retryable);
+    assert_eq!(error.stage, None);
+}
+
+#[test]
+fn prompt_management_errors_are_scoped_to_prompt_rendering() {
+    let error = public_prompt_error(PromptError::Missing(PromptId::SlidesDraftSystem));
+
+    assert_eq!(error.code, ErrorCode::Config);
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert_eq!(error.stage, Some(OperationStage::RenderPrompt));
+}

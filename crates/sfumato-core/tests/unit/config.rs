@@ -36,7 +36,6 @@ fn rejects_profile_without_required_capability() {
 #[test]
 fn registry_selects_active_or_requested_project() {
     let registry = ProjectRegistry {
-        schema_version: CONFIG_SCHEMA_VERSION,
         active: Some("one".to_string()),
         projects: BTreeMap::from([
             (
@@ -83,13 +82,12 @@ fn publish_root_resolves_relative_to_the_project_without_changing_artifacts() {
 }
 
 #[test]
-fn new_global_config_round_trips_through_toml() {
+fn new_global_config_is_valid() {
     let config = GlobalConfig::default_config();
-    let rendered = toml::to_string_pretty(&config).unwrap();
-    let parsed: GlobalConfig = toml::from_str(&rendered).unwrap();
-    assert!(parsed.models.contains_key("local-text"));
+    config.validate().unwrap();
+    assert!(config.models.contains_key("local-text"));
     assert_eq!(
-        parsed.defaults.0.get(&Capability::Text).map(String::as_str),
+        config.defaults.0.get(&Capability::Text).map(String::as_str),
         Some("local-text")
     );
 }
@@ -152,12 +150,4 @@ fn reviewer_override_wins_over_project_and_user_roles() {
         Some("command".to_string()),
     );
     assert_eq!(merged.get(&ModelRole::Reviewer).unwrap(), "command");
-}
-
-#[test]
-fn existing_config_without_model_roles_still_loads() {
-    let rendered = toml::to_string_pretty(&GlobalConfig::default_config()).unwrap();
-    let rendered = rendered.replace("[model_roles]\n", "");
-    let parsed: GlobalConfig = toml::from_str(&rendered).unwrap();
-    assert!(parsed.model_roles.is_empty());
 }

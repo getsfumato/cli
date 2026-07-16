@@ -2,7 +2,7 @@ use sfumato_adapters::repositories::{
     FilesystemGlobalConfigRepository, FilesystemProjectRepository,
 };
 use sfumato_core::{
-    config::{CONFIG_SCHEMA_VERSION, GlobalConfig},
+    config::GlobalConfig,
     repositories::{GlobalConfigRepository, ProjectRepository},
 };
 
@@ -15,8 +15,9 @@ fn filesystem_global_config_repository_round_trips_config() {
     repository.save(&config).unwrap();
 
     let loaded = repository.load().unwrap();
-    assert_eq!(loaded.schema_version, CONFIG_SCHEMA_VERSION);
     assert_eq!(loaded.models.len(), config.models.len());
+    let persisted = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(persisted.starts_with("schema_version = 4\n"));
 }
 
 #[test]

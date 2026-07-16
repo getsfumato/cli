@@ -23,7 +23,10 @@ mod view;
 use model::OperationLifecycle;
 use sfumato_core::{
     application::SfumatoApplication,
-    config::{Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile},
+    config::{
+        Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile, SecretRef,
+        TextModelOptions,
+    },
     config_editor::ConfigTarget,
     connectors::ConnectorPreset,
     errors::{ErrorClass, OperationStage, SfumatoError},
@@ -32,7 +35,6 @@ use sfumato_core::{
     providers::{GenerationStage, TextGenerationEvent},
     resources::slides::{EditSlidesResult, GenerateSlidesResult},
 };
-use sfumato_domain::SecretRef;
 use tachyonfx::{EffectManager, fx};
 use tokio::{
     sync::mpsc::{Receiver, Sender, channel},
@@ -2261,8 +2263,11 @@ fn execute_operation(form: &OperationForm, application: &SfumatoApplication) -> 
                     model: required_field(form, "Model ID")?,
                     capabilities: vec![Capability::Text, Capability::Code],
                     options: ModelOptions {
-                        temperature: Some(0.4),
-                        max_tokens: Some(4000),
+                        text: TextModelOptions {
+                            temperature: Some(0.4),
+                            max_tokens: Some(4000),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                 },

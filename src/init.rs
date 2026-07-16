@@ -5,8 +5,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use inquire::{Confirm, Select, Text};
 
 use sfumato_core::application::SfumatoApplication;
-use sfumato_core::config::{Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile};
-use sfumato_domain::SecretRef;
+use sfumato_core::config::{
+    Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile, SecretRef,
+    TextModelOptions,
+};
 
 pub struct InitService {
     application: Arc<SfumatoApplication>,
@@ -84,8 +86,11 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
             model,
             capabilities: vec![Capability::Text, Capability::Code],
             options: ModelOptions {
-                temperature: Some(0.4),
-                max_tokens: Some(4000),
+                text: TextModelOptions {
+                    temperature: Some(0.4),
+                    max_tokens: Some(4000),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         },

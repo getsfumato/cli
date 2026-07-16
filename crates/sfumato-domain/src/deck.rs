@@ -229,6 +229,85 @@ impl DeckDocument {
         self.slides.get(id)
     }
 
+    /// Gets a slide by its one-based presentation position.
+    pub fn slide_at(&self, position: usize) -> Option<(&SlideId, &SlideDocument)> {
+        position
+            .checked_sub(1)
+            .and_then(|index| self.order.get(index))
+            .and_then(|id| self.slides.get(id).map(|slide| (id, slide)))
+    }
+
+    /// Replaces one non-title slide transactionally by presentation position.
+    ///
+    /// This focused operation is intended for deterministic layout repair after
+    /// a reviewer returns a single slide fragment. Structural review and user
+    /// edits continue to use revision-guarded RFC 6902 patches.
+    pub fn replace_slide_markdown_at(
+        &mut self,
+        position: usize,
+        markdown: impl Into<String>,
+    ) -> Result<(), ReviewError> {
+        let markdown = markdown.into();
+        if !markdown_fences(&markdown).is_empty() {
+            return invalid_patch(
+                "a single-slide replacement cannot contain a top-level `---`".into(),
+            );
+        }
+        self.replace_slide_fragment_at(position, markdown)
+    }
+
+    /// Replaces one non-title slide with one or more validated slide fragments.
+    ///
+    /// Top-level `---` separators split the focused replacement into additional
+    /// slides. Separators inside fenced code remain part of the original slide.
+    pub fn replace_slide_fragment_at(
+        &mut self,
+        position: usize,
+        markdown: impl Into<String>,
+    ) -> Result<(), ReviewError> {
+        if position == 1 {
+            return invalid_patch("the title slide cannot be replaced by layout repair".into());
+        }
+        let Some(id) = position
+            .checked_sub(1)
+            .and_then(|index| self.order.get(index))
+            .cloned()
+        else {
+            return invalid_patch(format!("slide position `{position}` does not exist"));
+        };
+
+        let fragments = split_slide_fragment(&markdown.into());
+        if fragments.iter().any(|fragment| fragment.trim().is_empty()) {
+            return invalid_patch("layout repair returned an empty slide fragment".into());
+        }
+
+        let mut candidate = self.clone();
+        candidate
+            .slides
+            .get_mut(&id)
+            .expect("order and slide map are validated")
+            .markdown = fragments[0].clone();
+        let insertion_index = position;
+        for (offset, fragment) in fragments.into_iter().skip(1).enumerate() {
+            let mut suffix = offset + 2;
+            let new_id = loop {
+                let candidate_id = SlideId(format!("{}-part-{suffix}", id.as_str()));
+                if !candidate.slides.contains_key(&candidate_id) {
+                    break candidate_id;
+                }
+                suffix += 1;
+            };
+            candidate
+                .slides
+                .insert(new_id.clone(), slide_from_markdown(fragment, false));
+            candidate.order.insert(insertion_index + offset, new_id);
+        }
+        candidate.refresh_metadata();
+        candidate.validate_document()?;
+        *self = candidate;
+        Ok(())
+    }
+
     /// Returns the number of slides.
     pub fn slide_count(&self) -> usize {
         self.order.len()
@@ -827,6 +906,18 @@ fn markdown_fences(markdown: &str) -> Vec<Fence> {
         cursor += line.len();
     }
     fences
+}
+
+fn split_slide_fragment(markdown: &str) -> Vec<String> {
+    let fences = markdown_fences(markdown);
+    let mut fragments = Vec::with_capacity(fences.len() + 1);
+    let mut start = 0;
+    for separator in fences {
+        fragments.push(markdown[start..separator.start].trim().to_owned());
+        start = separator.end;
+    }
+    fragments.push(markdown[start..].trim().to_owned());
+    fragments
 }
 
 fn markdown_code_fence(line: &str) -> Option<(char, usize)> {

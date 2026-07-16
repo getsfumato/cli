@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::config::GlobalConfig;
+use crate::{config::GlobalConfig, sources::SourceDocument};
 
 fn effective_config() -> EffectiveConfig {
     let global = GlobalConfig::default_config();
@@ -584,51 +584,6 @@ fn locates_slide_ranges_without_counting_separators_inside_code_fences() {
 }
 
 #[test]
-fn focused_replacement_changes_only_the_target_slide() {
-    let markdown = "---\nmarp: true\ntheme: demo\n---\n\n# One\n\n---\n\n## Dense\n\nOld content\n\n---\n\n## Three";
-    let ranges = slide_ranges(markdown).unwrap();
-    let repaired = apply_slide_replacements(
-        markdown,
-        vec![SlideReplacement {
-            range: ranges[1].clone(),
-            markdown: "## Dense, part one\n\nShort.\n\n---\n\n## Dense, part two\n\nShort."
-                .to_string(),
-        }],
-    );
-
-    assert!(repaired.contains("# One"));
-    assert!(repaired.contains("## Three"));
-    assert!(!repaired.contains("Old content"));
-    assert!(repaired.contains("## Dense, part one"));
-    assert!(repaired.contains("## Dense, part two"));
-    assert_eq!(slide_ranges(&repaired).unwrap().len(), 4);
-}
-
-#[test]
-fn applies_multiple_focused_replacements_without_offset_drift() {
-    let markdown = "---\nmarp: true\ntheme: demo\n---\n\n# One\n\n---\n\n## Two\n\nOld two\n\n---\n\n## Three\n\nOld three";
-    let ranges = slide_ranges(markdown).unwrap();
-    let repaired = apply_slide_replacements(
-        markdown,
-        vec![
-            SlideReplacement {
-                range: ranges[1].clone(),
-                markdown: "## Two\n\nNew two".to_string(),
-            },
-            SlideReplacement {
-                range: ranges[2].clone(),
-                markdown: "## Three\n\nNew three".to_string(),
-            },
-        ],
-    );
-
-    assert!(repaired.contains("New two"));
-    assert!(repaired.contains("New three"));
-    assert!(!repaired.contains("Old two"));
-    assert!(!repaired.contains("Old three"));
-}
-
-#[test]
 fn normalizes_reviewer_fragment_without_document_frontmatter() {
     let generated = "```markdown\n---\nmarp: true\ntheme: wrong\n---\n\n---\n\n## Fixed\n\nShort content.\n\n---\n```";
     let fragment = normalize_slide_replacement(generated).unwrap();
@@ -674,7 +629,7 @@ fn model_tool_rounds_uses_profile_option_or_default() {
 
     assert_eq!(model_tool_rounds(&profile), 8);
 
-    profile.options.max_tool_rounds = Some(12);
+    profile.options.text.max_tool_rounds = Some(12);
 
     assert_eq!(model_tool_rounds(&profile), 12);
 }

@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use sfumato_domain::SecretRef;
+pub use sfumato_domain::{Capability, SecretRef};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigOverrides {
@@ -18,10 +18,8 @@ pub struct ConfigOverrides {
     pub pdf: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub struct GlobalConfig {
-    pub schema_version: u32,
     pub user: UserConfig,
     pub connectors: BTreeMap<String, OpenAiCompatibleConnectorConfig>,
     pub models: BTreeMap<String, ModelProfile>,
@@ -31,41 +29,25 @@ pub struct GlobalConfig {
     pub marp: MarpConfig,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub struct UserConfig {
     pub name: Option<String>,
     pub learning_style: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ProjectRegistry {
-    pub schema_version: u32,
     pub active: Option<String>,
     pub projects: BTreeMap<String, RegisteredProject>,
 }
 
-impl Default for ProjectRegistry {
-    fn default() -> Self {
-        Self {
-            schema_version: CONFIG_SCHEMA_VERSION,
-            active: None,
-            projects: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub struct RegisteredProject {
     pub path: PathBuf,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ProjectConfig {
-    pub schema_version: u32,
     pub name: String,
     pub theme: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,8 +60,7 @@ pub struct ProjectConfig {
     pub marp: Option<MarpConfig>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ModelProfile {
     pub connector: String,
     pub model: String,
@@ -88,43 +69,45 @@ pub struct ModelProfile {
     pub options: ModelOptions,
 }
 
-/// Typed inference options shared by currently implemented capabilities.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+/// Capability-specific options for a model profile.
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ModelOptions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: TextModelOptions,
+    pub image: ImageModelOptions,
+}
+
+/// Options used by text and code generation.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct TextModelOptions {
     pub temperature: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_rounds: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+}
+
+/// Options used by image generation.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ImageModelOptions {
     pub quality: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aspect_ratio: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_format: Option<String>,
 }
 
 impl ModelOptions {
     pub fn text_temperature(&self) -> f32 {
-        self.temperature.unwrap_or(0.4)
+        self.text.temperature.unwrap_or(0.4)
     }
 
     pub fn text_max_tokens(&self) -> u32 {
-        self.max_tokens.unwrap_or(4000)
+        self.text.max_tokens.unwrap_or(4000)
     }
 
     pub fn tool_rounds(&self) -> usize {
-        self.max_tool_rounds
+        self.text
+            .max_tool_rounds
             .filter(|rounds| *rounds > 0)
             .unwrap_or(8)
     }
@@ -132,60 +115,43 @@ impl ModelOptions {
     pub fn merge(&mut self, changes: Self) {
         macro_rules! replace_some {
             ($($field:ident),+ $(,)?) => {
-                $(if changes.$field.is_some() { self.$field = changes.$field; })+
+                $(if changes.text.$field.is_some() { self.text.$field = changes.text.$field; })+
             };
         }
-        replace_some!(
-            temperature,
-            max_tokens,
-            max_tool_rounds,
-            top_p,
-            seed,
-            quality,
-            background,
-            size,
-            aspect_ratio,
-            output_format,
-        );
+        replace_some!(temperature, max_tokens, max_tool_rounds, top_p, seed,);
+        macro_rules! replace_image_some {
+            ($($field:ident),+ $(,)?) => {
+                $(if changes.image.$field.is_some() { self.image.$field = changes.image.$field; })+
+            };
+        }
+        replace_image_some!(quality, background, size, aspect_ratio, output_format,);
     }
 
     pub fn cli_pairs(&self) -> Vec<String> {
         let mut pairs = Vec::new();
         macro_rules! push_option {
-            ($field:ident) => {
-                if let Some(value) = &self.$field {
+            ($group:ident, $field:ident) => {
+                if let Some(value) = &self.$group.$field {
                     pairs.push(format!("{}={value}", stringify!($field)));
                 }
             };
         }
-        push_option!(temperature);
-        push_option!(max_tokens);
-        push_option!(max_tool_rounds);
-        push_option!(top_p);
-        push_option!(seed);
-        push_option!(quality);
-        push_option!(background);
-        push_option!(size);
-        push_option!(aspect_ratio);
-        push_option!(output_format);
+        push_option!(text, temperature);
+        push_option!(text, max_tokens);
+        push_option!(text, max_tool_rounds);
+        push_option!(text, top_p);
+        push_option!(text, seed);
+        push_option!(image, quality);
+        push_option!(image, background);
+        push_option!(image, size);
+        push_option!(image, aspect_ratio);
+        push_option!(image, output_format);
         pairs
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ModelDefaults(pub BTreeMap<Capability, String>);
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "lowercase")]
-pub enum Capability {
-    Text,
-    Code,
-    Image,
-    Video,
-    Speech,
-    Embedding,
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
@@ -218,49 +184,14 @@ impl FromStr for ModelRole {
     }
 }
 
-impl Capability {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Code => "code",
-            Self::Image => "image",
-            Self::Video => "video",
-            Self::Speech => "speech",
-            Self::Embedding => "embedding",
-        }
-    }
-}
-
-impl FromStr for Capability {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value.to_lowercase().as_str() {
-            "text" => Ok(Self::Text),
-            "code" => Ok(Self::Code),
-            "image" => Ok(Self::Image),
-            "video" => Ok(Self::Video),
-            "speech" => Ok(Self::Speech),
-            "embedding" => Ok(Self::Embedding),
-            _ => bail!(
-                "Unknown capability '{value}'. Use text, code, image, video, speech, or embedding."
-            ),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub struct OpenAiCompatibleConnectorConfig {
     pub base_url: String,
-    #[serde(default)]
     pub credential: Option<SecretRef>,
-    #[serde(default)]
     pub headers: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize)]
 pub struct MarpConfig {
     pub pdf: bool,
     #[serde(default)]
@@ -291,8 +222,11 @@ impl GlobalConfig {
                 model: "llama3.2".to_string(),
                 capabilities: vec![Capability::Text, Capability::Code],
                 options: ModelOptions {
-                    temperature: Some(0.4),
-                    max_tokens: Some(4000),
+                    text: TextModelOptions {
+                        temperature: Some(0.4),
+                        max_tokens: Some(4000),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             },
@@ -304,15 +238,17 @@ impl GlobalConfig {
                 model: "openai/gpt-4o-mini".to_string(),
                 capabilities: vec![Capability::Text, Capability::Code],
                 options: ModelOptions {
-                    temperature: Some(0.4),
-                    max_tokens: Some(4000),
+                    text: TextModelOptions {
+                        temperature: Some(0.4),
+                        max_tokens: Some(4000),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             },
         );
 
         Self {
-            schema_version: CONFIG_SCHEMA_VERSION,
             user: UserConfig {
                 name: None,
                 learning_style: vec!["visual".to_string(), "step-by-step".to_string()],
@@ -352,13 +288,6 @@ impl GlobalConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != CONFIG_SCHEMA_VERSION {
-            bail!(
-                "Global config schema {} is invalid; expected {}",
-                self.schema_version,
-                CONFIG_SCHEMA_VERSION
-            );
-        }
         if self
             .user
             .learning_style
@@ -384,6 +313,7 @@ impl GlobalConfig {
             }
             if profile
                 .options
+                .text
                 .temperature
                 .is_some_and(|value| !(0.0..=2.0).contains(&value))
             {
@@ -391,12 +321,15 @@ impl GlobalConfig {
             }
             if profile
                 .options
+                .text
                 .top_p
                 .is_some_and(|value| !(0.0..=1.0).contains(&value))
             {
                 bail!("Model profile '{name}' top_p must be between 0 and 1");
             }
-            if profile.options.max_tokens == Some(0) || profile.options.max_tool_rounds == Some(0) {
+            if profile.options.text.max_tokens == Some(0)
+                || profile.options.text.max_tool_rounds == Some(0)
+            {
                 bail!("Model profile '{name}' token and tool limits must be positive");
             }
         }
@@ -434,13 +367,6 @@ impl GlobalConfig {
 
 impl ProjectConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != CONFIG_SCHEMA_VERSION {
-            bail!(
-                "Project config schema {} is invalid; expected {}",
-                self.schema_version,
-                CONFIG_SCHEMA_VERSION
-            );
-        }
         validate_project_name(&self.name)?;
         if self.theme.trim().is_empty() {
             bail!("Project theme cannot be empty");
@@ -616,8 +542,6 @@ fn merge_model_roles(
 fn resolve_theme_name(project_theme: &str, command_theme: Option<String>) -> String {
     command_theme.unwrap_or_else(|| project_theme.to_string())
 }
-
-pub const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[cfg(test)]
 // Test bodies live under tests/unit so implementation files stay focused, while

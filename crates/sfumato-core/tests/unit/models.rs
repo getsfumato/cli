@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    config::{CONFIG_SCHEMA_VERSION, ProjectConfig, ProjectRegistry, RegisteredProject},
+    config::{ProjectConfig, ProjectRegistry, RegisteredProject},
     repositories::{GlobalConfigRepository, ProjectRepository},
     themes::DEFAULT_THEME,
 };
@@ -112,7 +112,6 @@ impl ProjectRepository for MemoryProjects {
 
 fn project(name: &str) -> ProjectConfig {
     ProjectConfig {
-        schema_version: CONFIG_SCHEMA_VERSION,
         name: name.to_string(),
         theme: DEFAULT_THEME.to_string(),
         publish_dir: None,
@@ -146,7 +145,7 @@ fn adds_lists_and_shows_connector_backed_profiles() {
     assert_eq!(profile.connector, "ollama");
     assert_eq!(profile.model, "gemma4:e2b-mlx");
     assert!(profile.capabilities.contains(&Capability::Text));
-    assert_eq!(profile.options.max_tokens, Some(8000));
+    assert_eq!(profile.options.text.max_tokens, Some(8000));
     assert!(
         service
             .add(
@@ -241,9 +240,9 @@ fn parses_capabilities_and_typed_options() {
         "quality=high".to_string(),
     ])
     .unwrap();
-    assert_eq!(options.temperature, Some(0.3));
-    assert_eq!(options.max_tokens, Some(8000));
-    assert_eq!(options.quality.as_deref(), Some("high"));
+    assert_eq!(options.text.temperature, Some(0.3));
+    assert_eq!(options.text.max_tokens, Some(8000));
+    assert_eq!(options.image.quality.as_deref(), Some("high"));
     assert!(parse_options(&["unknown=value".to_string()]).is_err());
 }
 
@@ -273,8 +272,8 @@ fn edits_only_supplied_profile_fields_and_merges_options() {
     let profile = service.profile("local-gemma").unwrap();
     assert_eq!(profile.connector, "ollama");
     assert_eq!(profile.model, "gemma4:latest");
-    assert_eq!(profile.options.temperature, Some(0.2));
-    assert_eq!(profile.options.max_tokens, Some(4000));
+    assert_eq!(profile.options.text.temperature, Some(0.2));
+    assert_eq!(profile.options.text.max_tokens, Some(4000));
     assert!(
         service
             .edit("local-gemma", None, None, vec![], vec![])

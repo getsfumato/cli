@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    config::{CONFIG_SCHEMA_VERSION, ProjectRegistry, RegisteredProject},
+    config::{ProjectRegistry, RegisteredProject},
     repositories::ProjectRepository,
     themes::DEFAULT_THEME,
 };
@@ -24,7 +24,6 @@ impl ProjectRepository for MemoryProjects {
             })
             .collect();
         Ok(ProjectRegistry {
-            schema_version: CONFIG_SCHEMA_VERSION,
             active: self.active.lock().unwrap().clone(),
             projects,
         })
@@ -71,7 +70,6 @@ impl ProjectRepository for MemoryProjects {
             bail!("Project already exists");
         }
         let project = ProjectConfig {
-            schema_version: CONFIG_SCHEMA_VERSION,
             name: name.clone(),
             theme: DEFAULT_THEME.to_string(),
             publish_dir: None,

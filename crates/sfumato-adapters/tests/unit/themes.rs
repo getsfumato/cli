@@ -1,8 +1,6 @@
 use super::*;
 use crate::repositories::FilesystemProjectRepository;
-use sfumato_core::{
-    config::CONFIG_SCHEMA_VERSION, repositories::ProjectRepository, themes::ThemeService,
-};
+use sfumato_core::{repositories::ProjectRepository, themes::ThemeService};
 use std::sync::Arc;
 
 #[test]
@@ -79,7 +77,6 @@ fn assigns_theme_to_active_or_explicit_project() {
     service.use_for_project("gruvbox", Some("second")).unwrap();
     for name in ["first", "second"] {
         let project = projects.load(Some(name)).unwrap();
-        assert_eq!(project.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(project.theme, "gruvbox");
     }
 }

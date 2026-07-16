@@ -2589,7 +2589,6 @@ dependencies = [
  "serde_json",
  "sfumato-adapters",
  "sfumato-core",
- "sfumato-domain",
  "tachyonfx",
  "tokio",
  "toml",
@@ -2611,7 +2610,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sfumato-core",
- "sfumato-domain",
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
@@ -2634,7 +2632,6 @@ dependencies = [
  "slug",
  "thiserror 2.0.18",
  "tokio",
- "toml",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::Result as AnyResult;
 
 use crate::{
     artifacts::{ArtifactStore, ArtifactStoreError},
@@ -44,13 +44,13 @@ use crate::{
 /// Resolves one immutable effective configuration snapshot for an operation.
 pub trait EffectiveConfigResolver: Send + Sync {
     /// Loads and validates configuration using the supplied command overrides.
-    fn resolve(&self, overrides: ConfigOverrides) -> Result<EffectiveConfig>;
+    fn resolve(&self, overrides: ConfigOverrides) -> AnyResult<EffectiveConfig>;
 }
 
 /// Creates a layered prompt catalog scoped to one project root.
 pub trait PromptCatalogFactory: Send + Sync {
     /// Builds the catalog used for one operation.
-    fn for_project(&self, project_root: &Path) -> Result<Arc<dyn PromptCatalog>>;
+    fn for_project(&self, project_root: &Path) -> AnyResult<Arc<dyn PromptCatalog>>;
 }
 
 /// Complete request for the slide-generation use case.
@@ -255,18 +255,18 @@ impl SfumatoApplication {
     }
 
     /// Creates a reusable theme package from the bundled scaffold.
-    pub fn create_theme(&self, name: &str) -> Result<ThemePackage> {
-        self.theme_service().create(name)
+    pub fn create_theme(&self, name: &str) -> SfumatoResult<ThemePackage> {
+        public_result(self.theme_service().create(name), ErrorCode::Validation)
     }
 
     /// Lists installed reusable themes.
-    pub fn list_themes(&self) -> Result<Vec<ThemeSummary>> {
-        self.theme_service().list()
+    pub fn list_themes(&self) -> SfumatoResult<Vec<ThemeSummary>> {
+        public_result(self.theme_service().list(), ErrorCode::Config)
     }
 
     /// Resolves an installed reusable theme.
-    pub fn show_theme(&self, name: &str) -> Result<ThemePackage> {
-        self.theme_service().resolve(name)
+    pub fn show_theme(&self, name: &str) -> SfumatoResult<ThemePackage> {
+        public_result(self.theme_service().resolve(name), ErrorCode::NotFound)
     }
 
     /// Selects a theme for the active or explicitly named project.
@@ -274,8 +274,11 @@ impl SfumatoApplication {
         &self,
         name: &str,
         project: Option<&str>,
-    ) -> Result<crate::config::ProjectConfig> {
-        self.theme_service().use_for_project(name, project)
+    ) -> SfumatoResult<crate::config::ProjectConfig> {
+        public_result(
+            self.theme_service().use_for_project(name, project),
+            ErrorCode::Validation,
+        )
     }
 
     fn theme_service(&self) -> ThemeService {
@@ -293,8 +296,11 @@ impl SfumatoApplication {
     }
 
     /// Validates and persists initial user configuration and the default theme.
-    pub fn setup_user(&self, config: GlobalConfig) -> Result<UserSetupResult> {
-        self.setup_service().setup_user(UserSetupRequest { config })
+    pub fn setup_user(&self, config: GlobalConfig) -> SfumatoResult<UserSetupResult> {
+        public_result(
+            self.setup_service().setup_user(UserSetupRequest { config }),
+            ErrorCode::Config,
+        )
     }
 
     fn setup_service(&self) -> SetupService {
@@ -311,38 +317,54 @@ impl SfumatoApplication {
         name: String,
         path: PathBuf,
         activate: bool,
-    ) -> Result<crate::config::ProjectConfig> {
-        self.project_service().init(name, path, activate)
+    ) -> SfumatoResult<crate::config::ProjectConfig> {
+        public_result(
+            self.project_service().init(name, path, activate),
+            ErrorCode::Validation,
+        )
     }
 
     /// Lists registered projects.
-    pub fn list_projects(&self) -> Result<Vec<ProjectSummary>> {
-        self.project_service().list()
+    pub fn list_projects(&self) -> SfumatoResult<Vec<ProjectSummary>> {
+        public_result(self.project_service().list(), ErrorCode::Config)
     }
 
     /// Loads the active or explicitly selected project.
-    pub fn show_project(&self, project: Option<&str>) -> Result<crate::config::ProjectConfig> {
-        self.project_service().show(project)
+    pub fn show_project(
+        &self,
+        project: Option<&str>,
+    ) -> SfumatoResult<crate::config::ProjectConfig> {
+        public_result(self.project_service().show(project), ErrorCode::NotFound)
     }
 
     /// Changes the globally active project.
-    pub fn use_project(&self, name: &str) -> Result<String> {
-        self.project_service().use_project(name)
+    pub fn use_project(&self, name: &str) -> SfumatoResult<String> {
+        public_result(
+            self.project_service().use_project(name),
+            ErrorCode::NotFound,
+        )
     }
 
     /// Removes a project from the registry without deleting its files.
-    pub fn remove_project(&self, name: &str) -> Result<ProjectRemoved> {
-        self.project_service().remove(name)
+    pub fn remove_project(&self, name: &str) -> SfumatoResult<ProjectRemoved> {
+        public_result(self.project_service().remove(name), ErrorCode::NotFound)
     }
 
     /// Lists configured model profiles.
-    pub fn list_models(&self) -> Result<Vec<ModelSummary>> {
-        Ok(self.model_service()?.list())
+    pub fn list_models(&self) -> SfumatoResult<Vec<ModelSummary>> {
+        public_result(
+            self.model_service().map(|service| service.list()),
+            ErrorCode::Config,
+        )
     }
 
     /// Loads one model profile.
-    pub fn show_model(&self, name: &str) -> Result<crate::config::ModelProfile> {
-        self.model_service()?.profile(name)
+    pub fn show_model(&self, name: &str) -> SfumatoResult<crate::config::ModelProfile> {
+        public_result(
+            self.model_service()
+                .and_then(|service| service.profile(name)),
+            ErrorCode::NotFound,
+        )
     }
 
     /// Adds a model profile.
@@ -353,9 +375,13 @@ impl SfumatoApplication {
         model_id: String,
         capabilities: Vec<String>,
         options: Vec<String>,
-    ) -> Result<crate::config::ModelProfile> {
-        self.model_service()?
-            .add(name, connector, model_id, capabilities, options)
+    ) -> SfumatoResult<crate::config::ModelProfile> {
+        public_result(
+            self.model_service().and_then(|mut service| {
+                service.add(name, connector, model_id, capabilities, options)
+            }),
+            ErrorCode::Validation,
+        )
     }
 
     /// Edits supplied fields on one model profile.
@@ -366,14 +392,22 @@ impl SfumatoApplication {
         model_id: Option<String>,
         capabilities: Vec<String>,
         options: Vec<String>,
-    ) -> Result<crate::config::ModelProfile> {
-        self.model_service()?
-            .edit(name, connector, model_id, capabilities, options)
+    ) -> SfumatoResult<crate::config::ModelProfile> {
+        public_result(
+            self.model_service().and_then(|mut service| {
+                service.edit(name, connector, model_id, capabilities, options)
+            }),
+            ErrorCode::Validation,
+        )
     }
 
     /// Removes an unreferenced model profile.
-    pub fn remove_model(&self, name: &str) -> Result<String> {
-        self.model_service()?.remove(name)
+    pub fn remove_model(&self, name: &str) -> SfumatoResult<String> {
+        public_result(
+            self.model_service()
+                .and_then(|mut service| service.remove(name)),
+            ErrorCode::Validation,
+        )
     }
 
     /// Selects a model profile for a capability or role.
@@ -382,19 +416,29 @@ impl SfumatoApplication {
         selector: &str,
         profile: &str,
         project: Option<&str>,
-    ) -> Result<ModelDefaultChanged> {
-        self.model_service()?
-            .use_default(selector, profile, project)
+    ) -> SfumatoResult<ModelDefaultChanged> {
+        public_result(
+            self.model_service()
+                .and_then(|mut service| service.use_default(selector, profile, project)),
+            ErrorCode::Validation,
+        )
     }
 
     /// Lists configured connectors.
-    pub fn list_connectors(&self) -> Result<Vec<ConnectorSummary>> {
-        Ok(self.connector_service()?.list())
+    pub fn list_connectors(&self) -> SfumatoResult<Vec<ConnectorSummary>> {
+        public_result(
+            self.connector_service().map(|service| service.list()),
+            ErrorCode::Config,
+        )
     }
 
     /// Loads one connector connection.
-    pub fn show_connector(&self, name: &str) -> Result<ConnectorDetails> {
-        self.connector_service()?.show(name)
+    pub fn show_connector(&self, name: &str) -> SfumatoResult<ConnectorDetails> {
+        public_result(
+            self.connector_service()
+                .and_then(|service| service.show(name)),
+            ErrorCode::NotFound,
+        )
     }
 
     /// Creates or replaces a connector preset.
@@ -403,19 +447,23 @@ impl SfumatoApplication {
         preset: ConnectorPreset,
         name: Option<String>,
         api_key_env: String,
-    ) -> Result<ConnectorSummary> {
-        self.connector_service()?.setup(preset, name, api_key_env)
+    ) -> SfumatoResult<ConnectorSummary> {
+        public_result(
+            self.connector_service()
+                .and_then(|mut service| service.setup(preset, name, api_key_env)),
+            ErrorCode::Validation,
+        )
     }
 
     fn project_service(&self) -> ProjectService {
         ProjectService::new(Arc::clone(&self.projects))
     }
 
-    fn model_service(&self) -> Result<ModelService> {
+    fn model_service(&self) -> AnyResult<ModelService> {
         ModelService::new(Arc::clone(&self.global_config), Arc::clone(&self.projects))
     }
 
-    fn connector_service(&self) -> Result<ConnectorService> {
+    fn connector_service(&self) -> AnyResult<ConnectorService> {
         ConnectorService::new(Arc::clone(&self.global_config))
     }
 
@@ -425,8 +473,11 @@ impl SfumatoApplication {
         target: ConfigTarget,
         project: Option<String>,
         key: Option<String>,
-    ) -> Result<String> {
-        self.config_editor.show(target, project, key)
+    ) -> SfumatoResult<String> {
+        public_result(
+            self.config_editor.show(target, project, key),
+            ErrorCode::Config,
+        )
     }
 
     /// Sets one validated dotted configuration key.
@@ -436,8 +487,11 @@ impl SfumatoApplication {
         project: Option<String>,
         key: &str,
         value: &str,
-    ) -> Result<PathBuf> {
-        self.config_editor.set(target, project, key, value)
+    ) -> SfumatoResult<PathBuf> {
+        public_result(
+            self.config_editor.set(target, project, key, value),
+            ErrorCode::Config,
+        )
     }
 
     /// Deletes one validated dotted configuration key.
@@ -446,19 +500,25 @@ impl SfumatoApplication {
         target: ConfigTarget,
         project: Option<String>,
         key: &str,
-    ) -> Result<PathBuf> {
-        self.config_editor.delete(target, project, key)
+    ) -> SfumatoResult<PathBuf> {
+        public_result(
+            self.config_editor.delete(target, project, key),
+            ErrorCode::Config,
+        )
     }
 
     /// Resolves effective configuration for non-generation presentation needs.
-    pub fn resolve_config(&self, overrides: ConfigOverrides) -> Result<EffectiveConfig> {
-        self.config.resolve(overrides)
+    pub fn resolve_config(&self, overrides: ConfigOverrides) -> SfumatoResult<EffectiveConfig> {
+        public_result(self.config.resolve(overrides), ErrorCode::Config)
     }
 
     /// Lists prompt templates resolved for the active or selected project.
-    pub fn list_prompts(&self, project: Option<String>) -> Result<Vec<PromptTemplateSummary>> {
+    pub fn list_prompts(
+        &self,
+        project: Option<String>,
+    ) -> SfumatoResult<Vec<PromptTemplateSummary>> {
         let root = self.prompt_project_root(project)?;
-        Ok(self.prompt_manager.list(&root)?)
+        self.prompt_manager.list(&root).map_err(public_prompt_error)
     }
 
     /// Loads one unrendered prompt template for presentation.
@@ -466,9 +526,11 @@ impl SfumatoApplication {
         &self,
         id: PromptId,
         project: Option<String>,
-    ) -> Result<PromptTemplateSource> {
+    ) -> SfumatoResult<PromptTemplateSource> {
         let root = self.prompt_project_root(project)?;
-        Ok(self.prompt_manager.source(&root, id)?)
+        self.prompt_manager
+            .source(&root, id)
+            .map_err(public_prompt_error)
     }
 
     /// Creates one user or project prompt override.
@@ -477,26 +539,47 @@ impl SfumatoApplication {
         id: PromptId,
         scope: PromptOverrideScope,
         project: Option<String>,
-    ) -> Result<PathBuf> {
+    ) -> SfumatoResult<PathBuf> {
         let root = self.prompt_project_root(project)?;
-        Ok(self.prompt_manager.customize(&root, id, scope)?)
+        self.prompt_manager
+            .customize(&root, id, scope)
+            .map_err(public_prompt_error)
     }
 
     /// Validates every prompt resolved for the active or selected project.
-    pub fn validate_prompts(&self, project: Option<String>) -> Result<Vec<PromptProvenance>> {
+    pub fn validate_prompts(
+        &self,
+        project: Option<String>,
+    ) -> SfumatoResult<Vec<PromptProvenance>> {
         let root = self.prompt_project_root(project)?;
-        Ok(self.prompt_manager.validate(&root)?)
+        self.prompt_manager
+            .validate(&root)
+            .map_err(public_prompt_error)
     }
 
-    fn prompt_project_root(&self, project: Option<String>) -> Result<PathBuf> {
-        Ok(self
-            .config
-            .resolve(ConfigOverrides {
-                project,
-                ..Default::default()
-            })?
-            .project_root)
+    fn prompt_project_root(&self, project: Option<String>) -> SfumatoResult<PathBuf> {
+        public_result(
+            self.config
+                .resolve(ConfigOverrides {
+                    project,
+                    ..Default::default()
+                })
+                .map(|config| config.project_root),
+            ErrorCode::Config,
+        )
     }
+}
+
+fn public_result<T>(result: AnyResult<T>, fallback_code: ErrorCode) -> SfumatoResult<T> {
+    result.map_err(|error| application_error(error, fallback_code, None))
+}
+
+fn public_prompt_error(error: PromptError) -> SfumatoError {
+    application_error(
+        error.into(),
+        ErrorCode::Config,
+        Some(OperationStage::RenderPrompt),
+    )
 }
 
 fn application_error(

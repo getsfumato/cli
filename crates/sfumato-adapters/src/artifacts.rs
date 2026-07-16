@@ -1,6 +1,7 @@
 //! Filesystem-backed transactional artifact storage.
 
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
@@ -10,10 +11,9 @@ use std::{
 use fs2::FileExt;
 use serde::Serialize;
 use sfumato_core::artifacts::{
-    ArtifactResourceKind, ArtifactStore, ArtifactStoreError, ArtifactTransaction,
-    CommittedArtifactRevision, ResourceArtifactManifest,
+    ArtifactId, ArtifactResourceKind, ArtifactStore, ArtifactStoreError, ArtifactTransaction,
+    CommittedArtifactRevision, JobId, ProjectName, ResourceArtifactManifest, RevisionId,
 };
-use sfumato_domain::{ArtifactId, JobId, ProjectName, RevisionId};
 
 /// Transactional artifact store rooted at `~/.sfumato/Projects` by default.
 #[derive(Clone, Debug)]
@@ -49,7 +49,9 @@ impl ArtifactStore for FilesystemArtifactStore {
         project: &str,
         kind: ArtifactResourceKind,
     ) -> Result<Box<dyn ArtifactTransaction>, ArtifactStoreError> {
-        let project_root = self.project_root(project)?;
+        let project = ProjectName::new(project)
+            .map_err(|error| ArtifactStoreError::InvalidIdentifier(error.to_string()))?;
+        let project_root = self.project_root(project.as_str())?;
         fs::create_dir_all(&project_root).map_err(persistence)?;
         let lock_path = project_root.join(".artifacts.lock");
         let lock = OpenOptions::new()
@@ -74,6 +76,7 @@ impl ArtifactStore for FilesystemArtifactStore {
 
         Ok(Box::new(FilesystemArtifactTransaction {
             project_root,
+            project,
             kind,
             job_id,
             revision_id,
@@ -87,6 +90,7 @@ impl ArtifactStore for FilesystemArtifactStore {
 
 struct FilesystemArtifactTransaction {
     project_root: PathBuf,
+    project: ProjectName,
     kind: ArtifactResourceKind,
     job_id: JobId,
     revision_id: RevisionId,
@@ -120,8 +124,16 @@ impl ArtifactTransaction for FilesystemArtifactTransaction {
         validate_manifest_identity(&self, &manifest)?;
         ArtifactId::new(&manifest.resource_id)
             .map_err(|error| ArtifactStoreError::InvalidIdentifier(error.to_string()))?;
+        let mut declared_paths = BTreeSet::new();
         for artifact in &manifest.files {
             let relative = safe_relative(&artifact.path)?;
+            if relative == Path::new("manifest.json") || !declared_paths.insert(relative.to_owned())
+            {
+                return Err(ArtifactStoreError::Persistence(format!(
+                    "artifact manifest contains a reserved or duplicate path: {}",
+                    relative.display()
+                )));
+            }
             let path = self.staging_root.join(relative);
             if !path.is_file() {
                 return Err(ArtifactStoreError::MissingArtifact(
@@ -148,10 +160,10 @@ impl ArtifactTransaction for FilesystemArtifactTransaction {
             )));
         }
         fs::rename(&self.staging_root, &committed_root).map_err(persistence)?;
-        self.committed = true;
+        sync_directory(&revisions_root)?;
 
         let current_path = resource_root.join("current.json");
-        write_json_atomic(
+        if let Err(error) = write_json_atomic(
             &current_path,
             &CurrentRevision {
                 schema_version: 1,
@@ -160,7 +172,12 @@ impl ArtifactTransaction for FilesystemArtifactTransaction {
                     .join(self.revision_id.as_str())
                     .join("manifest.json"),
             },
-        )?;
+        ) {
+            fs::remove_dir_all(&committed_root).map_err(persistence)?;
+            sync_directory(&revisions_root)?;
+            return Err(error);
+        }
+        self.committed = true;
         FileExt::unlock(&self.lock).map_err(persistence)?;
         Ok(CommittedArtifactRevision {
             root: committed_root.clone(),
@@ -194,6 +211,7 @@ fn validate_manifest_identity(
         || manifest.job_id != transaction.job_id
         || manifest.revision_id != transaction.revision_id
         || manifest.resource_kind != transaction.kind
+        || manifest.project != transaction.project.as_str()
     {
         return Err(ArtifactStoreError::Persistence(
             "artifact manifest does not match its transaction".into(),
@@ -241,7 +259,14 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), Artifact
     temporary
         .persist(path)
         .map_err(|error| persistence(error.error))?;
+    sync_directory(parent)?;
     Ok(())
+}
+
+fn sync_directory(path: &Path) -> Result<(), ArtifactStoreError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(persistence)
 }
 
 fn persistence(error: impl std::fmt::Display) -> ArtifactStoreError {

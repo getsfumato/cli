@@ -2,6 +2,7 @@
 
 pub mod application;
 pub mod artifacts;
+mod config_dto;
 pub mod config_editor;
 pub mod config_files;
 pub mod filesystem;

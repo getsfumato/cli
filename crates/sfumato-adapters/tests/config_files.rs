@@ -1,9 +1,15 @@
 use std::fs;
 
+use serde::{Deserialize, Serialize};
 use sfumato_adapters::config_files::{
     edit_toml, read_versioned, read_versioned_snapshot, write_toml, write_toml_if_revision,
 };
-use sfumato_core::config::{GlobalConfig, ProjectConfig};
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct TestConfig {
+    schema_version: u32,
+    name: String,
+}
 
 #[test]
 fn rejects_legacy_project_config_without_rewriting_it() {
@@ -12,7 +18,7 @@ fn rejects_legacy_project_config_without_rewriting_it() {
     let legacy = "schema_version = 2\nname = \"demo\"\ntheme = \"gruvbox\"\n";
     fs::write(&project_path, legacy).unwrap();
 
-    let error = read_versioned::<ProjectConfig>(&project_path, "project").unwrap_err();
+    let error = read_versioned::<toml::Value>(&project_path, "project").unwrap_err();
 
     assert!(format!("{error:#}").contains("schema 2"));
     assert_eq!(fs::read_to_string(project_path).unwrap(), legacy);
@@ -25,7 +31,7 @@ fn rejects_future_global_config_without_rewriting_it() {
     let future = "schema_version = 99\n[user]\nlearning_style = []\n";
     fs::write(&path, future).unwrap();
 
-    let error = read_versioned::<GlobalConfig>(&path, "global").unwrap_err();
+    let error = read_versioned::<toml::Value>(&path, "global").unwrap_err();
 
     assert!(format!("{error:#}").contains("schema 99"));
     assert_eq!(fs::read_to_string(path).unwrap(), future);
@@ -35,10 +41,9 @@ fn rejects_future_global_config_without_rewriting_it() {
 fn schema_reads_are_side_effect_free() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("config.toml");
-    let config = toml::to_string_pretty(&GlobalConfig::default_config()).unwrap();
-    fs::write(&path, config).unwrap();
+    fs::write(&path, "schema_version = 4\n").unwrap();
 
-    read_versioned::<GlobalConfig>(&path, "global").unwrap();
+    read_versioned::<toml::Value>(&path, "global").unwrap();
 
     assert!(!temp.path().join("config.toml.lock").exists());
 }
@@ -75,22 +80,21 @@ fn concurrent_edit_transactions_preserve_every_change() {
 fn stale_revision_cannot_overwrite_a_newer_config() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("config.toml");
-    let original = GlobalConfig::default_config();
+    let original = TestConfig {
+        schema_version: 4,
+        name: "original".to_string(),
+    };
     write_toml(&path, &original).unwrap();
-    let snapshot = read_versioned_snapshot::<GlobalConfig>(&path, "global").unwrap();
+    let snapshot = read_versioned_snapshot::<TestConfig>(&path, "global").unwrap();
 
     let mut newer = original.clone();
-    newer.user.name = Some("newer writer".to_string());
+    newer.name = "newer writer".to_string();
     write_toml(&path, &newer).unwrap();
 
     let error = write_toml_if_revision(&path, &snapshot.value, &snapshot.revision).unwrap_err();
     assert!(error.to_string().contains("changed since it was loaded"));
     assert_eq!(
-        read_versioned::<GlobalConfig>(&path, "global")
-            .unwrap()
-            .user
-            .name
-            .as_deref(),
-        Some("newer writer")
+        read_versioned::<TestConfig>(&path, "global").unwrap().name,
+        "newer writer"
     );
 }

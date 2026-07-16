@@ -9,13 +9,16 @@ use std::{
 use anyhow::{Context, Result, bail};
 use sfumato_core::{
     application::EffectiveConfigResolver,
-    config::{ConfigOverrides, GlobalConfig, ProjectConfig},
+    config::ConfigOverrides,
     config_editor::{ConfigEditor, ConfigTarget},
     repositories::{GlobalConfigRepository, ProjectRepository},
 };
 use toml::{Table, Value};
 
-use crate::config_files::{edit_toml, project_config_path};
+use crate::{
+    config_dto::{GlobalConfigDto, ProjectConfigDto},
+    config_files::{edit_toml, project_config_path},
+};
 
 /// Schema-aware TOML editor for production configuration files.
 pub struct TomlConfigEditor {
@@ -78,16 +81,16 @@ impl TomlConfigEditor {
         let value = Value::Table(table.clone());
         match scope {
             ConfigTarget::User => {
-                let config: GlobalConfig = value
+                let persisted: GlobalConfigDto = value
                     .try_into()
                     .context("The change would make the user config invalid")?;
-                config.validate()
+                persisted.into_domain().map(|_| ())
             }
             ConfigTarget::Project => {
-                let project: ProjectConfig = value
+                let persisted: ProjectConfigDto = value
                     .try_into()
                     .context("The change would make the project config invalid")?;
-                project.validate()?;
+                let project = persisted.into_domain()?;
                 let global = self.global.load()?;
                 for profile in project
                     .model_defaults

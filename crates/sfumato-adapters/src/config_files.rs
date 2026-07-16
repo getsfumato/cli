@@ -9,9 +9,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde::{Serialize, de::DeserializeOwned};
-use sfumato_core::config::CONFIG_SCHEMA_VERSION;
 use sfumato_core::repositories::RepositorySnapshot;
 use sha2::{Digest, Sha256};
+
+pub use crate::config_dto::CONFIG_SCHEMA_VERSION;
 
 /// User-global paths owned by the filesystem adapter.
 #[derive(Clone, Debug)]

@@ -168,3 +168,36 @@ fn rejects_unclosed_code_fences_and_ignores_separators_inside_them() {
             .contains("unclosed `rust`")
     );
 }
+
+#[test]
+fn focused_layout_replacement_uses_one_based_validated_slide_positions() {
+    let mut deck = DeckDocument::from_marp(deck_markdown(), "Fourier Series").unwrap();
+    let original_revision = deck.revision().clone();
+
+    deck.replace_slide_markdown_at(2, "## Improved intuition\n\nOne compact idea.")
+        .unwrap();
+
+    assert_eq!(
+        deck.slide_at(2).unwrap().1.heading.as_deref(),
+        Some("Improved intuition")
+    );
+    assert_ne!(deck.revision(), &original_revision);
+    assert!(deck.replace_slide_markdown_at(1, "# Replaced").is_err());
+    assert!(deck.replace_slide_markdown_at(99, "## Missing").is_err());
+    assert!(
+        deck.replace_slide_markdown_at(2, "## Split\n\n---\n\n## Extra")
+            .is_err()
+    );
+
+    deck.replace_slide_fragment_at(2, "## Part one\n\nShort.\n\n---\n\n## Part two\n\nShort.")
+        .unwrap();
+    assert_eq!(deck.slide_count(), 5);
+    assert_eq!(
+        deck.slide_at(2).unwrap().1.heading.as_deref(),
+        Some("Part one")
+    );
+    assert_eq!(
+        deck.slide_at(3).unwrap().1.heading.as_deref(),
+        Some("Part two")
+    );
+}

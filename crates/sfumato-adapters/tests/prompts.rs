@@ -6,6 +6,7 @@ use sfumato_core::prompts::{
     PromptCatalog, PromptId, PromptOrigin, PromptOverrideScope, PromptRenderRequest,
     PromptVariables,
 };
+use sha2::{Digest, Sha256};
 
 fn representative_variables() -> PromptVariables {
     let mut values = Map::new();
@@ -68,6 +69,29 @@ fn renders_every_bundled_prompt_with_strict_fixture_values() {
         assert_eq!(rendered.provenance.content_hash.len(), 64);
         assert_eq!(rendered.provenance.origin, PromptOrigin::Bundled);
     }
+}
+
+#[test]
+fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let mut aggregate = String::new();
+    for id in PromptId::all() {
+        let rendered = catalog
+            .render(PromptRenderRequest {
+                id: *id,
+                variables: representative_variables(),
+            })
+            .unwrap();
+        aggregate.push_str(id.as_str());
+        aggregate.push('\n');
+        aggregate.push_str(&rendered.text);
+        aggregate.push_str("\n\0\n");
+    }
+
+    assert_eq!(
+        format!("{:x}", Sha256::digest(aggregate.as_bytes())),
+        "9e24398bb8b6b74a320eac16a5fc50396951b556eb41574c3f8641e4b70542a5"
+    );
 }
 
 #[test]
