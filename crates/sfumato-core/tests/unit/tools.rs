@@ -1,5 +1,9 @@
 use super::*;
 use crate::{
+    prompts::{
+        PromptCatalog, PromptError, PromptId, PromptOrigin, PromptProvenance, PromptRenderRequest,
+        RenderedPrompt,
+    },
     providers::{
         ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
         ToolExecutionRequest,
@@ -11,6 +15,62 @@ use std::{collections::BTreeMap, sync::Mutex};
 
 struct MockImageProvider {
     prompts: Arc<Mutex<Vec<String>>>,
+}
+
+struct TestPromptCatalog;
+
+impl PromptCatalog for TestPromptCatalog {
+    fn render(
+        &self,
+        request: PromptRenderRequest,
+    ) -> std::result::Result<RenderedPrompt, PromptError> {
+        if request.id == PromptId::ToolsGenerationDescriptions {
+            return Ok(RenderedPrompt {
+                text: serde_json::json!({
+                    "list_directory": "List a directory.",
+                    "list_directory_path": "Directory path.",
+                    "read_file": "Read a file.",
+                    "read_file_path": "File path.",
+                    "image_generation": "Generate an image.",
+                    "image_prompt": "Image prompt.",
+                    "image_alt_text": "Accessible alternative text."
+                })
+                .to_string(),
+                provenance: PromptProvenance {
+                    id: request.id,
+                    origin: PromptOrigin::Bundled,
+                    version: 1,
+                    content_hash: "test-tools".to_string(),
+                },
+            });
+        }
+        let value = |key: &str| {
+            request.variables.0[key]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        Ok(RenderedPrompt {
+            text: format!(
+                "{}\nTheme: {}\nSemantic colors: {}\nTypography: {}\n{}",
+                value("requested_prompt"),
+                value("theme_name"),
+                value("theme_colors"),
+                value("theme_fonts"),
+                value("project_instructions")
+            ),
+            provenance: PromptProvenance {
+                id: request.id,
+                origin: PromptOrigin::Bundled,
+                version: 1,
+                content_hash: "test".to_string(),
+            },
+        })
+    }
+
+    fn validate(&self) -> std::result::Result<Vec<PromptProvenance>, PromptError> {
+        Ok(Vec::new())
+    }
 }
 
 #[async_trait]
@@ -124,6 +184,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
             theme,
             project_instructions: Some("Use Spanish labels.".to_string()),
         }),
+        Arc::new(TestPromptCatalog),
     )
     .unwrap();
 
@@ -147,9 +208,10 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
     let result: Value = serde_json::from_str(&result).unwrap();
 
     let markdown_path = result["markdown_path"].as_str().unwrap();
-    assert!(markdown_path.starts_with("images/generated-a-labeled-unit-circle-"));
+    assert!(markdown_path.starts_with("images/image-"));
     assert!(markdown_path.ends_with(".png"));
     assert_eq!(tools.generated_artifacts().unwrap().len(), 1);
+    assert_eq!(tools.generated_prompts().unwrap().len(), 2);
     assert!(tools.generated_artifacts().unwrap()[0].is_file());
     let prompt = &prompts.lock().unwrap()[0];
     assert!(prompt.contains("Theme: gruvbox"));
@@ -161,7 +223,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
 #[test]
 fn filesystem_only_tools_do_not_declare_image_generation() {
     let temp = tempfile::tempdir().unwrap();
-    let tools = generation_tools(temp.path(), &[], None).unwrap();
+    let tools = generation_tools(temp.path(), &[], None, Arc::new(TestPromptCatalog)).unwrap();
 
     assert!(
         tools

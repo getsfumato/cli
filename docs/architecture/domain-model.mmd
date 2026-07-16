@@ -1,0 +1,120 @@
+%% Sfumato v0.2 types currently present in sfumato-domain and sfumato-core.
+classDiagram
+    class ProjectName {
+        +new(value)
+        +as_str()
+    }
+    class ModelProfileName {
+        +new(value)
+        +as_str()
+    }
+    class ThemeName {
+        +new(value)
+        +as_str()
+    }
+    class JobId
+    class ArtifactId
+    class RevisionId
+    class SecretRef
+    class Capability {
+        Text
+        Code
+        Image
+        Embedding
+    }
+
+    class DeckDocument {
+        -title
+        -frontmatter
+        -order
+        -slides
+        -revision
+        +from_marp(markdown, title)
+        +snapshot()
+        +apply_patch(patch)
+        +render()
+    }
+    class ReviewableDocument {
+        <<trait>>
+        +snapshot()
+        +validate_patch(patch)
+        +apply_patch(patch)
+        +validate()
+        +render()
+    }
+    class ReviewSnapshot {
+        +schema_version
+        +format
+        +revision
+        +document
+        +constraints
+    }
+    class ReviewConstraint {
+        Rfc6902Only
+        TestDeckRevision
+        TestSlideRevision
+        PreserveTitleSlide
+        PreserveMetadata
+        ReplaceSlideMarkdownOnly
+    }
+    class SlideDocument {
+        +revision
+        +kind
+        +heading
+        +markdown
+        +elements
+    }
+    class SlideId
+    class SlideElement
+    class PatchReport {
+        +operations
+        +changed_nodes
+    }
+
+    class ArtifactManifest {
+        +schema_version
+        +artifact_id
+        +job_id
+        +revision_id
+        +parent_revision_id
+        +kind
+        +files
+        +prompts
+    }
+    class ArtifactMetadata
+    class PromptProvenance
+
+    class OperationContext {
+        +job_id
+        +deadline
+        +checkpoint(stage)
+        +emit(event)
+    }
+    class CancellationToken {
+        +cancel()
+        +is_cancelled()
+    }
+    class SfumatoError {
+        +code
+        +class
+        +stage
+        +message
+    }
+
+    ReviewableDocument <|.. DeckDocument
+    DeckDocument *-- SlideId
+    DeckDocument *-- SlideDocument
+    SlideDocument *-- SlideElement
+    DeckDocument --> ReviewSnapshot
+    ReviewSnapshot *-- ReviewConstraint
+    DeckDocument --> PatchReport
+    ArtifactManifest *-- ArtifactMetadata
+    ArtifactManifest *-- PromptProvenance
+    ArtifactManifest --> ArtifactId
+    ArtifactManifest --> JobId
+    ArtifactManifest --> RevisionId
+    OperationContext *-- JobId
+    OperationContext *-- CancellationToken
+    OperationContext --> SfumatoError
+    ModelProfileName --> Capability
+    ModelProfileName --> SecretRef

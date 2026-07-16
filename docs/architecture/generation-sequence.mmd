@@ -1,0 +1,55 @@
+%% Sfumato v0.2 generation sequence
+%% Status: PROPOSED orchestration; implemented behavior is called out in notes.
+sequenceDiagram
+    autonumber
+    actor Client as CLI, TUI, or library client
+    participant App as GenerateSlides use case [Proposed boundary]
+    participant Config as ConfigResolver [Implemented behavior]
+    participant Prompt as PromptCatalog [In flight]
+    participant Source as SourceReader [Implemented behavior]
+    participant Model as TextProvider [Implemented trait]
+    participant Review as ReviewableDocument [Implemented]
+    participant Render as Render ports [Implemented behavior]
+    participant Tx as ArtifactTransaction [Proposed]
+    participant Events as EventSink [Proposed contract]
+
+    Client->>App: generate(request, operation_context)
+    App->>Events: stage(Configuring)
+    App->>Config: resolve(overrides)
+    Config-->>App: ConfigSnapshot with provenance
+    App->>Source: collect bounded sources
+    Source-->>App: SourceBundle
+    App->>Prompt: render(draft PromptPair, variables)
+    Prompt-->>App: Rendered system and user prompts with provenance
+    App->>Events: stage(Drafting)
+    App->>Model: generate_text(prompt, tools, cancellation)
+    alt provider reports context or output limit
+        App->>Prompt: render(compact draft PromptPair, variables)
+        App->>Model: generate_text(compact prompt, no new tools)
+    end
+    Model-->>App: complete draft
+    App->>Review: parse and validate canonical deck
+    opt semantic review enabled
+        App->>Prompt: render(review PromptPair, variables)
+        App->>Model: generate guarded JSON Patch
+        App->>Review: test revisions, apply patch, validate
+    end
+    App->>Render: inspect layout
+    opt focused repair improves measured overflow
+        App->>Prompt: render(layout-repair PromptPair, variables)
+        App->>Model: generate guarded replacement
+        App->>Review: apply and validate
+        App->>Render: inspect candidate again
+    end
+    App->>Tx: begin(artifact plan)
+    App->>Render: stage Mermaid, theme, Markdown, and PDF
+    Render-->>Tx: staged artifacts
+    App->>Tx: validate manifest and commit
+    Tx-->>App: committed ArtifactManifest
+    opt publication requested
+        App->>Tx: publish processed artifact
+    end
+    App-->>Client: GenerationResult
+
+    Note over App,Render: Drafting, guarded review, layout checks, Mermaid rendering, and PDF export are implemented today.
+    Note over App,Tx: v0.2 adds one cancellation-aware use-case boundary and a recoverable transaction.

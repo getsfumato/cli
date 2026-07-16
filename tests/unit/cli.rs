@@ -47,3 +47,30 @@ fn model_use_accepts_reviewer_role() {
     assert_eq!(args.profile, "local-review");
     assert_eq!(args.project.as_deref(), Some("university"));
 }
+
+#[test]
+fn parses_focused_slide_edit_command() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "edit",
+        "slides",
+        "deck.md",
+        "--instruction",
+        "Clarify the definition on slide two",
+        "--project",
+        "university",
+        "--model",
+        "text=cloud-draft",
+    ])
+    .unwrap();
+
+    let Some(Commands::Edit {
+        command: EditCommands::Slides(args),
+    }) = cli.command
+    else {
+        panic!("expected edit slides command");
+    };
+    assert_eq!(args.markdown_path, PathBuf::from("deck.md"));
+    assert_eq!(args.project.as_deref(), Some("university"));
+    assert_eq!(args.model_overrides, vec!["text=cloud-draft"]);
+}

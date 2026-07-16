@@ -1,0 +1,94 @@
+%% Sfumato v0.2 architecture and remaining boundaries
+%% Legend: green = implemented; amber = transitional; blue = remaining target.
+flowchart TB
+    subgraph Clients["Presentation clients"]
+        CLI["CLI commands\nImplemented"]
+        TUI["Ratatui workspace\nImplemented"]
+        LIB["Stable SfumatoApplication facade\nRemaining"]
+    end
+
+    subgraph Composition["sfumato crate: presentation and composition"]
+        BOOT["CLI composition root\nImplemented, direct wiring"]
+    end
+
+    subgraph Application["sfumato-core crate: application and ports"]
+        GEN["GenerateSlides workflow\nImplemented"]
+        EDIT["EditSlides workflow\nImplemented"]
+        CFG["Configuration workflows\nTransitional filesystem coupling"]
+        PROMPT["PromptCatalog port and DTOs\nImplemented"]
+        TX["ArtifactStore transaction port\nImplemented"]
+    end
+
+    subgraph Domain["sfumato-domain crate"]
+        DECK["DeckDocument and review rules\nImplemented"]
+        MODEL["Validated IDs, capabilities,\nand artifact manifests\nImplemented"]
+        ERROR["Typed errors and operation context\nImplemented, adoption transitional"]
+    end
+
+    subgraph Ports["Outbound ports in sfumato-core"]
+        PROVIDERS["Text and image provider traits\nImplemented"]
+        REPOS["Config, project and theme repositories\nTransitional concrete implementations"]
+        RENDER["Renderer and layout inspector ports\nRemaining extraction"]
+        STORE["ArtifactStore port\nImplemented"]
+        EVENTS["EventSink and operation cancellation\nImplemented, adoption transitional"]
+    end
+
+    subgraph Adapters["sfumato-adapters crate"]
+        OPENAI["OpenAI-compatible HTTP\nImplemented"]
+        FS["Filesystem artifact and prompt adapters\nImplemented"]
+        MARP["Marp and browser processes\nImplemented"]
+        MERMAID["Mermaid process\nImplemented"]
+        TERMINAL["Human and JSON presenters\nImplemented"]
+        TEMPLATES["Layered MiniJinja prompt catalog\nImplemented"]
+    end
+
+    subgraph External["External systems"]
+        API["Model APIs and Ollama"]
+        DISK["User config, project roots,\nand artifact workspace"]
+        BIN["marp, browser, and mmdc"]
+    end
+
+    CLI --> BOOT
+    TUI --> BOOT
+    LIB --> BOOT
+    BOOT --> GEN
+    BOOT --> EDIT
+    BOOT --> CFG
+    GEN --> PROMPT
+    EDIT --> PROMPT
+    GEN --> TX
+    EDIT --> TX
+    GEN --> DECK
+    EDIT --> DECK
+    CFG --> MODEL
+    PROMPT --> MODEL
+    TX --> MODEL
+    GEN --> PROVIDERS
+    EDIT --> PROVIDERS
+    CFG --> REPOS
+    GEN --> RENDER
+    EDIT --> RENDER
+    GEN --> STORE
+    EDIT --> STORE
+    GEN --> EVENTS
+    EDIT --> EVENTS
+    OPENAI -. implements .-> PROVIDERS
+    FS -. implements .-> REPOS
+    FS -. implements .-> STORE
+    MARP -. implements .-> RENDER
+    MERMAID -. implements .-> RENDER
+    TEMPLATES -. implements .-> PROMPT
+    TERMINAL --> CLI
+    TERMINAL --> TUI
+    OPENAI --> API
+    FS --> DISK
+    MARP --> BIN
+    MERMAID --> BIN
+
+    classDef implemented fill:#d9f2df,stroke:#24713b,color:#102a18
+    classDef inflight fill:#fff0c2,stroke:#9a6b00,color:#332400
+    classDef proposed fill:#dcecff,stroke:#2d64a8,color:#10243d
+    classDef mixed fill:#e8e2f5,stroke:#65508f,color:#241b35
+    class CLI,TUI,BOOT,GEN,EDIT,PROMPT,TX,DECK,MODEL,PROVIDERS,STORE,OPENAI,FS,MARP,MERMAID,TERMINAL,TEMPLATES implemented
+    class CFG,ERROR,REPOS,EVENTS inflight
+    class LIB,RENDER proposed

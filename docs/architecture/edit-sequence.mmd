@@ -1,0 +1,47 @@
+%% Sfumato v0.2 edit sequence
+%% Status: Implemented workflow; facade and renderer boundaries remain transitional.
+sequenceDiagram
+    autonumber
+    actor Client as CLI, TUI, or library client
+    participant App as EditSlides workflow
+    participant Config as EffectiveConfig resolver
+    participant Store as ArtifactStore port
+    participant Deck as SlideDeckDocument [Implemented]
+    participant Prompt as PromptCatalog port
+    participant Model as TextProvider [Implemented trait]
+    participant Render as Render ports [Implemented behavior]
+    participant Tx as ArtifactTransaction port
+
+    Client->>App: edit(request, operation_context)
+    App->>Config: resolve project and text model
+    Config-->>App: ConfigSnapshot
+    App->>Store: read generated Markdown inside project workspace
+    Store-->>App: original deck bytes and identity
+    App->>Deck: parse, snapshot, and validate
+    Deck-->>App: revision-guarded ReviewSnapshot
+    App->>Prompt: render(edit PromptPair, variables)
+    App->>Model: generate_text(prompt, cancellation)
+    alt provider limit
+        App->>Prompt: render(compact edit PromptPair, variables)
+        App->>Model: generate compact patch
+    end
+    Model-->>App: RFC 6902 patch
+    App->>Deck: allow only tests and slide Markdown replacements
+    alt invalid response on first attempt
+        App->>Prompt: render(edit pair with corrective variables)
+        App->>Model: generate corrected patch
+        Model-->>App: corrected patch
+        App->>Deck: apply and validate
+    else valid response
+        Deck-->>App: candidate and PatchReport
+    end
+    App->>Render: inspect layout and render diagrams
+    App->>Tx: begin immutable child revision
+    App->>Render: render candidate PDF into staging
+    Render-->>Tx: staged Markdown, PDF, theme, and diagrams
+    App->>Tx: validate manifest and atomically commit revision
+    Tx-->>App: committed artifact receipts
+    App-->>Client: EditSlidesResult
+
+    Note over Deck,Model: Title slide, frontmatter, IDs, order, and unrelated content remain protected.
+    Note over Store,Tx: Staging is rolled back on failure. A successful commit renames the complete immutable revision and atomically updates current.json.

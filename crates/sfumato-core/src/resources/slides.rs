@@ -1,45 +1,63 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
+use sfumato_domain::ArtifactKind;
+use sha2::{Digest, Sha256};
 use slug::slugify;
 use walkdir::WalkDir;
 
 use crate::{
+    artifacts::{
+        ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
+    },
     config::{Capability, EffectiveConfig, ModelRole},
     generation::{
         GenerationOutput, GenerationRequest, GenerationToolSummary, ReviewStatus, SlideLayoutIssue,
         SlideReviewSummary,
     },
     instructions::ProjectInstructions,
+    prompts::{PromptCatalog, PromptId, PromptPair, PromptRenderRequest, PromptVariables},
     providers::{
-        GenerationStage, TextGenerationEvent, TextGenerationLimitError, TextGenerationProvider,
-        TextGenerationRequest, TextGenerationResponse, ToolDefinition, build_image_provider,
-        build_text_provider,
+        GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationLimitError,
+        TextGenerationProvider, TextGenerationRequest, TextGenerationResponse, ToolDefinition,
     },
     renderers::{
         diagrams::{MermaidDiagramRenderer, MermaidThemeConfig},
         marp,
     },
-    review::{ReviewSnapshot, ReviewableDocument, decks::SlideDeckDocument, parse_json_patch},
+    review::{ReviewSnapshot, decks::SlideDeckDocument, parse_json_patch},
     themes::{ThemePackage, ThemeService, ThemeTokens},
     tools::{ImageToolConfig, generation_tools},
 };
+
+mod edit;
+
+pub use edit::{EditSlidesOptions, EditSlidesRequest, EditSlidesResult, edit_slides};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "md", "txt", "rs", "py", "js", "ts", "html", "css", "json", "toml", "yaml", "yml",
 ];
 const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
+const MAX_SOURCE_FILES: usize = 256;
+const MAX_SOURCE_BYTES_PER_FILE: u64 = 1_048_576;
+const MAX_SOURCE_TOTAL_BYTES: u64 = 16_777_216;
+const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
 
 pub struct GenerateSlidesOptions {
     pub title: Option<String>,
     pub dry_run: bool,
     pub review: bool,
     pub event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    pub prompt_catalog: Arc<dyn PromptCatalog>,
+    pub artifact_store: Arc<dyn ArtifactStore>,
+    pub provider_factory: Arc<dyn ProviderFactory>,
 }
 
 #[derive(Debug)]
@@ -69,10 +87,28 @@ pub async fn generate_slides(
         dry_run,
         review,
         event_sink,
+        prompt_catalog,
+        artifact_store,
+        provider_factory,
     } = options;
-    let artifact_root = config.artifact_root()?;
     let publish_root = config.publish_root()?;
-    let slides_dir = artifact_root.join("slides");
+    let mut artifact_transaction = if dry_run {
+        None
+    } else {
+        Some(artifact_store.begin(&config.project_name, ArtifactResourceKind::Slides)?)
+    };
+    let slides_dir = artifact_transaction
+        .as_ref()
+        .map(|transaction| transaction.staging_root().to_path_buf())
+        .unwrap_or_else(|| {
+            artifact_store
+                .project_root(&config.project_name)
+                .unwrap_or_else(|_| PathBuf::from(".sfumato"))
+                .join("resources")
+                .join("slides")
+                .join("dry-run")
+        });
+    let artifact_root = slides_dir.clone();
     let title_override = title_override
         .map(|title| validate_title(&title))
         .transpose()?;
@@ -104,7 +140,7 @@ pub async fn generate_slides(
     let image_tool = image_selection
         .map(|(profile_name, profile)| {
             let provider: Arc<dyn crate::providers::ImageGenerationProvider> =
-                Arc::from(build_image_provider(&config, profile)?);
+                Arc::from(provider_factory.image(&config, profile)?);
             Ok::<ImageToolConfig, anyhow::Error>(ImageToolConfig {
                 provider,
                 profile_name: profile_name.to_string(),
@@ -116,7 +152,12 @@ pub async fn generate_slides(
             })
         })
         .transpose()?;
-    let tool_set = generation_tools(&config.project_root, &request.sources, image_tool)?;
+    let tool_set = generation_tools(
+        &config.project_root,
+        &request.sources,
+        image_tool,
+        prompt_catalog.clone(),
+    )?;
     let review_tool_definitions = tool_set
         .definitions
         .iter()
@@ -126,20 +167,26 @@ pub async fn generate_slides(
     let tool_summaries = summarize_tools(&tool_set.definitions);
     let source_bundle = build_source_bundle(&documents);
     let compact_source_bundle = build_compact_source_bundle(&documents, 12_000);
-    let mut provider_request = build_generation_request(
-        &config,
-        &theme,
-        &request.instruction,
-        title_override.as_deref(),
-        &source_bundle,
-        image_selection.is_some(),
-        &project_instructions_prompt,
-    );
+    let (draft_profile_name, draft_profile) = config.resolve_model(Capability::Text)?;
+    let draft_tool_rounds = model_tool_rounds(draft_profile);
+    let mut provider_request = build_generation_request(DraftPromptRequestContext {
+        catalog: prompt_catalog.as_ref(),
+        config: &config,
+        theme: &theme,
+        instruction: &request.instruction,
+        title: title_override.as_deref(),
+        source_bundle: &source_bundle,
+        image_generation_available: image_selection.is_some(),
+        project_instructions: &project_instructions_prompt,
+        tools: &tool_summaries,
+        max_tool_rounds: draft_tool_rounds,
+        event_sink: None,
+    })?;
     provider_request.tools = tool_set.definitions.clone();
     provider_request.tool_executor = Some(tool_set.executor.clone());
     provider_request.event_sink = event_sink.clone();
-    let (draft_profile_name, draft_profile) = config.resolve_model(Capability::Text)?;
-    provider_request.max_tool_rounds = model_tool_rounds(draft_profile);
+    provider_request.max_tool_rounds = draft_tool_rounds;
+    let mut used_prompts = provider_request.prompt_provenance.clone();
     let reviewer_selection = review
         .then(|| config.resolve_model_role(ModelRole::Reviewer))
         .transpose()?;
@@ -173,6 +220,7 @@ pub async fn generate_slides(
                 artifacts: Vec::new(),
                 published_artifacts: Vec::new(),
                 review: review_summary,
+                prompts: used_prompts,
             },
             prompt_preview: Some(provider_request.user_prompt),
             tool_summaries,
@@ -186,16 +234,21 @@ pub async fn generate_slides(
         GenerationStage::Draft,
         Some(draft_profile_name),
     );
-    let provider = build_text_provider(&config, draft_profile)?;
-    let compact_request = build_compact_generation_request(
-        &config,
-        &theme,
-        &request.instruction,
-        title_override.as_deref(),
-        &compact_source_bundle,
-        &project_instructions_prompt,
-        event_sink.clone(),
-    );
+    let provider = provider_factory.text(&config, draft_profile)?;
+    let compact_request = build_compact_generation_request(DraftPromptRequestContext {
+        catalog: prompt_catalog.as_ref(),
+        config: &config,
+        theme: &theme,
+        instruction: &request.instruction,
+        title: title_override.as_deref(),
+        source_bundle: &compact_source_bundle,
+        image_generation_available: false,
+        project_instructions: &project_instructions_prompt,
+        tools: &[],
+        max_tool_rounds: draft_tool_rounds,
+        event_sink: event_sink.clone(),
+    })?;
+    let compact_prompt_provenance = compact_request.prompt_provenance.clone();
     let draft_outcome = generate_with_compact_retry(
         provider.as_ref(),
         provider_request,
@@ -206,6 +259,7 @@ pub async fn generate_slides(
     .await
     .context("Draft generation failed")?;
     if let Some(error) = draft_outcome.limit_error {
+        used_prompts.extend(compact_prompt_provenance);
         warnings.push(format!(
             "Draft generation exceeded the model limit and was retried with compacted context: {error}"
         ));
@@ -219,12 +273,14 @@ pub async fn generate_slides(
                 let error = format!("{error:#}");
                 emit_title_repair(&event_sink, &error);
                 let mut title_request = build_title_repair_request(
+                    prompt_catalog.as_ref(),
                     &config,
                     &request.instruction,
                     &response.text,
                     &error,
                     &project_instructions_prompt,
-                );
+                )?;
+                used_prompts.extend(title_request.prompt_provenance.clone());
                 title_request.event_sink = event_sink.clone();
                 let repaired = provider
                     .generate_text(title_request)
@@ -243,7 +299,7 @@ pub async fn generate_slides(
     validate_normalized_deck(&markdown, &title)?;
     let mut reviewer_provider: Option<Box<dyn TextGenerationProvider>> = None;
     if let Some((reviewer_name, reviewer_profile)) = reviewer_selection {
-        match build_text_provider(&config, reviewer_profile) {
+        match provider_factory.text(&config, reviewer_profile) {
             Ok(reviewer) => {
                 emit_stage(
                     &event_sink,
@@ -259,25 +315,29 @@ pub async fn generate_slides(
                     let mut validation_retried = false;
                     loop {
                         let mut review_request = if compacted {
-                            build_compact_review_request(
-                                &config,
-                                &theme,
-                                &request.instruction,
-                                &compact_source_bundle,
-                                &snapshot,
-                                retry.as_ref(),
-                                &project_instructions_prompt,
-                            )?
+                            build_compact_review_request(ReviewPromptRequestContext {
+                                catalog: prompt_catalog.as_ref(),
+                                config: &config,
+                                theme: &theme,
+                                instruction: &request.instruction,
+                                source_bundle: &compact_source_bundle,
+                                snapshot: &snapshot,
+                                retry: retry.as_ref(),
+                                project_instructions: &project_instructions_prompt,
+                                max_tool_rounds: model_tool_rounds(reviewer_profile),
+                            })?
                         } else {
-                            build_review_request(
-                                &config,
-                                &theme,
-                                &request.instruction,
-                                &source_bundle,
-                                &snapshot,
-                                retry.as_ref(),
-                                &project_instructions_prompt,
-                            )?
+                            build_review_request(ReviewPromptRequestContext {
+                                catalog: prompt_catalog.as_ref(),
+                                config: &config,
+                                theme: &theme,
+                                instruction: &request.instruction,
+                                source_bundle: &source_bundle,
+                                snapshot: &snapshot,
+                                retry: retry.as_ref(),
+                                project_instructions: &project_instructions_prompt,
+                                max_tool_rounds: model_tool_rounds(reviewer_profile),
+                            })?
                         };
                         if !compacted {
                             review_request.tools = review_tool_definitions.clone();
@@ -285,6 +345,7 @@ pub async fn generate_slides(
                             review_request.max_tool_rounds = model_tool_rounds(reviewer_profile);
                         }
                         review_request.event_sink = event_sink.clone();
+                        used_prompts.extend(review_request.prompt_provenance.clone());
                         let original_chars = request_chars(&review_request);
                         let response = match reviewer.generate_text(review_request).await {
                             Ok(response) => response,
@@ -294,13 +355,17 @@ pub async fn generate_slides(
                                 compacted = true;
                                 compaction_status = ReviewStatus::Pending;
                                 let compact_request = build_compact_review_request(
-                                    &config,
-                                    &theme,
-                                    &request.instruction,
-                                    &compact_source_bundle,
-                                    &snapshot,
-                                    retry.as_ref(),
-                                    &project_instructions_prompt,
+                                    ReviewPromptRequestContext {
+                                        catalog: prompt_catalog.as_ref(),
+                                        config: &config,
+                                        theme: &theme,
+                                        instruction: &request.instruction,
+                                        source_bundle: &compact_source_bundle,
+                                        snapshot: &snapshot,
+                                        retry: retry.as_ref(),
+                                        project_instructions: &project_instructions_prompt,
+                                        max_tool_rounds: model_tool_rounds(reviewer_profile),
+                                    },
                                 )?;
                                 emit_context_compaction(
                                     &event_sink,
@@ -449,6 +514,7 @@ pub async fn generate_slides(
                         let mut compacted_context = false;
                         for attempt in 1..=2 {
                             let repair_request = build_layout_repair_request(
+                                prompt_catalog.as_ref(),
                                 LayoutRepairRequestContext {
                                     config: &config,
                                     theme: &theme,
@@ -460,8 +526,9 @@ pub async fn generate_slides(
                                 },
                                 retry.as_ref(),
                                 event_sink.clone(),
-                            );
+                            )?;
                             let compact_repair_request = build_compact_layout_repair_request(
+                                prompt_catalog.as_ref(),
                                 LayoutRepairRequestContext {
                                     config: &config,
                                     theme: &theme,
@@ -473,7 +540,7 @@ pub async fn generate_slides(
                                 },
                                 retry.as_ref(),
                                 event_sink.clone(),
-                            );
+                            )?;
                             let response = if compacted_context {
                                 match reviewer.generate_text(compact_repair_request).await {
                                     Ok(response) => response,
@@ -660,21 +727,66 @@ pub async fn generate_slides(
         }
     };
 
-    let mut artifacts = vec![markdown_path.clone(), theme_css_path];
-    artifacts.extend(tool_set.generated_artifacts()?);
-    artifacts.extend(diagram_artifacts);
+    let mut staged_artifacts = vec![markdown_path.clone(), theme_css_path];
+    staged_artifacts.extend(tool_set.generated_artifacts()?);
+    used_prompts.extend(tool_set.generated_prompts()?);
+    staged_artifacts.extend(diagram_artifacts);
     if let Some(pdf) = &rendered_pdf {
-        artifacts.push(pdf.clone());
+        staged_artifacts.push(pdf.clone());
     }
-    let published_pdf_path = match (&rendered_pdf, publish_root) {
+    staged_artifacts.sort();
+    staged_artifacts.dedup();
+    let mut unique_prompts = Vec::new();
+    for prompt in used_prompts {
+        if !unique_prompts.contains(&prompt) {
+            unique_prompts.push(prompt);
+        }
+    }
+    let used_prompts = unique_prompts;
+    let transaction = artifact_transaction
+        .take()
+        .context("Generation artifact transaction is unavailable")?;
+    let files = staged_artifacts
+        .iter()
+        .map(|path| resource_artifact_file(&slides_dir, path))
+        .collect::<Result<Vec<_>>>()?;
+    let manifest = ResourceArtifactManifest {
+        schema_version: 1,
+        job_id: transaction.job_id().clone(),
+        revision_id: transaction.revision_id().clone(),
+        parent_revision: transaction.parent_revision().cloned(),
+        project: config.project_name.clone(),
+        resource_kind: ArtifactResourceKind::Slides,
+        resource_id: slug.clone(),
+        title: title.clone(),
+        files,
+        models: selected_models.clone(),
+        prompts: used_prompts.clone(),
+        warnings: warnings.clone(),
+    };
+    let committed = transaction.commit(manifest)?;
+    let remap = |path: &Path| -> Result<PathBuf> {
+        Ok(committed.root.join(
+            path.strip_prefix(&slides_dir)
+                .with_context(|| format!("Artifact {} escaped its transaction", path.display()))?,
+        ))
+    };
+    let committed_markdown = remap(&markdown_path)?;
+    let committed_pdf = rendered_pdf.as_deref().map(remap).transpose()?;
+    let mut artifacts = staged_artifacts
+        .iter()
+        .map(|path| remap(path))
+        .collect::<Result<Vec<_>>>()?;
+    artifacts.push(committed.manifest_path.clone());
+    let published_pdf_path = match (&committed_pdf, publish_root) {
         (Some(pdf), Some(destination)) => Some(publish_artifact(pdf, &destination)?),
         _ => None,
     };
     let published_artifacts = published_pdf_path.iter().cloned().collect();
 
     Ok(GenerateSlidesResult {
-        markdown_path,
-        pdf_path: rendered_pdf,
+        markdown_path: committed_markdown,
+        pdf_path: committed_pdf,
         published_pdf_path,
         output: GenerationOutput {
             project: config.project_name,
@@ -684,6 +796,7 @@ pub async fn generate_slides(
             artifacts,
             published_artifacts,
             review: review_summary,
+            prompts: used_prompts,
         },
         prompt_preview: None,
         tool_summaries,
@@ -699,15 +812,53 @@ fn publish_artifact(artifact: &Path, destination_dir: &Path) -> Result<PathBuf> 
         .with_context(|| format!("Could not create {}", destination_dir.display()))?;
     let destination = destination_dir.join(filename);
     if artifact != destination {
-        fs::copy(artifact, &destination).with_context(|| {
+        let mut source = fs::File::open(artifact)
+            .with_context(|| format!("Could not open {} for publishing", artifact.display()))?;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(destination_dir).with_context(|| {
+                format!(
+                    "Could not create a temporary published artifact in {}",
+                    destination_dir.display()
+                )
+            })?;
+        io::copy(&mut source, &mut temporary).with_context(|| {
             format!(
-                "Could not publish {} to {}",
+                "Could not stage {} for publishing to {}",
                 artifact.display(),
                 destination.display()
             )
         })?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(&destination)
+            .map_err(|error| error.error)
+            .with_context(|| format!("Could not atomically publish {}", destination.display()))?;
     }
     Ok(destination)
+}
+
+fn resource_artifact_file(root: &Path, path: &Path) -> Result<ResourceArtifactFile> {
+    let relative = path
+        .strip_prefix(root)
+        .with_context(|| format!("Artifact {} escaped its transaction", path.display()))?
+        .to_path_buf();
+    let extension = path.extension().and_then(|value| value.to_str());
+    let (kind, media_type) = match extension {
+        Some("md") => (ArtifactKind::Markdown, Some("text/markdown")),
+        Some("pdf") => (ArtifactKind::Pdf, Some("application/pdf")),
+        Some("png") => (ArtifactKind::Image, Some("image/png")),
+        Some("jpg" | "jpeg") => (ArtifactKind::Image, Some("image/jpeg")),
+        Some("webp") => (ArtifactKind::Image, Some("image/webp")),
+        Some("svg") => (ArtifactKind::Image, Some("image/svg+xml")),
+        Some("css") => (ArtifactKind::Data, Some("text/css")),
+        Some("mmd") => (ArtifactKind::Data, Some("text/plain")),
+        _ => (ArtifactKind::Data, None),
+    };
+    Ok(ResourceArtifactFile {
+        path: relative,
+        kind,
+        media_type: media_type.map(ToOwned::to_owned),
+    })
 }
 
 fn emit_stage(
@@ -886,7 +1037,7 @@ fn copy_theme_css(theme: &ThemePackage, destination: &Path) -> Result<()> {
 async fn render_mermaid_diagrams(
     markdown: &str,
     diagrams_dir: &Path,
-    slug: &str,
+    _slug: &str,
     theme: &ThemePackage,
 ) -> Result<(String, Vec<PathBuf>)> {
     let blocks = extract_mermaid_blocks(markdown)?;
@@ -905,9 +1056,11 @@ async fn render_mermaid_diagrams(
     for (index, block) in blocks.iter().enumerate() {
         rendered.push_str(&markdown[cursor..block.start]);
         let diagram_index = index + 1;
-        let source_path = diagrams_dir.join(format!("{slug}-diagram-{diagram_index}.mmd"));
-        let artifact_path = diagrams_dir.join(format!("{slug}-diagram-{diagram_index}.svg"));
         let source = normalize_mermaid_source(&block.source);
+        let content_hash = format!("{:x}", Sha256::digest(source.as_bytes()));
+        let name = format!("diagram-{}", &content_hash[..16]);
+        let source_path = diagrams_dir.join(format!("{name}.mmd"));
+        let artifact_path = diagrams_dir.join(format!("{name}.svg"));
         fs::write(&source_path, &source)
             .with_context(|| format!("Could not write {}", source_path.display()))?;
         let _svg = renderer
@@ -919,14 +1072,44 @@ async fn render_mermaid_diagrams(
                 artifact_path.display()
             );
         }
-        rendered.push_str(&embedded_svg_markdown(slug, diagram_index));
+        rendered.push_str(&format!(
+            "![Mermaid diagram {diagram_index}](diagrams/{name}.svg)"
+        ));
         artifacts.push(source_path);
         artifacts.push(artifact_path);
         cursor = block.end;
     }
 
     rendered.push_str(&markdown[cursor..]);
+    prune_unreferenced_diagrams(&rendered, diagrams_dir)?;
     Ok((rendered, artifacts))
+}
+
+fn prune_unreferenced_diagrams(markdown: &str, diagrams_dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(diagrams_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_symlink() {
+            bail!(
+                "Diagram directory contains an unsafe symlink: {}",
+                entry.path().display()
+            );
+        }
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("svg") {
+            continue;
+        }
+        let filename = entry.file_name();
+        let filename = filename.to_string_lossy();
+        if markdown.contains(&format!("diagrams/{filename}")) {
+            continue;
+        }
+        fs::remove_file(&path)?;
+        let source = path.with_extension("mmd");
+        if source.exists() {
+            fs::remove_file(source)?;
+        }
+    }
+    Ok(())
 }
 
 fn mermaid_theme_config(tokens: &ThemeTokens) -> MermaidThemeConfig {
@@ -1111,128 +1294,223 @@ fn extract_mermaid_blocks(markdown: &str) -> Result<Vec<MermaidBlock>> {
     Ok(blocks)
 }
 
-fn embedded_svg_markdown(slug: &str, index: usize) -> String {
-    format!("![Mermaid diagram {index}](diagrams/{slug}-diagram-{index}.svg)")
+const DRAFT_PROMPTS: PromptPair = PromptPair {
+    system: PromptId::SlidesDraftSystem,
+    user: PromptId::SlidesDraftUser,
+    tool_exhausted: PromptId::SlidesDraftToolExhaustedUser,
+};
+const COMPACT_DRAFT_PROMPTS: PromptPair = PromptPair {
+    system: PromptId::SlidesCompactDraftSystem,
+    user: PromptId::SlidesCompactDraftUser,
+    tool_exhausted: PromptId::SlidesDraftToolExhaustedUser,
+};
+const TITLE_REPAIR_PROMPTS: PromptPair = PromptPair {
+    system: PromptId::SlidesTitleRepairSystem,
+    user: PromptId::SlidesTitleRepairUser,
+    tool_exhausted: PromptId::SlidesDraftToolExhaustedUser,
+};
+const REVIEW_PROMPTS: PromptPair = PromptPair {
+    system: PromptId::SlidesReviewSystem,
+    user: PromptId::SlidesReviewUser,
+    tool_exhausted: PromptId::SlidesReviewToolExhaustedUser,
+};
+const COMPACT_REVIEW_PROMPTS: PromptPair = PromptPair {
+    system: PromptId::SlidesCompactReviewSystem,
+    user: PromptId::SlidesCompactReviewUser,
+    tool_exhausted: PromptId::SlidesReviewToolExhaustedUser,
+};
+const LAYOUT_REPAIR_PROMPTS: PromptPair = PromptPair {
+    system: PromptId::SlidesLayoutRepairSystem,
+    user: PromptId::SlidesLayoutRepairUser,
+    tool_exhausted: PromptId::SlidesLayoutRepairToolExhaustedUser,
+};
+const COMPACT_LAYOUT_REPAIR_PROMPTS: PromptPair = PromptPair {
+    system: PromptId::SlidesCompactLayoutRepairSystem,
+    user: PromptId::SlidesCompactLayoutRepairUser,
+    tool_exhausted: PromptId::SlidesLayoutRepairToolExhaustedUser,
+};
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct SlidePromptContext {
+    learning_style: String,
+    project: String,
+    project_root: String,
+    theme_name: String,
+    theme_colors: String,
+    theme_fonts: String,
+    instruction: String,
+    project_instructions: String,
+    title: String,
+    title_provided: bool,
+    image_generation_available: bool,
+    source_bundle: String,
+    tools: Vec<GenerationToolSummary>,
+    deck_snapshot: String,
+    validation_error: String,
+    headings: String,
+    retry_present: bool,
+    retry_error: String,
+    retry_invalid_response: String,
+    issue_report: String,
+    slide_markdown: String,
+    compact: bool,
+    max_tool_rounds: usize,
 }
 
-fn build_generation_request(
+fn render_prompt_request(
+    catalog: &dyn PromptCatalog,
+    pair: PromptPair,
+    context: &SlidePromptContext,
+) -> Result<TextGenerationRequest> {
+    let variables = PromptVariables::from_serializable(context)?;
+    let system = catalog.render(PromptRenderRequest {
+        id: pair.system,
+        variables: variables.clone(),
+    })?;
+    let user = catalog.render(PromptRenderRequest {
+        id: pair.user,
+        variables: variables.clone(),
+    })?;
+    let exhausted = catalog.render(PromptRenderRequest {
+        id: pair.tool_exhausted,
+        variables,
+    })?;
+    let mut request = TextGenerationRequest::new(system.text, user.text);
+    request.tool_exhausted_prompt = Some(exhausted.text);
+    request.prompt_provenance = vec![system.provenance, user.provenance, exhausted.provenance];
+    request.max_tool_rounds = context.max_tool_rounds;
+    Ok(request)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn review_prompt_context(
     config: &EffectiveConfig,
     theme: &ThemePackage,
     instruction: &str,
-    title: Option<&str>,
-    source_bundle: &str,
+    project_instructions: String,
+    source_bundle: String,
+    deck_snapshot: String,
+    retry: Option<&ReviewRetryContext>,
+    compact: bool,
+    max_tool_rounds: usize,
+) -> SlidePromptContext {
+    SlidePromptContext {
+        project: config.project_name.clone(),
+        project_root: config.project_root.display().to_string(),
+        theme_name: theme.manifest.name.clone(),
+        theme_colors: format_tokens(&theme.manifest.tokens.colors),
+        theme_fonts: format_tokens(&theme.manifest.tokens.fonts),
+        instruction: instruction.to_string(),
+        project_instructions,
+        source_bundle,
+        deck_snapshot,
+        retry_present: retry.is_some(),
+        retry_error: retry
+            .map(|retry| excerpt(&retry.error, if compact { 1_000 } else { 2_000 }))
+            .unwrap_or_default(),
+        retry_invalid_response: retry
+            .map(|retry| {
+                excerpt(
+                    &retry.invalid_response,
+                    if compact { 4_000 } else { 12_000 },
+                )
+            })
+            .unwrap_or_default(),
+        compact,
+        max_tool_rounds,
+        ..Default::default()
+    }
+}
+
+struct DraftPromptRequestContext<'a> {
+    catalog: &'a dyn PromptCatalog,
+    config: &'a EffectiveConfig,
+    theme: &'a ThemePackage,
+    instruction: &'a str,
+    title: Option<&'a str>,
+    source_bundle: &'a str,
     image_generation_available: bool,
-    project_instructions: &str,
-) -> TextGenerationRequest {
-    let learning_style = if config.user.learning_style.is_empty() {
+    project_instructions: &'a str,
+    tools: &'a [GenerationToolSummary],
+    max_tool_rounds: usize,
+    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+}
+
+struct ReviewPromptRequestContext<'a> {
+    catalog: &'a dyn PromptCatalog,
+    config: &'a EffectiveConfig,
+    theme: &'a ThemePackage,
+    instruction: &'a str,
+    source_bundle: &'a str,
+    snapshot: &'a ReviewSnapshot,
+    retry: Option<&'a ReviewRetryContext>,
+    project_instructions: &'a str,
+    max_tool_rounds: usize,
+}
+
+fn build_generation_request(args: DraftPromptRequestContext<'_>) -> Result<TextGenerationRequest> {
+    let learning_style = if args.config.user.learning_style.is_empty() {
         "not specified".to_string()
     } else {
-        config.user.learning_style.join(", ")
+        args.config.user.learning_style.join(", ")
     };
-
-    let system_prompt = format!(
-        "You are Sfumato, a careful study-resource generator. Create clear, accurate Marp slide decks for Obsidian users. Use the user's learning preferences: {learning_style}. Prefer concise slides, useful examples, and presenter notes when they help."
-    );
-    let title_requirement = match title {
-        Some(title) => format!(
-            "Use exactly \"{title}\" as the deck title and as the first `# H1` on the title slide."
-        ),
-        None => "Create a concise, specific deck title that describes the subject being taught. Do not copy or lightly rephrase the instruction as the title. Put your chosen title in the first `# H1` on the title slide; Sfumato will use it as the artifact filename."
-            .to_string(),
+    let context = SlidePromptContext {
+        learning_style,
+        project: args.config.project_name.clone(),
+        project_root: args.config.project_root.display().to_string(),
+        theme_name: args.theme.manifest.name.clone(),
+        theme_colors: format_tokens(&args.theme.manifest.tokens.colors),
+        theme_fonts: format_tokens(&args.theme.manifest.tokens.fonts),
+        instruction: args.instruction.to_string(),
+        project_instructions: args.project_instructions.to_string(),
+        title: args.title.unwrap_or_default().to_string(),
+        title_provided: args.title.is_some(),
+        image_generation_available: args.image_generation_available,
+        source_bundle: args.source_bundle.to_string(),
+        tools: args.tools.to_vec(),
+        max_tool_rounds: args.max_tool_rounds,
+        ..Default::default()
     };
-    let image_requirement = if image_generation_available {
-        "- You may call `sfumato_image_gen` when a purpose-built educational illustration would teach better than text or Mermaid. Give it a precise subject, composition, labels, and learning purpose. Embed the returned `markdown_path` with Marp's `![height:420px](images/file.png)` syntax so the image fits within the slide. Sfumato applies the project theme automatically."
-    } else {
-        "- No image generation model is configured. Use Markdown and Mermaid for visuals."
-    };
-
-    let user_prompt = format!(
-        r#"Create a Marp Markdown slide deck.
-
-Project: {project}
-Allowed filesystem root: {project_root}
-Theme: {theme_name}
-Theme colors: {theme_colors}
-Theme fonts: {theme_fonts}
-Instruction: {instruction}
-
-{project_instructions}
-
-Requirements:
-- {title_requirement}
-- Return only Markdown.
-- Return raw Marp Markdown. Never wrap the deck in a `marp`, `markdown`, or `md` code fence.
-- Start the document with Marp frontmatter as the first bytes. Do not put a slide, title, blank `---`, or any text before it.
-- Do not include `style:`, inline CSS, or generated theme CSS in Marp frontmatter.
-- Set Marp math rendering to MathJax with `math: mathjax`.
-- Use slide separators with ---.
-- Include a title slide.
-- Use `<!-- _class: lead -->` for title and section-divider slides.
-- Use `<!-- _class: compact -->` only for dense tables, formulas, or comparison slides.
-- Prefer `##` headings for normal content slides after the title slide.
-- You may use Mermaid diagrams in fenced ```mermaid blocks when a visual structure helps.
-{image_requirement}
-- Keep Mermaid diagrams simple: at most 6 nodes, short quoted labels, and no formulas inside labels.
-- Put math formulas in normal Markdown outside Mermaid diagrams.
-- Use `<br/>` inside Mermaid labels when a label needs two short lines.
-- Do not use raw HTML, inline SVG, or HTML wrapper tags.
-- Include a short learning objective slide.
-- Explain the source material for a student.
-- Use examples from the provided files.
-- Add presenter notes with short teaching cues when useful.
-- You may call Sfumato filesystem tools to list allowed directories or read allowed text files when more context is needed.
-- When calling filesystem tools, prefer absolute paths under the allowed filesystem root.
-- Explore selectively. After reading the most relevant files, stop calling tools and produce the final deck.
-
-Source material:
-{source_bundle}
-"#,
-        project = config.project_name,
-        project_root = config.project_root.display(),
-        theme_name = theme.manifest.name,
-        theme_colors = format_tokens(&theme.manifest.tokens.colors),
-        theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
-    );
-
-    TextGenerationRequest::new(system_prompt, user_prompt)
+    render_prompt_request(args.catalog, DRAFT_PROMPTS, &context)
 }
 
 fn build_compact_generation_request(
-    config: &EffectiveConfig,
-    theme: &ThemePackage,
-    instruction: &str,
-    title: Option<&str>,
-    compact_source_bundle: &str,
-    project_instructions: &str,
-    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
-) -> TextGenerationRequest {
-    let mut request = build_generation_request(
-        config,
-        theme,
-        instruction,
-        title,
-        compact_source_bundle,
-        false,
-        &excerpt(project_instructions, 4_000),
-    );
-    request.system_prompt.push_str(
-        " This is a token-limit recovery request. Plan briefly, then return a concise and complete deck without exhaustive internal analysis.",
-    );
-    request.user_prompt = format!(
-        "Token-limit recovery requirements:\n- Follow the original instruction exactly.\n- Produce a complete deck of at most 14 slides.\n- Keep each slide to one principal idea and at most 5 short bullets.\n- Do not call tools; use only the compact evidence supplied below.\n- Prefer completeness over exhaustive coverage.\n\n{}",
-        request.user_prompt
-    );
-    request.event_sink = event_sink;
-    request
+    args: DraftPromptRequestContext<'_>,
+) -> Result<TextGenerationRequest> {
+    let learning_style = if args.config.user.learning_style.is_empty() {
+        "not specified".to_string()
+    } else {
+        args.config.user.learning_style.join(", ")
+    };
+    let context = SlidePromptContext {
+        learning_style,
+        project: args.config.project_name.clone(),
+        project_root: args.config.project_root.display().to_string(),
+        theme_name: args.theme.manifest.name.clone(),
+        theme_colors: format_tokens(&args.theme.manifest.tokens.colors),
+        theme_fonts: format_tokens(&args.theme.manifest.tokens.fonts),
+        instruction: args.instruction.to_string(),
+        project_instructions: excerpt(args.project_instructions, 4_000),
+        title: args.title.unwrap_or_default().to_string(),
+        title_provided: args.title.is_some(),
+        source_bundle: args.source_bundle.to_string(),
+        compact: true,
+        max_tool_rounds: args.max_tool_rounds,
+        ..Default::default()
+    };
+    let mut request = render_prompt_request(args.catalog, COMPACT_DRAFT_PROMPTS, &context)?;
+    request.event_sink = args.event_sink;
+    Ok(request)
 }
 
 fn build_title_repair_request(
+    catalog: &dyn PromptCatalog,
     config: &EffectiveConfig,
     instruction: &str,
     draft: &str,
     validation_error: &str,
     project_instructions: &str,
-) -> TextGenerationRequest {
+) -> Result<TextGenerationRequest> {
     let project_instructions = excerpt(project_instructions, 1_500);
     let headings = markdown_headings(draft);
     let headings = if headings.is_empty() {
@@ -1245,162 +1523,51 @@ fn build_title_repair_request(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let system_prompt = "You repair one missing metadata field in an existing study deck. Return only a concise subject title on one plain-text line. Do not return Markdown, JSON, explanations, or tool calls.".to_string();
-    let user_prompt = format!(
-        r#"Create the missing title for an existing Marp deck.
-
-Project: {project}
-Original instruction: {instruction}
-Validation error: {validation_error}
-
-{project_instructions}
-
-Existing deck headings:
-{headings}
-
-Requirements:
-- Return exactly one concise title on one line.
-- Describe the subject being taught, not the generation instruction.
-- Do not copy or lightly rephrase the original instruction.
-- Do not include `#`, quotes, a filename extension, or ending punctuation.
-- Do not regenerate or summarize the deck.
-"#,
-        project = config.project_name,
-    );
-    TextGenerationRequest::new(system_prompt, user_prompt)
+    let context = SlidePromptContext {
+        project: config.project_name.clone(),
+        instruction: instruction.to_string(),
+        validation_error: validation_error.to_string(),
+        project_instructions,
+        headings,
+        max_tool_rounds: 0,
+        ..Default::default()
+    };
+    render_prompt_request(catalog, TITLE_REPAIR_PROMPTS, &context)
 }
 
-fn build_review_request(
-    config: &EffectiveConfig,
-    theme: &ThemePackage,
-    instruction: &str,
-    source_bundle: &str,
-    snapshot: &ReviewSnapshot,
-    retry: Option<&ReviewRetryContext>,
-    project_instructions: &str,
-) -> Result<TextGenerationRequest> {
-    let snapshot = serde_json::to_string_pretty(snapshot)
+fn build_review_request(args: ReviewPromptRequestContext<'_>) -> Result<TextGenerationRequest> {
+    let snapshot = serde_json::to_string_pretty(args.snapshot)
         .context("Could not serialize slide deck review snapshot")?;
-    let system_prompt = "You are Sfumato's slide reviewer. Propose precise, conservative changes as an RFC 6902 JSON Patch. Never regenerate or return the complete deck.".to_string();
-    let retry_feedback = retry
-        .map(|retry| {
-            format!(
-                r#"
-Corrective retry:
-Your previous response was rejected by Sfumato.
-Validation error:
-{error}
-
-Previous invalid response:
-{invalid_response}
-
-Return a corrected JSON Patch against the original snapshot below. Do not patch or continue the rejected response.
-"#,
-                error = excerpt(&retry.error, 2_000),
-                invalid_response = excerpt(&retry.invalid_response, 12_000),
-            )
-        })
-        .unwrap_or_default();
-    let user_prompt = format!(
-        r#"Review this generated slide deck before it is published.
-
-Original instruction: {instruction}
-Project: {project}
-Theme: {theme_name}
-Theme colors: {theme_colors}
-Theme fonts: {theme_fonts}
-
-{project_instructions}
-
-Review requirements:
-- Return only an RFC 6902 JSON Patch array. Do not use a Markdown code fence.
-- The patch target is the object inside `document`; paths therefore start at `/revision`, `/slides`, or `/order`, not `/document`.
-- Start with a `test` operation for `/revision` before any mutation.
-- Before replacing or removing a slide, test `/slides/<id>/revision` with the supplied value.
-- Prefer replacing only `/slides/<id>/markdown` for slides that genuinely need correction.
-- Do not return the complete deck or replace the document root.
-- Do not modify the title slide, title, frontmatter, IDs, revisions, headings, kinds, or element summaries.
-- Correct factual inconsistencies only when supported by the source material or filesystem tools.
-- Remove duplication and improve the learning sequence.
-- Keep one principal idea per slide and concise supporting content.
-- Add, remove, or reorder slides only when a targeted Markdown replacement cannot solve the problem.
-- Preserve useful explanations instead of deleting them merely to save space.
-- Keep MathJax math and Mermaid fences valid. Do not add inline CSS, raw HTML, or inline SVG.
-- Use the filesystem tools only when a claim cannot be checked from the supplied source excerpts.
-- Return `[]` when no changes are needed.
-{retry_feedback}
-
-Source material:
-{source_bundle}
-
-Structured review snapshot:
-{snapshot}
-"#,
-        project = config.project_name,
-        theme_name = theme.manifest.name,
-        theme_colors = format_tokens(&theme.manifest.tokens.colors),
-        theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
+    let context = review_prompt_context(
+        args.config,
+        args.theme,
+        args.instruction,
+        args.project_instructions.to_string(),
+        args.source_bundle.to_string(),
+        snapshot,
+        args.retry,
+        false,
+        args.max_tool_rounds,
     );
-    Ok(TextGenerationRequest::new(system_prompt, user_prompt))
+    render_prompt_request(args.catalog, REVIEW_PROMPTS, &context)
 }
 
 fn build_compact_review_request(
-    config: &EffectiveConfig,
-    theme: &ThemePackage,
-    instruction: &str,
-    compact_source_bundle: &str,
-    snapshot: &ReviewSnapshot,
-    retry: Option<&ReviewRetryContext>,
-    project_instructions: &str,
+    args: ReviewPromptRequestContext<'_>,
 ) -> Result<TextGenerationRequest> {
-    let snapshot = compact_review_snapshot(snapshot)?;
-    let retry_feedback = retry
-        .map(|retry| {
-            format!(
-                "\nCorrective retry:\nThe previous compact patch was invalid: {}\nPrevious response: {}\n",
-                excerpt(&retry.error, 1_000),
-                excerpt(&retry.invalid_response, 4_000),
-            )
-        })
-        .unwrap_or_default();
-    let system_prompt = "You are Sfumato's focused slide reviewer recovering from a token-limit failure. Return a small RFC 6902 JSON Patch without analysis or a Markdown fence.".to_string();
-    let user_prompt = format!(
-        r#"Perform a focused review of this generated slide deck.
-
-Original instruction: {instruction}
-Project: {project}
-Theme: {theme_name}
-Theme colors: {theme_colors}
-Theme fonts: {theme_fonts}
-
-{project_instructions}
-
-Token-limit recovery requirements:
-- Do not perform an exhaustive review. Select at most 3 highest-impact factual, duplication, or sequencing corrections.
-- Return only an RFC 6902 JSON Patch array and keep the response under 4,000 tokens.
-- Start with a `test` operation for `/revision` before any mutation.
-- Test `/slides/<id>/revision` before replacing or removing that slide.
-- Prefer replacing only `/slides/<id>/markdown`.
-- The compact snapshot is a read-only reference for the original document; patch paths still start at `/revision`, `/slides`, or `/order`.
-- Replace a slide only when `markdown_complete` is true, because a truncated excerpt cannot safely reconstruct the original slide.
-- Do not modify the title slide, metadata, IDs, revisions, headings, kinds, or element summaries.
-- Use only the compact evidence below. Do not call filesystem tools.
-- Return `[]` when no high-confidence correction is necessary.
-{retry_feedback}
-
-Compact source evidence:
-{compact_source_bundle}
-
-Compact deck snapshot:
-{snapshot}
-"#,
-        project = config.project_name,
-        theme_name = theme.manifest.name,
-        theme_colors = format_tokens(&theme.manifest.tokens.colors),
-        theme_fonts = format_tokens(&theme.manifest.tokens.fonts),
-        project_instructions = excerpt(project_instructions, 4_000),
+    let snapshot = compact_review_snapshot(args.snapshot)?;
+    let context = review_prompt_context(
+        args.config,
+        args.theme,
+        args.instruction,
+        excerpt(args.project_instructions, 4_000),
+        args.source_bundle.to_string(),
+        snapshot,
+        args.retry,
+        true,
+        args.max_tool_rounds,
     );
-    Ok(TextGenerationRequest::new(system_prompt, user_prompt))
+    render_prompt_request(args.catalog, COMPACT_REVIEW_PROMPTS, &context)
 }
 
 fn compact_review_snapshot(snapshot: &ReviewSnapshot) -> Result<String> {
@@ -1459,99 +1626,80 @@ struct ReviewRetryContext {
 }
 
 fn build_layout_repair_request(
+    catalog: &dyn PromptCatalog,
     context: LayoutRepairRequestContext<'_>,
     retry: Option<&LayoutRepairRetryContext>,
     event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
-) -> TextGenerationRequest {
+) -> Result<TextGenerationRequest> {
     let issue_report =
         serde_json::to_string_pretty(context.issue).unwrap_or_else(|_| "{}".to_string());
-    let system_prompt = "You are Sfumato's focused Marp slide repairer. Improve only the supplied slide fragment and return only its replacement Markdown.".to_string();
-    let retry_feedback = retry
-        .map(|retry| {
-            format!(
-                r#"
-Corrective retry:
-Your previous replacement was rejected by Sfumato.
-Validation or rendering error:
-{error}
-
-Previous invalid replacement:
-{invalid_response}
-
-Return a corrected replacement for the original slide fragment below. Do not continue or patch the rejected replacement.
-"#,
-                error = excerpt(&retry.error, 4_000),
-                invalid_response = excerpt(&retry.invalid_response, 12_000),
-            )
-        })
-        .unwrap_or_default();
-    let user_prompt = format!(
-        r#"Repair the measured layout problem in this single Marp slide.
-
-Original instruction: {instruction}
-Deck title: {title}
-Project: {project}
-Theme: {theme_name}
-
-{project_instructions}
-
-Measured layout issue:
-{issue_report}
-
-Requirements:
-- Return only replacement Markdown for the supplied slide, without a code fence.
-- Do not return Marp frontmatter or a leading/trailing `---` separator.
-- Preserve the slide's factual meaning and useful explanations.
-- Prefer concise wording when it resolves the overflow.
-- If a generated image contributes to overflow, reduce its native Marp `height:` directive. Keep its aspect ratio and do not replace it with raw HTML.
-- If necessary, split this slide into two coherent slides using one `---` separator between them.
-- Do not add inline CSS, raw HTML, or alter global theme settings.
-- Keep MathJax formulas and Mermaid diagrams valid.
-{retry_feedback}
-
-Exact slide fragment to replace:
-```markdown
-{slide_markdown}
-```
-"#,
-        instruction = context.instruction,
-        title = context.title,
-        project = context.config.project_name,
-        theme_name = context.theme.manifest.name,
-        project_instructions = context.project_instructions,
-        slide_markdown = context.slide_markdown,
-    );
-    let mut request = TextGenerationRequest::new(system_prompt, user_prompt);
+    let prompt_context = SlidePromptContext {
+        project: context.config.project_name.clone(),
+        instruction: context.instruction.to_string(),
+        title: context.title.to_string(),
+        title_provided: true,
+        theme_name: context.theme.manifest.name.clone(),
+        theme_colors: format_tokens(&context.theme.manifest.tokens.colors),
+        theme_fonts: format_tokens(&context.theme.manifest.tokens.fonts),
+        project_instructions: context.project_instructions.to_string(),
+        issue_report,
+        slide_markdown: context.slide_markdown.to_string(),
+        retry_present: retry.is_some(),
+        retry_error: retry
+            .map(|retry| excerpt(&retry.error, 4_000))
+            .unwrap_or_default(),
+        retry_invalid_response: retry
+            .map(|retry| excerpt(&retry.invalid_response, 12_000))
+            .unwrap_or_default(),
+        max_tool_rounds: 0,
+        ..Default::default()
+    };
+    let mut request = render_prompt_request(catalog, LAYOUT_REPAIR_PROMPTS, &prompt_context)?;
     request.event_sink = event_sink;
-    request
+    Ok(request)
 }
 
 fn build_compact_layout_repair_request(
+    catalog: &dyn PromptCatalog,
     context: LayoutRepairRequestContext<'_>,
     retry: Option<&LayoutRepairRetryContext>,
     event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
-) -> TextGenerationRequest {
+) -> Result<TextGenerationRequest> {
     let compact_retry = retry.map(|retry| LayoutRepairRetryContext {
         invalid_response: excerpt(&retry.invalid_response, 2_000),
         error: excerpt(&retry.error, 1_000),
     });
     let compact_instructions = excerpt(context.project_instructions, 1_500);
-    let mut request = build_layout_repair_request(
-        LayoutRepairRequestContext {
-            project_instructions: &compact_instructions,
-            ..context
-        },
-        compact_retry.as_ref(),
-        event_sink,
-    );
-    request.system_prompt.push_str(
-        " This is a token-limit recovery request. Do not explain or reason aloud; return the direct replacement immediately.",
-    );
-    request.user_prompt = format!(
-        "Token-limit recovery: preserve the original teaching point and make the smallest layout correction that fixes the measured overflow. Keep the response under 1,200 tokens.\n\n{}",
-        request.user_prompt
-    );
-    request
+    let issue_report =
+        serde_json::to_string_pretty(context.issue).unwrap_or_else(|_| "{}".to_string());
+    let prompt_context = SlidePromptContext {
+        project: context.config.project_name.clone(),
+        instruction: context.instruction.to_string(),
+        title: context.title.to_string(),
+        title_provided: true,
+        theme_name: context.theme.manifest.name.clone(),
+        theme_colors: format_tokens(&context.theme.manifest.tokens.colors),
+        theme_fonts: format_tokens(&context.theme.manifest.tokens.fonts),
+        project_instructions: compact_instructions,
+        issue_report,
+        slide_markdown: context.slide_markdown.to_string(),
+        retry_present: compact_retry.is_some(),
+        retry_error: compact_retry
+            .as_ref()
+            .map(|retry| retry.error.clone())
+            .unwrap_or_default(),
+        retry_invalid_response: compact_retry
+            .as_ref()
+            .map(|retry| retry.invalid_response.clone())
+            .unwrap_or_default(),
+        compact: true,
+        max_tool_rounds: 0,
+        ..Default::default()
+    };
+    let mut request =
+        render_prompt_request(catalog, COMPACT_LAYOUT_REPAIR_PROMPTS, &prompt_context)?;
+    request.event_sink = event_sink;
+    Ok(request)
 }
 
 struct LayoutRepairRequestContext<'a> {
@@ -1635,14 +1783,19 @@ fn format_tokens(tokens: &std::collections::BTreeMap<String, String>) -> String 
 
 fn collect_sources(inputs: &[PathBuf]) -> Result<Vec<SourceDocument>> {
     let mut documents = Vec::new();
+    let mut total_bytes = 0_u64;
+    let mut seen = std::collections::BTreeSet::new();
 
     for input in inputs {
         if input.is_file() {
-            push_source_file(input, &mut documents)?;
+            push_source_file(input, &mut documents, &mut total_bytes, &mut seen)?;
         } else if input.is_dir() {
-            for entry in WalkDir::new(input).into_iter().filter_map(Result::ok) {
+            for entry in WalkDir::new(input) {
+                let entry = entry.with_context(|| {
+                    format!("Could not traverse source directory {}", input.display())
+                })?;
                 if entry.file_type().is_file() {
-                    push_source_file(entry.path(), &mut documents)?;
+                    push_source_file(entry.path(), &mut documents, &mut total_bytes, &mut seen)?;
                 }
             }
         } else {
@@ -1802,15 +1955,54 @@ fn titles_are_equivalent(title: &str, instruction: &str) -> bool {
     normalize(title) == normalize(instruction)
 }
 
-fn push_source_file(path: &Path, documents: &mut Vec<SourceDocument>) -> Result<()> {
+fn push_source_file(
+    path: &Path,
+    documents: &mut Vec<SourceDocument>,
+    total_bytes: &mut u64,
+    seen: &mut std::collections::BTreeSet<PathBuf>,
+) -> Result<()> {
     if !is_supported(path) {
         return Ok(());
     }
 
-    let content =
-        fs::read_to_string(path).with_context(|| format!("Could not read {}", path.display()))?;
+    let canonical = fs::canonicalize(path)
+        .with_context(|| format!("Could not resolve source {}", path.display()))?;
+    if !seen.insert(canonical.clone()) {
+        return Ok(());
+    }
+    if documents.len() >= MAX_SOURCE_FILES {
+        bail!(
+            "Source selection exceeds the maximum of {MAX_SOURCE_FILES} supported files; select a narrower directory or explicit files"
+        );
+    }
+    let bytes = fs::metadata(&canonical)
+        .with_context(|| format!("Could not inspect {}", canonical.display()))?
+        .len();
+    *total_bytes = total_bytes.saturating_add(bytes.min(MAX_SOURCE_BYTES_PER_FILE));
+    if *total_bytes > MAX_SOURCE_TOTAL_BYTES {
+        bail!(
+            "Source selection exceeds Sfumato's {} MiB preflight budget",
+            MAX_SOURCE_TOTAL_BYTES / 1_048_576
+        );
+    }
+    let mut raw = Vec::new();
+    fs::File::open(&canonical)
+        .with_context(|| format!("Could not open {}", canonical.display()))?
+        .take(MAX_SOURCE_BYTES_PER_FILE + 1)
+        .read_to_end(&mut raw)
+        .with_context(|| format!("Could not read {}", canonical.display()))?;
+    let truncated = raw.len() as u64 > MAX_SOURCE_BYTES_PER_FILE;
+    raw.truncate(MAX_SOURCE_BYTES_PER_FILE as usize);
+    while std::str::from_utf8(&raw).is_err() && !raw.is_empty() {
+        raw.pop();
+    }
+    let mut content = String::from_utf8(raw)
+        .with_context(|| format!("Source {} is not valid UTF-8", canonical.display()))?;
+    if truncated {
+        content.push_str("\n[...source file truncated by sfumato preflight...]");
+    }
     documents.push(SourceDocument {
-        path: path.to_path_buf(),
+        path: canonical,
         content,
     });
     Ok(())
@@ -1828,10 +2020,14 @@ fn is_supported(path: &Path) -> bool {
 }
 
 fn build_source_bundle(documents: &[SourceDocument]) -> String {
-    documents
+    if documents.is_empty() {
+        return "No explicit source files were supplied.".to_string();
+    }
+    let per_document = (MAX_SOURCE_BUNDLE_CHARS / documents.len().max(1)).clamp(500, 6_000);
+    let bundle = documents
         .iter()
         .map(|document| {
-            let excerpt = excerpt(&document.content, 6_000);
+            let excerpt = excerpt(&document.content, per_document);
             format!(
                 "\n--- SOURCE: {} ---\n{}\n",
                 document.path.display(),
@@ -1839,7 +2035,8 @@ fn build_source_bundle(documents: &[SourceDocument]) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    excerpt(&bundle, MAX_SOURCE_BUNDLE_CHARS)
 }
 
 fn build_compact_source_bundle(documents: &[SourceDocument], max_chars: usize) -> String {

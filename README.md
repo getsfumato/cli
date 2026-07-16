@@ -29,6 +29,37 @@ sfumato project list
 sfumato generate slides --instruction "Explain Fourier series visually" --json
 ```
 
+## Editing Generated Slides
+
+Use `edit slides` to update the content of an existing generated deck without
+asking the model to regenerate its Marp document, title, theme, or slide order:
+
+```bash
+sfumato edit slides \
+  ~/.sfumato/Projects/university/resources/slides/fourier-series/revisions/<revision-id>/deck.md \
+  --instruction "Clarify the geometric explanation on slide four"
+```
+
+The active project's text model is used by default. Override it with the same
+named-profile syntax used by generation:
+
+```bash
+sfumato edit slides ./deck.md \
+  --instruction "Correct the transform convention" \
+  --project university \
+  --model text=cloud-draft \
+  --json
+```
+
+Sfumato parses the existing deck into its structured slide document, sends the
+instruction and slide snapshot to the model, and accepts only revision-guarded
+RFC 6902 replacements of individual slide Markdown. Frontmatter, the title
+slide, deck title, IDs, and order cannot be changed by this workflow. After
+validating the patch, Sfumato checks layout, renders any new Mermaid diagrams,
+updates the original `.md`, and replaces the PDF beside it. Markdown and PDF
+replacement happens only after Marp successfully renders the edited candidate,
+so a rendering failure preserves the original pair.
+
 ## Mental Model
 
 - **User:** one global learning profile.
@@ -225,17 +256,31 @@ cargo run -- generate slides \
   --theme gruvbox
 ```
 
-Generated decks include a copied theme CSS artifact under
-`~/.sfumato/Projects/<project>/slides/themes/<theme-name>.css`. Every generation
-writes its Markdown, generated images, Mermaid sources, theme CSS, and rendered
-PDF into this central project workspace. The registered project path remains a
-read-only source root apart from its portable `.sfumato/project.toml` config.
+Generated decks are immutable, versioned resources:
+
+```text
+~/.sfumato/Projects/<project>/resources/slides/<resource-id>/
+├── current.json
+└── revisions/<revision-id>/
+    ├── manifest.json
+    ├── deck.md
+    ├── deck.pdf
+    ├── images/
+    ├── diagrams/
+    └── themes/
+```
+
+Every generation writes into a private staging transaction and publishes the
+revision only after its manifest and declared files validate. Failed or
+cancelled operations remove staging. The registered project path remains a
+source root apart from its portable `.sfumato/project.toml`, `SFUMATO.md`, and
+optional prompt overrides.
 
 PDF export passes the copied CSS for the configured project theme directly to
 Marp:
 
 ```text
-marp --theme ~/.sfumato/Projects/<project>/slides/themes/<theme-name>.css <deck.md> -o <deck.pdf>
+marp --theme <revision>/themes/<theme-name>.css <revision>/deck.md -o <revision>/deck.pdf>
 ```
 
 If Marp CLI is not installed, Sfumato keeps the Markdown and theme CSS artifacts
@@ -293,9 +338,9 @@ passed to the command.
 When the selected project has an `image` model default, slide generation also
 declares `sfumato_image_gen`. The drafter supplies a concrete educational image
 prompt, while Sfumato adds the selected theme's semantic colors and fonts before
-calling the connector's image endpoint. Generated images are stored under
-`slides/images/`, returned to the drafter as relative Markdown paths, and listed
-as generation artifacts. Sfumato adds a `height:420px` Marp constraint when the
+calling the connector's image endpoint. Generated images are stored under the
+revision's `images/` directory, returned to the drafter as relative Markdown
+paths, and listed as generation artifacts. Sfumato adds a `height:420px` Marp constraint when the
 drafter does not provide one, preserving the original full-resolution image. If
 the composed slide still overflows, the local layout check sends only that slide
 to the focused reviewer, which may reduce the image height or split the content;
@@ -304,8 +349,8 @@ reviewer does not receive the image-generation tool.
 
 Slide generation also allows Mermaid diagrams. The text model may return fenced
 `mermaid` blocks; before writing the deck, Sfumato renders each diagram to SVG,
-stores the `.mmd` source and `.svg` output as local artifacts under
-`slides/diagrams/`, and replaces the Mermaid block with a relative Markdown
+stores content-addressed `.mmd` sources and `.svg` outputs under the revision's
+`diagrams/` directory, and replaces the Mermaid block with a relative Markdown
 image reference. PDF export enables Marp local-file access so those generated SVG
 artifacts render into the final PDF.
 
@@ -375,8 +420,9 @@ processed artifacts:
     }
   ],
   "artifacts": [
-    "/Users/alex/.sfumato/Projects/university/slides/explain-fourier-series.md",
-    "/Users/alex/.sfumato/Projects/university/slides/explain-fourier-series.pdf"
+    "/Users/alex/.sfumato/Projects/university/resources/slides/fourier-series/revisions/rev-123/deck.md",
+    "/Users/alex/.sfumato/Projects/university/resources/slides/fourier-series/revisions/rev-123/deck.pdf",
+    "/Users/alex/.sfumato/Projects/university/resources/slides/fourier-series/revisions/rev-123/manifest.json"
   ],
   "published_artifacts": [
     "/path/to/vault/Published Slides/explain-fourier-series.pdf"
@@ -425,19 +471,42 @@ Theme resolution order is:
 Unknown themes and themes without a valid Marp adapter fail clearly rather than
 silently falling back.
 
-Sfumato automatically migrates the previous project-theme fields into the
-project-owned theme schema. Before replacing a migrated TOML file, it writes a
-`.bak` copy beside it.
+Configuration schema v4 is a deliberate reset. Legacy and future schema
+versions fail read-only with an actionable error; run `sfumato init user
+--force` and recreate project registrations instead of relying on an implicit
+migration. Writes validate the complete document and replace it atomically.
+Credentials are stored only as indirect references such as
+`env:OPENROUTER_API_KEY`.
+
+## Prompts
+
+Model-facing language lives in MiniJinja Markdown templates rather than Rust
+source. Resolve, inspect, validate, or customize templates with:
+
+```bash
+sfumato prompt list
+sfumato prompt show slides.draft.user
+sfumato prompt customize slides.review.user --scope user
+sfumato prompt customize slides.layout-repair.user --scope project
+sfumato prompt validate
+```
+
+Each template resolves independently from project override, user override, then
+the bundled package. Existing invalid overrides stop before model invocation.
+Generated manifests record every prompt ID, origin, schema version, and SHA-256
+source hash used by the workflow.
 
 ## Development
 
 The repository is a Cargo workspace. The root `sfumato` package owns terminal
-presentation and command routing; `crates/sfumato-core` owns configuration,
-repositories, application services, providers, rendering, and generation.
+presentation and composition, `sfumato-domain` owns pure invariants,
+`sfumato-core` owns workflows and ports, and `sfumato-adapters` owns MiniJinja,
+HTTP, and transactional filesystem implementations.
 
 ```bash
 cargo fmt
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo build --workspace
+cargo doc --workspace --no-deps
 ```

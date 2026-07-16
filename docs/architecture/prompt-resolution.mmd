@@ -1,0 +1,27 @@
+%% Sfumato v0.2 prompt resolution
+%% Status: Implemented layered prompt resolution.
+flowchart TD
+    STAGE["Workflow stage and retry mode"] --> PAIR["PromptPair of stable system and user PromptIds"]
+    PAIR --> MANIFEST["Bundled manifest: path and required variables"]
+    MANIFEST --> PROJECT{"Matching project template under\n.sfumato/prompts?"}
+    PROJECT -- yes --> SELECT_PROJECT["Select project override"]
+    PROJECT -- no --> USER{"Matching user template under\nconfig/sfumato/prompts?"}
+    USER -- yes --> SELECT_USER["Select user override"]
+    USER -- no --> SELECT_BUNDLED["Select bundled template"]
+    SELECT_PROJECT --> COMPILE
+    SELECT_USER --> COMPILE
+    SELECT_BUNDLED --> COMPILE["Compile MiniJinja with strict undefined values"]
+    VARIABLES["Typed PromptVariables: instruction, SFUMATO.md,\nsources, snapshot, theme, retry feedback"] --> REQUIRED{"Every manifest-required variable supplied?"}
+    REQUIRED -- no --> ERROR["Typed PromptError"]
+    REQUIRED -- yes --> COMPILE
+    COMPILE --> SAFE{"Relative path contained, no symlink,\ntemplate and includes compile?"}
+    SAFE -- no --> ERROR
+    SAFE -- yes --> RENDER["RenderedPrompt text plus origin,\nmanifest version, and SHA-256 source hash"]
+    RENDER --> MESSAGES["System and user messages"]
+    MESSAGES --> PROVIDER["Text provider port"]
+
+    classDef implemented fill:#d9f2df,stroke:#24713b,color:#102a18
+    classDef inflight fill:#fff0c2,stroke:#9a6b00,color:#332400
+    classDef proposed fill:#dcecff,stroke:#2d64a8,color:#10243d
+    classDef mixed fill:#e8e2f5,stroke:#65508f,color:#241b35
+    class STAGE,PAIR,MANIFEST,PROJECT,USER,SELECT_PROJECT,SELECT_USER,SELECT_BUNDLED,COMPILE,VARIABLES,REQUIRED,ERROR,SAFE,RENDER,MESSAGES,PROVIDER implemented

@@ -37,9 +37,19 @@ pub enum Commands {
         #[command(subcommand)]
         command: ThemeCommands,
     },
+    #[command(about = "Inspect and customize model prompt templates")]
+    Prompt {
+        #[command(subcommand)]
+        command: PromptCommands,
+    },
     Generate {
         #[command(subcommand)]
         command: GenerateCommands,
+    },
+    #[command(about = "Edit existing generated resources without regenerating them")]
+    Edit {
+        #[command(subcommand)]
+        command: EditCommands,
     },
 }
 
@@ -58,6 +68,11 @@ pub enum InitTarget {
 #[derive(Debug, Subcommand)]
 pub enum GenerateCommands {
     Slides(SlidesArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EditCommands {
+    Slides(EditSlidesArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -144,6 +159,49 @@ pub enum ThemeCommands {
     List,
     Show(ThemeNameArgs),
     Use(ThemeUseArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PromptCommands {
+    #[command(about = "List available prompt template IDs")]
+    List(PromptProjectArgs),
+    #[command(about = "Show the resolved source for a prompt template")]
+    Show(PromptShowArgs),
+    #[command(about = "Copy a bundled prompt into an editable override")]
+    Customize(PromptCustomizeArgs),
+    #[command(about = "Validate all resolved prompt templates")]
+    Validate(PromptProjectArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PromptProjectArgs {
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PromptShowArgs {
+    pub id: String,
+
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PromptCustomizeArgs {
+    pub id: String,
+
+    #[arg(long, value_enum)]
+    pub scope: PromptScope,
+
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum PromptScope {
+    User,
+    Project,
 }
 
 #[derive(Debug, Args)]
@@ -281,6 +339,24 @@ pub struct SlidesArgs {
 
     #[arg(long)]
     pub no_review: bool,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct EditSlidesArgs {
+    #[arg(value_name = "DECK", help = "Generated Marp Markdown deck to update")]
+    pub markdown_path: PathBuf,
+
+    #[arg(long, required = true)]
+    pub instruction: String,
+
+    #[arg(long)]
+    pub project: Option<String>,
+
+    #[arg(long = "model", value_name = "text=PROFILE")]
+    pub model_overrides: Vec<String>,
 
     #[arg(long)]
     pub json: bool,

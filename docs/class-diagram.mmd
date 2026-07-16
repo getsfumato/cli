@@ -1,8 +1,7 @@
 classDiagram
+    direction LR
+
     namespace Presentation {
-        class Cli {
-            +Commands command
-        }
         class Commands {
             <<enum>>
             Init
@@ -11,236 +10,130 @@ classDiagram
             Connector
             Model
             Theme
+            Prompt
             Generate
+            Edit
         }
         class RunnableCommand {
             <<trait>>
             +run() Result
         }
-        class RatatuiApplication {
-            +Screen screen
+        class TuiApp {
+            -Screen screen
+            -JobId activeJob
+            -CancellationToken cancellation
+            -JoinHandle activeTask
             +handleKey(KeyEvent)
             +draw(Frame)
         }
-        class NestedRegistryViews
-        class GenerationForm
-        class LiveGenerationView
-        class TerminalImagePreview
-        class TransitionEffects
-        class InitPrompts
-        class OutputFormatter
-    }
-
-    namespace CoreServices {
-        class SetupService
-        class ConfigService
-        class ProjectService
-        class ConnectorService
-        class ModelService
-        class ThemeService
-        class SlidesPipeline
-        class ProjectArtifactWorkspace
-        class ProcessedArtifactPublisher
-        class SlideReviewPipeline
-        class ContextCompactor {
-            +compactSources()
-            +compactDeckSnapshot()
-            +compactLayoutRequest()
-        }
-        class FilesystemToolExecutor
-        class ImageGenerationTool
-        class ProjectInstructions {
-            +PathBuf path
-            +String content
-            +load(projectRoot) Result
-        }
-    }
-
-    namespace RepositoryPorts {
-        class GlobalConfigRepository {
-            <<trait>>
-            +load() GlobalConfig
-            +save(GlobalConfig)
-        }
-        class ProjectRepository {
-            <<trait>>
-            +registry() ProjectRegistry
-            +load(name) ProjectConfig
-            +save(ProjectConfig)
-            +register(name, path, activate)
-            +remove(name)
-        }
-        class ThemeRepository {
-            <<trait>>
-            +list() ThemeSummary[]
-            +load(name) ThemePackage
-            +create(name) ThemePackage
-            +install_default() ThemePackage
-        }
-    }
-
-    namespace FilesystemAdapters {
-        class FilesystemGlobalConfigRepository
-        class FilesystemProjectRepository
-        class FilesystemThemeRepository
-        class MarpRenderer
-        class MarpLayoutInspector
-        class MermaidDiagramRenderer
-        class SourceReader
-        class ArtifactWriter
     }
 
     namespace Domain {
-        class GlobalConfig
-        class ProjectRegistry
-        class ProjectConfig
-        class EffectiveConfig
-        class ModelProfile
-        class ModelRole {
+        class ProjectName
+        class ModelProfileName
+        class ThemeName
+        class SecretRef
+        class Capability {
             <<enum>>
-            Reviewer
+            Text
+            Code
+            Image
+            Video
+            Speech
+            Embedding
         }
-        class SlideReviewSummary
-        class SlideLayoutIssue
         class ReviewableDocument {
             <<trait>>
             +snapshot() ReviewSnapshot
-            +apply_patch(JsonPatch) PatchReport
-            +validate() ValidationReport
+            +applyPatch(Patch) PatchReport
+            +validate()
             +render() String
         }
-        class ReviewSnapshot
-        class PatchReport
-        class SlideDeckDocument
-        class SlideDocument
-        class SlideElement {
-            <<enum>>
-            Paragraph
-            List
-            Code
-            Mermaid
-            Math
-            Table
-            Image
-            PresenterNotes
-        }
-        class SlideRange
-        class SlideReplacement
-        class ThemePackage
-        class GenerationRequest
-        class GenerationOutput
-        class GenerationToolSummary
+        class DeckDocument
+        class Patch
+        class ArtifactManifest
+        class JobId
+        class RevisionId
     }
 
-    namespace ProviderAdapters {
-        class TextGenerationProvider {
+    namespace Core {
+        class GenerateSlidesOptions
+        class EditSlidesOptions
+        class AgentRunner
+        class TextModel {
             <<trait>>
-            +generate_text(request) TextGenerationResponse
+            +complete(TextModelRequest) TextModelResponse
         }
-        class TextGenerationLimitError {
-            +Context|Output kind
-            +String model
-            +u64 maxTokens
-        }
-        class ImageGenerationProvider {
+        class ProviderFactory {
             <<trait>>
-            +generate_image(request) ImageGenerationResponse
+            +text(EffectiveConfig, ModelProfile)
+            +image(EffectiveConfig, ModelProfile)
+        }
+        class PromptCatalog {
+            <<trait>>
+            +render(PromptRenderRequest) RenderedPrompt
+            +validate() PromptProvenance[]
+        }
+        class ArtifactStore {
+            <<trait>>
+            +projectRoot(project) PathBuf
+            +begin(project, kind) ArtifactTransaction
+        }
+        class ArtifactTransaction {
+            <<trait>>
+            +stagingRoot() Path
+            +commit(ResourceArtifactManifest) CommittedRevision
         }
         class ToolExecutor {
             <<trait>>
-            +execute(request) String
+            +execute(ToolExecutionRequest) String
         }
-        class ToolDefinition
-        class OpenAiCompatibleTextProvider
-        class OpenAiCompatibleImageProvider
-        class OpenAiCompatibleConnector
+        class GlobalConfigRepository {
+            <<trait>>
+        }
+        class ProjectRepository {
+            <<trait>>
+        }
+        class ThemeRepository {
+            <<trait>>
+        }
+        class GenerationOutput
+        class PromptProvenance
     }
 
-    Cli *-- Commands
+    namespace Adapters {
+        class OpenAiCompatibleProviderFactory
+        class OpenAiCompatibleTextProvider
+        class OpenAiCompatibleImageProvider
+        class LayeredPromptCatalog
+        class FilesystemArtifactStore
+    }
+
     Commands ..|> RunnableCommand
-    Cli --> RatatuiApplication : no subcommand
-    RatatuiApplication --> NestedRegistryViews
-    RatatuiApplication --> GenerationForm
-    RatatuiApplication --> LiveGenerationView
-    LiveGenerationView --> TerminalImagePreview
-    RatatuiApplication --> TransitionEffects
-    NestedRegistryViews --> ProjectService
-    NestedRegistryViews --> ConnectorService
-    NestedRegistryViews --> ModelService
-    NestedRegistryViews --> ThemeService
-    NestedRegistryViews --> ConfigService
-    GenerationForm --> SlidesPipeline
-    SlidesPipeline --> LiveGenerationView : TextGenerationEvent
-    InitPrompts --> SetupService
-    Commands --> SetupService
-    Commands --> ConfigService
-    Commands --> ProjectService
-    Commands --> ConnectorService
-    Commands --> ModelService
-    Commands --> ThemeService
-    Commands --> SlidesPipeline
-    OutputFormatter --> GenerationOutput
+    TuiApp --> GenerateSlidesOptions
+    TuiApp --> EditSlidesOptions
 
-    SetupService --> GlobalConfigRepository
-    ProjectService --> ProjectRepository
-    ConnectorService --> GlobalConfigRepository
-    ModelService --> GlobalConfigRepository
-    ModelService --> ProjectRepository
-    ThemeService --> ThemeRepository
-    ThemeService --> ProjectRepository
-    ConfigService --> GlobalConfig
-    ConfigService --> ProjectConfig
+    DeckDocument ..|> ReviewableDocument
+    ReviewableDocument --> Patch
+    ArtifactManifest --> JobId
+    ArtifactManifest --> RevisionId
 
-    FilesystemGlobalConfigRepository ..|> GlobalConfigRepository
-    FilesystemProjectRepository ..|> ProjectRepository
-    FilesystemThemeRepository ..|> ThemeRepository
+    GenerateSlidesOptions --> ProviderFactory
+    GenerateSlidesOptions --> PromptCatalog
+    GenerateSlidesOptions --> ArtifactStore
+    GenerateSlidesOptions --> GenerationOutput
+    EditSlidesOptions --> ReviewableDocument
+    EditSlidesOptions --> ProviderFactory
+    EditSlidesOptions --> PromptCatalog
+    EditSlidesOptions --> ArtifactStore
+    AgentRunner --> TextModel
+    AgentRunner --> ToolExecutor
+    PromptCatalog --> PromptProvenance
+    ArtifactStore --> ArtifactTransaction
 
-    GlobalConfigRepository --> GlobalConfig
-    ProjectRepository --> ProjectRegistry
-    ProjectRepository --> ProjectConfig
-    ThemeRepository --> ThemePackage
-
-    SlidesPipeline --> GenerationRequest
-    SlidesPipeline --> GenerationOutput
-    GenerationOutput --> SlideReviewSummary
-    SlideReviewSummary --> SlideLayoutIssue
-    GenerationOutput --> GenerationToolSummary
-    SlidesPipeline --> EffectiveConfig
-    SlidesPipeline --> ThemeService
-    SlidesPipeline --> TextGenerationProvider
-    SlidesPipeline --> SlideReviewPipeline
-    SlidesPipeline --> ContextCompactor : token-limit recovery
-    SlideReviewPipeline --> ModelRole
-    SlideReviewPipeline --> TextGenerationProvider
-    SlideReviewPipeline --> ReviewSnapshot
-    SlideReviewPipeline --> ReviewableDocument
-    SlideDeckDocument ..|> ReviewableDocument
-    SlideDeckDocument *-- SlideDocument
-    SlideDocument *-- SlideElement
-    ReviewableDocument --> PatchReport
-    SlideReviewPipeline --> MarpLayoutInspector
-    SlideReviewPipeline --> SlideRange
-    SlideReviewPipeline --> SlideReplacement
-    SlideReplacement --> SlideRange
-    MarpLayoutInspector --> MarpRenderer
-    MarpLayoutInspector --> MermaidDiagramRenderer
-    SlidesPipeline --> SourceReader
-    SlidesPipeline --> ArtifactWriter
-    SlidesPipeline --> ProjectArtifactWorkspace
-    SlidesPipeline --> ProcessedArtifactPublisher
-    SlidesPipeline --> MarpRenderer
-    SlidesPipeline --> MermaidDiagramRenderer
-    SlidesPipeline --> FilesystemToolExecutor
-    SlidesPipeline --> ImageGenerationTool
-    SlidesPipeline --> ProjectInstructions : loads and injects
-
-    OpenAiCompatibleTextProvider ..|> TextGenerationProvider
-    OpenAiCompatibleTextProvider --> TextGenerationLimitError
-    OpenAiCompatibleImageProvider ..|> ImageGenerationProvider
-    OpenAiCompatibleTextProvider --> ToolDefinition
-    OpenAiCompatibleTextProvider --> ToolExecutor
-    OpenAiCompatibleTextProvider --> OpenAiCompatibleConnector
-    OpenAiCompatibleImageProvider --> OpenAiCompatibleConnector
-    OpenAiCompatibleTextProvider --> ModelProfile
-    FilesystemToolExecutor ..|> ToolExecutor
-    ImageGenerationTool --> ImageGenerationProvider
+    OpenAiCompatibleProviderFactory ..|> ProviderFactory
+    OpenAiCompatibleProviderFactory --> OpenAiCompatibleTextProvider
+    OpenAiCompatibleProviderFactory --> OpenAiCompatibleImageProvider
+    OpenAiCompatibleTextProvider ..|> TextModel
+    LayeredPromptCatalog ..|> PromptCatalog
+    FilesystemArtifactStore ..|> ArtifactStore

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, env, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -15,30 +15,44 @@ use ratatui::{
 };
 use ratatui_image::{Resize, StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use serde_json::Value;
+use sfumato_adapters::prompts::{LayeredPromptCatalog, PromptOverrideScope};
 use sfumato_core::{
-    config::{Capability, GlobalConfig, ModelDefaults, ModelProfile},
+    config::{
+        Capability, ConfigOverrides, EffectiveConfig, GlobalConfig, ModelDefaults, ModelProfile,
+    },
     config_editor::{ConfigService, ConfigTarget},
     connectors::{ConnectorPreset, ConnectorService},
     models::ModelService,
     projects::ProjectService,
+    prompts::{PromptCatalog, PromptId, PromptOrigin},
     providers::{GenerationStage, TextGenerationEvent},
-    resources::slides::GenerateSlidesResult,
+    resources::slides::{EditSlidesResult, GenerateSlidesResult},
     setup::{SetupService, UserSetupRequest},
     themes::ThemeService,
 };
+use sfumato_domain::SecretRef;
 use tachyonfx::{EffectManager, fx};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::{
+    sync::mpsc::{Receiver, Sender, channel},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
 use tui_widgets::big_text::{BigText, PixelSize};
 
-use crate::{cli::SlidesArgs, commands::execute_slides};
+use crate::{
+    cli::{EditSlidesArgs, SlidesArgs},
+    commands::{execute_edit_slides, execute_slides},
+};
 
 const TICK_RATE: Duration = Duration::from_millis(80);
 const NAV_ITEMS: &[(&str, &str)] = &[
     ("Generate", "Build a reviewed Marp deck"),
+    ("Edit", "Update an existing generated deck"),
     ("Projects", "Project working directories"),
     ("Models", "Profiles, capabilities, defaults"),
     ("Connectors", "Local and cloud model endpoints"),
     ("Themes", "Reusable visual packages"),
+    ("Prompts", "Layered model instructions"),
     ("Configuration", "Merged user and project settings"),
     ("Setup", "Initialize user and project settings"),
 ];
@@ -58,7 +72,9 @@ pub async fn run() -> Result<()> {
     let _guard = TerminalGuard;
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
     let mut app = App::new(picker);
-    run_loop(&mut terminal, &mut app).await
+    let result = run_loop(&mut terminal, &mut app).await;
+    app.shutdown().await;
+    result
 }
 
 struct TerminalGuard;
@@ -111,6 +127,7 @@ enum Section {
     Models,
     Connectors,
     Themes,
+    Prompts,
     Configuration,
     Setup,
 }
@@ -122,6 +139,7 @@ impl Section {
             Self::Models => "Models",
             Self::Connectors => "Connectors",
             Self::Themes => "Themes",
+            Self::Prompts => "Prompts",
             Self::Configuration => "Configuration",
             Self::Setup => "Setup",
         }
@@ -133,8 +151,15 @@ enum Screen {
     Home,
     Browse(Section),
     Generate,
+    Edit,
     Running,
     Complete,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResourceOperation {
+    Generate,
+    Edit,
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +200,89 @@ impl FormField {
 struct GenerateForm {
     fields: Vec<FormField>,
     selected: usize,
+}
+
+#[derive(Clone, Debug)]
+struct EditForm {
+    fields: Vec<FormField>,
+    selected: usize,
+}
+
+impl Default for EditForm {
+    fn default() -> Self {
+        Self {
+            fields: vec![
+                FormField::Text {
+                    label: "Deck",
+                    value: String::new(),
+                    placeholder: "~/.sfumato/Projects/university/slides/deck.md",
+                    multiline: false,
+                },
+                FormField::Text {
+                    label: "Instruction",
+                    value: String::new(),
+                    placeholder: "Clarify the explanation on slide four",
+                    multiline: true,
+                },
+                FormField::Text {
+                    label: "Project",
+                    value: String::new(),
+                    placeholder: "active project",
+                    multiline: false,
+                },
+                FormField::Text {
+                    label: "Text model",
+                    value: String::new(),
+                    placeholder: "project or user default",
+                    multiline: false,
+                },
+                FormField::Submit {
+                    label: "Edit slides",
+                },
+            ],
+            selected: 0,
+        }
+    }
+}
+
+impl EditForm {
+    fn text(&self, label: &str) -> String {
+        self.fields
+            .iter()
+            .find_map(|field| match field {
+                FormField::Text {
+                    label: field_label,
+                    value,
+                    ..
+                } if *field_label == label => Some(value.trim().to_string()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn to_args(&self) -> Result<EditSlidesArgs> {
+        let markdown_path = self.text("Deck");
+        if markdown_path.is_empty() {
+            anyhow::bail!("Deck path cannot be empty");
+        }
+        let instruction = self.text("Instruction");
+        if instruction.is_empty() {
+            anyhow::bail!("Instruction cannot be empty");
+        }
+        let optional = |value: String| (!value.is_empty()).then_some(value);
+        let text_model = self.text("Text model");
+        Ok(EditSlidesArgs {
+            markdown_path: PathBuf::from(markdown_path),
+            instruction,
+            project: optional(self.text("Project")),
+            model_overrides: if text_model.is_empty() {
+                Vec::new()
+            } else {
+                vec![format!("text={text_model}")]
+            },
+            json: false,
+        })
+    }
 }
 
 impl Default for GenerateForm {
@@ -335,6 +443,9 @@ enum BrowseAction {
     ConnectorOpenrouter,
     ThemeCreate,
     ThemeUse,
+    PromptCustomizeUser,
+    PromptCustomizeProject,
+    PromptValidate,
     ConfigSet,
     ConfigDelete,
     SetupUser,
@@ -354,6 +465,9 @@ impl BrowseAction {
             Self::ConnectorOpenrouter => "Setup OpenRouter",
             Self::ThemeCreate => "Create",
             Self::ThemeUse => "Apply",
+            Self::PromptCustomizeUser => "Customize user",
+            Self::PromptCustomizeProject => "Customize project",
+            Self::PromptValidate => "Validate",
             Self::ConfigSet => "Set value",
             Self::ConfigDelete => "Delete value",
             Self::SetupUser => "Initialize user",
@@ -372,6 +486,8 @@ enum OperationKind {
     ConnectorSetup(ConnectorPreset),
     ThemeCreate,
     ThemeUse,
+    PromptCustomize(PromptOverrideScope),
+    PromptValidate,
     ConfigSet,
     ConfigDelete,
     SetupUser,
@@ -533,8 +649,45 @@ impl Activity {
 }
 
 enum UiMessage {
-    GenerationEvent(TextGenerationEvent),
-    GenerationFinished(Box<Result<GenerateSlidesResult, String>>),
+    GenerationEvent {
+        job_id: u64,
+        event: TextGenerationEvent,
+    },
+    ResourceFinished {
+        job_id: u64,
+        result: Box<Result<ResourceResult, String>>,
+    },
+    ResourceCancelled {
+        job_id: u64,
+    },
+}
+
+enum ResourceResult {
+    Generated(GenerateSlidesResult),
+    Edited(EditSlidesResult),
+}
+
+impl ResourceResult {
+    fn markdown_path(&self) -> &std::path::Path {
+        match self {
+            Self::Generated(result) => &result.markdown_path,
+            Self::Edited(result) => &result.markdown_path,
+        }
+    }
+
+    fn warnings(&self) -> &[String] {
+        match self {
+            Self::Generated(result) => &result.warnings,
+            Self::Edited(result) => &result.warnings,
+        }
+    }
+
+    fn completion_message(&self) -> &'static str {
+        match self {
+            Self::Generated(_) => "Generation complete",
+            Self::Edited(_) => "Slide edit complete",
+        }
+    }
 }
 
 struct App {
@@ -547,16 +700,22 @@ struct App {
     browse_detail_scroll: u16,
     operation: Option<OperationForm>,
     form: GenerateForm,
+    edit_form: EditForm,
+    resource_operation: ResourceOperation,
     activities: Vec<Activity>,
     activity_index: usize,
     current_stage: Option<GenerationStage>,
     generation_failed: bool,
-    result: Option<GenerateSlidesResult>,
+    result: Option<ResourceResult>,
     status: Option<(String, bool)>,
     tick: usize,
     should_quit: bool,
-    sender: UnboundedSender<UiMessage>,
-    messages: UnboundedReceiver<UiMessage>,
+    sender: Sender<UiMessage>,
+    messages: Receiver<UiMessage>,
+    next_job_id: u64,
+    active_job_id: Option<u64>,
+    cancellation: Option<CancellationToken>,
+    active_task: Option<JoinHandle<()>>,
     picker: Picker,
     image: Option<StatefulProtocol>,
     effects: EffectManager<&'static str>,
@@ -565,7 +724,7 @@ struct App {
 
 impl App {
     fn new(picker: Picker) -> Self {
-        let (sender, messages) = unbounded_channel();
+        let (sender, messages) = channel(256);
         Self {
             screen: Screen::Home,
             nav_index: 0,
@@ -576,6 +735,8 @@ impl App {
             browse_detail_scroll: 0,
             operation: None,
             form: GenerateForm::default(),
+            edit_form: EditForm::default(),
+            resource_operation: ResourceOperation::Generate,
             activities: Vec::new(),
             activity_index: 0,
             current_stage: None,
@@ -586,6 +747,10 @@ impl App {
             should_quit: false,
             sender,
             messages,
+            next_job_id: 1,
+            active_job_id: None,
+            cancellation: None,
+            active_task: None,
             picker,
             image: None,
             effects: EffectManager::default(),
@@ -606,6 +771,7 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.cancel_active_job();
             self.should_quit = true;
             return;
         }
@@ -617,6 +783,7 @@ impl App {
             Screen::Home => self.handle_home_key(key),
             Screen::Browse(section) => self.handle_browse_key(section, key),
             Screen::Generate => self.handle_generate_key(key),
+            Screen::Edit => self.handle_edit_key(key),
             Screen::Running => self.handle_running_key(key),
             Screen::Complete => self.handle_complete_key(key),
         }
@@ -632,12 +799,14 @@ impl App {
             }
             KeyCode::Enter => match self.nav_index {
                 0 => self.transition(Screen::Generate),
-                1 => self.open_section(Section::Projects),
-                2 => self.open_section(Section::Models),
-                3 => self.open_section(Section::Connectors),
-                4 => self.open_section(Section::Themes),
-                5 => self.open_section(Section::Configuration),
-                6 => self.open_section(Section::Setup),
+                1 => self.transition(Screen::Edit),
+                2 => self.open_section(Section::Projects),
+                3 => self.open_section(Section::Models),
+                4 => self.open_section(Section::Connectors),
+                5 => self.open_section(Section::Themes),
+                6 => self.open_section(Section::Prompts),
+                7 => self.open_section(Section::Configuration),
+                8 => self.open_section(Section::Setup),
                 _ => {}
             },
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
@@ -863,6 +1032,27 @@ impl App {
                     selected: 0,
                 }
             }
+            BrowseAction::PromptCustomizeUser | BrowseAction::PromptCustomizeProject => {
+                let prompt = selected.context("Select a prompt to customize")?;
+                let scope = if action == BrowseAction::PromptCustomizeUser {
+                    PromptOverrideScope::User
+                } else {
+                    PromptOverrideScope::Project
+                };
+                confirmation_form(
+                    "Customize prompt",
+                    OperationKind::PromptCustomize(scope),
+                    prompt.title.clone(),
+                    "Create override",
+                )
+            }
+            BrowseAction::PromptValidate => OperationForm {
+                title: "Validate prompts",
+                kind: OperationKind::PromptValidate,
+                target: None,
+                fields: vec![submit_field("Validate prompts")],
+                selected: 0,
+            },
             BrowseAction::ConfigSet => OperationForm {
                 title: "Set configuration value",
                 kind: OperationKind::ConfigSet,
@@ -1066,6 +1256,54 @@ impl App {
         }
     }
 
+    fn handle_edit_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.transition(Screen::Home),
+            KeyCode::Up => {
+                self.edit_form.selected = self.edit_form.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.edit_form.selected =
+                    (self.edit_form.selected + 1).min(self.edit_form.fields.len() - 1);
+            }
+            KeyCode::BackTab => {
+                self.edit_form.selected = self.edit_form.selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let selected = self.edit_form.selected;
+                match self.edit_form.fields.get(selected) {
+                    Some(FormField::Submit { .. }) => self.start_edit(),
+                    Some(FormField::Text {
+                        multiline: true, ..
+                    }) if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                        self.push_edit_form_char('\n');
+                    }
+                    _ => {
+                        self.edit_form.selected =
+                            (self.edit_form.selected + 1).min(self.edit_form.fields.len() - 1);
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(FormField::Text { value, .. }) =
+                    self.edit_form.fields.get_mut(self.edit_form.selected)
+                {
+                    value.pop();
+                }
+            }
+            KeyCode::Char(character) => self.push_edit_form_char(character),
+            _ => {}
+        }
+    }
+
+    fn push_edit_form_char(&mut self, character: char) {
+        if let Some(FormField::Text { value, .. }) =
+            self.edit_form.fields.get_mut(self.edit_form.selected)
+        {
+            value.push(character);
+        }
+    }
+
     fn toggle_form_field(&mut self) {
         if let Some(FormField::Toggle { value, .. }) = self.form.fields.get_mut(self.form.selected)
         {
@@ -1088,23 +1326,113 @@ impl App {
         self.result = None;
         self.image = None;
         self.status = None;
+        self.resource_operation = ResourceOperation::Generate;
         self.transition(Screen::Running);
 
+        let job_id = self.begin_job();
+        let cancellation = self
+            .cancellation
+            .as_ref()
+            .expect("a started job has a cancellation token")
+            .clone();
         let sender = self.sender.clone();
         let sink_sender = sender.clone();
         let sink = Arc::new(move |event| {
-            let _ = sink_sender.send(UiMessage::GenerationEvent(event));
+            let _ = sink_sender.try_send(UiMessage::GenerationEvent { job_id, event });
         });
-        tokio::spawn(async move {
-            let result = execute_slides(args, Some(sink))
-                .await
-                .map_err(|error| format!("{error:#}"));
-            let _ = sender.send(UiMessage::GenerationFinished(Box::new(result)));
+        self.active_task = Some(tokio::spawn(async move {
+            tokio::select! {
+                () = cancellation.cancelled() => {
+                    let _ = sender.send(UiMessage::ResourceCancelled { job_id }).await;
+                }
+                result = execute_slides(args, Some(sink)) => {
+                    let result = result
+                        .map(ResourceResult::Generated)
+                        .map_err(|error| format!("{error:#}"));
+                    let _ = sender.send(UiMessage::ResourceFinished {
+                        job_id,
+                        result: Box::new(result),
+                    }).await;
+                }
+            }
+        }));
+    }
+
+    fn start_edit(&mut self) {
+        let args = match self.edit_form.to_args() {
+            Ok(args) => args,
+            Err(error) => {
+                self.status = Some((error.to_string(), true));
+                return;
+            }
+        };
+        self.activities.clear();
+        self.activity_index = 0;
+        self.current_stage = None;
+        self.generation_failed = false;
+        self.result = None;
+        self.image = None;
+        self.status = None;
+        self.resource_operation = ResourceOperation::Edit;
+        self.transition(Screen::Running);
+
+        let job_id = self.begin_job();
+        let cancellation = self
+            .cancellation
+            .as_ref()
+            .expect("a started job has a cancellation token")
+            .clone();
+        let sender = self.sender.clone();
+        let sink_sender = sender.clone();
+        let sink = Arc::new(move |event| {
+            let _ = sink_sender.try_send(UiMessage::GenerationEvent { job_id, event });
         });
+        self.active_task = Some(tokio::spawn(async move {
+            tokio::select! {
+                () = cancellation.cancelled() => {
+                    let _ = sender.send(UiMessage::ResourceCancelled { job_id }).await;
+                }
+                result = execute_edit_slides(args, Some(sink)) => {
+                    let result = result
+                        .map(ResourceResult::Edited)
+                        .map_err(|error| format!("{error:#}"));
+                    let _ = sender.send(UiMessage::ResourceFinished {
+                        job_id,
+                        result: Box::new(result),
+                    }).await;
+                }
+            }
+        }));
+    }
+
+    fn begin_job(&mut self) -> u64 {
+        self.cancel_active_job();
+        let job_id = self.next_job_id;
+        self.next_job_id = self.next_job_id.wrapping_add(1).max(1);
+        self.active_job_id = Some(job_id);
+        self.cancellation = Some(CancellationToken::new());
+        job_id
+    }
+
+    fn cancel_active_job(&self) {
+        if let Some(cancellation) = &self.cancellation {
+            cancellation.cancel();
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        self.cancel_active_job();
+        if let Some(task) = self.active_task.take() {
+            let _ = task.await;
+        }
     }
 
     fn handle_running_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Esc => {
+                self.cancel_active_job();
+                self.status = Some(("Cancelling the active operation...".to_string(), false));
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.activity_index = self.activity_index.saturating_sub(1);
                 self.load_selected_image();
@@ -1121,7 +1449,10 @@ impl App {
     fn handle_complete_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Backspace => self.transition(Screen::Home),
-            KeyCode::Enter => self.transition(Screen::Generate),
+            KeyCode::Enter => self.transition(match self.resource_operation {
+                ResourceOperation::Generate => Screen::Generate,
+                ResourceOperation::Edit => Screen::Edit,
+            }),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.activity_index = self.activity_index.saturating_sub(1);
                 self.load_selected_image();
@@ -1137,7 +1468,10 @@ impl App {
 
     fn handle_message(&mut self, message: UiMessage) {
         match message {
-            UiMessage::GenerationEvent(event) => {
+            UiMessage::GenerationEvent { job_id, event } => {
+                if self.active_job_id != Some(job_id) {
+                    return;
+                }
                 if let TextGenerationEvent::StageStarted { stage, .. } = &event {
                     self.current_stage = Some(*stage);
                 }
@@ -1149,31 +1483,54 @@ impl App {
                     self.load_image(&path);
                 }
             }
-            UiMessage::GenerationFinished(result) => {
+            UiMessage::ResourceFinished { job_id, result } => {
+                if self.active_job_id != Some(job_id) {
+                    return;
+                }
+                self.active_job_id = None;
+                self.cancellation = None;
+                self.active_task = None;
                 match *result {
                     Ok(result) => {
-                        for warning in &result.warnings {
+                        for warning in result.warnings() {
                             self.activities.push(Activity {
                                 kind: ActivityKind::Warning,
-                                title: "Generation warning".to_string(),
+                                title: "Resource warning".to_string(),
                                 detail: warning.clone(),
                                 image_path: None,
                             });
                         }
-                        self.status = Some(("Generation complete".to_string(), false));
+                        self.status = Some((result.completion_message().to_string(), false));
                         self.result = Some(result);
                     }
                     Err(error) => {
                         self.generation_failed = true;
                         self.activities.push(Activity {
                             kind: ActivityKind::Warning,
-                            title: "Generation failed".to_string(),
+                            title: "Resource operation failed".to_string(),
                             detail: error.clone(),
                             image_path: None,
                         });
                         self.status = Some((error, true));
                     }
                 }
+                self.activity_index = self.activities.len().saturating_sub(1);
+                self.transition(Screen::Complete);
+            }
+            UiMessage::ResourceCancelled { job_id } => {
+                if self.active_job_id != Some(job_id) {
+                    return;
+                }
+                self.active_job_id = None;
+                self.cancellation = None;
+                self.active_task = None;
+                self.status = Some(("Operation cancelled".to_string(), false));
+                self.activities.push(Activity {
+                    kind: ActivityKind::Warning,
+                    title: "Operation cancelled".to_string(),
+                    detail: "No staged artifacts were committed.".to_string(),
+                    image_path: None,
+                });
                 self.activity_index = self.activities.len().saturating_sub(1);
                 self.transition(Screen::Complete);
             }
@@ -1219,6 +1576,7 @@ impl App {
             Screen::Home => self.draw_home(frame, body),
             Screen::Browse(section) => self.draw_browse(frame, body, section),
             Screen::Generate => self.draw_generate(frame, body),
+            Screen::Edit => self.draw_edit(frame, body),
             Screen::Running | Screen::Complete => self.draw_generation(frame, body),
         }
         if self.operation.is_some() {
@@ -1268,8 +1626,15 @@ impl App {
             Screen::Home => "Workspace".to_string(),
             Screen::Browse(section) => section.title().to_string(),
             Screen::Generate => "Generate / Slides".to_string(),
-            Screen::Running => "Generate / In progress".to_string(),
-            Screen::Complete => "Generate / Result".to_string(),
+            Screen::Edit => "Edit / Slides".to_string(),
+            Screen::Running => match self.resource_operation {
+                ResourceOperation::Generate => "Generate / In progress".to_string(),
+                ResourceOperation::Edit => "Edit / In progress".to_string(),
+            },
+            Screen::Complete => match self.resource_operation {
+                ResourceOperation::Generate => "Generate / Result".to_string(),
+                ResourceOperation::Edit => "Edit / Result".to_string(),
+            },
         }
     }
 
@@ -1507,75 +1872,11 @@ impl App {
     }
 
     fn draw_generate(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let form_area = area.inner(Margin::new(3, 0));
-        let range = visible_field_range(&self.form.fields, self.form.selected, form_area.height);
-        let visible_fields = &self.form.fields[range.clone()];
-        let rows = Layout::vertical(
-            visible_fields
-                .iter()
-                .map(|field| Constraint::Length(field_height(field)))
-                .collect::<Vec<_>>(),
-        )
-        .split(form_area);
-        for (offset, (field, row)) in visible_fields.iter().zip(rows.iter()).enumerate() {
-            let index = range.start + offset;
-            let selected = index == self.form.selected;
-            match field {
-                FormField::Text {
-                    label,
-                    value,
-                    placeholder,
-                    ..
-                } => {
-                    let text = if value.is_empty() {
-                        Span::styled(*placeholder, Style::default().fg(MUTED))
-                    } else {
-                        Span::styled(value.as_str(), Style::default().fg(TEXT))
-                    };
-                    frame.render_widget(
-                        Paragraph::new(text)
-                            .wrap(Wrap { trim: false })
-                            .block(field_block(label, selected)),
-                        *row,
-                    );
-                }
-                FormField::Toggle { label, value } => {
-                    let symbol = if *value { "[x]" } else { "[ ]" };
-                    frame.render_widget(
-                        Paragraph::new(Line::from(vec![
-                            Span::styled(
-                                symbol,
-                                Style::default().fg(if *value { GREEN } else { MUTED }),
-                            ),
-                            Span::raw(" "),
-                            Span::styled(*label, Style::default().fg(TEXT)),
-                        ]))
-                        .block(field_block("OPTION", selected)),
-                        *row,
-                    );
-                }
-                FormField::Submit { .. } => {
-                    frame.render_widget(
-                        Paragraph::new(Line::from(Span::styled(
-                            field.label(),
-                            Style::default().fg(if selected { BG } else { TEXT }).bold(),
-                        )))
-                        .alignment(Alignment::Center)
-                        .style(if selected {
-                            Style::default().bg(ACCENT)
-                        } else {
-                            Style::default().bg(PANEL)
-                        })
-                        .block(
-                            Block::new()
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Rounded),
-                        ),
-                        *row,
-                    );
-                }
-            }
-        }
+        draw_resource_form(frame, area, &self.form.fields, self.form.selected);
+    }
+
+    fn draw_edit(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        draw_resource_form(frame, area, &self.edit_form.fields, self.edit_form.selected);
     }
 
     fn draw_generation(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -1611,14 +1912,26 @@ impl App {
     }
 
     fn draw_stages(&self, frame: &mut Frame<'_>, area: Rect) {
-        let stages = [
+        let generation_stages = [
             GenerationStage::Draft,
             GenerationStage::SemanticReview,
             GenerationStage::LayoutCheck,
             GenerationStage::LayoutRepair,
             GenerationStage::Rendering,
         ];
-        let current = self.current_stage.map(stage_index).unwrap_or(0);
+        let edit_stages = [
+            GenerationStage::Edit,
+            GenerationStage::LayoutCheck,
+            GenerationStage::Rendering,
+        ];
+        let stages: &[GenerationStage] = match self.resource_operation {
+            ResourceOperation::Generate => &generation_stages,
+            ResourceOperation::Edit => &edit_stages,
+        };
+        let current = self
+            .current_stage
+            .and_then(|current| stages.iter().position(|stage| *stage == current))
+            .unwrap_or(0);
         let running = self.screen == Screen::Running;
         let completed = self.screen == Screen::Complete && !self.generation_failed;
         let spinner = ["|", "/", "-", "\\"][self.tick % 4];
@@ -1693,11 +2006,11 @@ impl App {
         let (message, error) = self.status.as_ref().map_or_else(
             || {
                 let message = match self.screen {
-                    Screen::Running => "Generation is running".to_string(),
+                    Screen::Running => "Resource operation is running".to_string(),
                     Screen::Complete if self.result.is_some() => self
                         .result
                         .as_ref()
-                        .map(|result| format!("Artifact: {}", result.markdown_path.display()))
+                        .map(|result| format!("Artifact: {}", result.markdown_path().display()))
                         .unwrap_or_default(),
                     _ => "Ready".to_string(),
                 };
@@ -1719,6 +2032,83 @@ impl App {
     }
 }
 
+fn draw_resource_form(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    fields: &[FormField],
+    selected_index: usize,
+) {
+    let form_area = area.inner(Margin::new(3, 0));
+    let range = visible_field_range(fields, selected_index, form_area.height);
+    let visible_fields = &fields[range.clone()];
+    let rows = Layout::vertical(
+        visible_fields
+            .iter()
+            .map(|field| Constraint::Length(field_height(field)))
+            .collect::<Vec<_>>(),
+    )
+    .split(form_area);
+    for (offset, (field, row)) in visible_fields.iter().zip(rows.iter()).enumerate() {
+        let index = range.start + offset;
+        let selected = index == selected_index;
+        match field {
+            FormField::Text {
+                label,
+                value,
+                placeholder,
+                ..
+            } => {
+                let text = if value.is_empty() {
+                    Span::styled(*placeholder, Style::default().fg(MUTED))
+                } else {
+                    Span::styled(value.as_str(), Style::default().fg(TEXT))
+                };
+                frame.render_widget(
+                    Paragraph::new(text)
+                        .wrap(Wrap { trim: false })
+                        .block(field_block(label, selected)),
+                    *row,
+                );
+            }
+            FormField::Toggle { label, value } => {
+                let symbol = if *value { "[x]" } else { "[ ]" };
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            symbol,
+                            Style::default().fg(if *value { GREEN } else { MUTED }),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(*label, Style::default().fg(TEXT)),
+                    ]))
+                    .block(field_block("OPTION", selected)),
+                    *row,
+                );
+            }
+            FormField::Submit { .. } => {
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        field.label(),
+                        Style::default().fg(if selected { BG } else { TEXT }).bold(),
+                    )))
+                    .alignment(Alignment::Center)
+                    .style(if selected {
+                        Style::default().bg(ACCENT)
+                    } else {
+                        Style::default().bg(PANEL)
+                    })
+                    .block(
+                        Block::new()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded),
+                    ),
+                    *row,
+                );
+            }
+        }
+    }
+}
+
 fn section_actions(section: Section) -> &'static [BrowseAction] {
     match section {
         Section::Projects => &[
@@ -1737,6 +2127,11 @@ fn section_actions(section: Section) -> &'static [BrowseAction] {
             BrowseAction::ConnectorOpenrouter,
         ],
         Section::Themes => &[BrowseAction::ThemeCreate, BrowseAction::ThemeUse],
+        Section::Prompts => &[
+            BrowseAction::PromptCustomizeUser,
+            BrowseAction::PromptCustomizeProject,
+            BrowseAction::PromptValidate,
+        ],
         Section::Configuration => &[BrowseAction::ConfigSet, BrowseAction::ConfigDelete],
         Section::Setup => &[BrowseAction::SetupUser, BrowseAction::ProjectCreate],
     }
@@ -1886,6 +2281,22 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
                 updated.name, updated.theme
             ))
         }
+        OperationKind::PromptCustomize(scope) => {
+            if !form.toggle("Confirm") {
+                anyhow::bail!("Confirm prompt customization before continuing");
+            }
+            let id = PromptId::from_str(
+                form.target
+                    .as_deref()
+                    .context("Prompt identifier is missing")?,
+            )?;
+            let path = tui_prompt_catalog()?.customize(id, scope)?;
+            Ok(format!("Created prompt override at {}", path.display()))
+        }
+        OperationKind::PromptValidate => {
+            let prompts = tui_prompt_catalog()?.validate()?;
+            Ok(format!("Validated {} prompt templates", prompts.len()))
+        }
         OperationKind::ConfigSet => {
             let service = ConfigService::new()?;
             let key = required_field(form, "Key")?;
@@ -1944,7 +2355,10 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
                 .connectors
                 .get_mut("openrouter")
                 .context("Default OpenRouter connector is missing")?
-                .api_key_env = Some(required_field(form, "API key environment")?);
+                .credential = Some(SecretRef::environment(&required_field(
+                form,
+                "API key environment",
+            )?)?);
             let result = setup.setup_user(UserSetupRequest { config })?;
             Ok(format!(
                 "Initialized user config at {}",
@@ -2057,6 +2471,31 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
                 })
             })
             .collect(),
+        Section::Prompts => {
+            let catalog = tui_prompt_catalog()?;
+            catalog
+                .list()?
+                .into_iter()
+                .map(|template| {
+                    let (source, provenance) = catalog.source(template.id)?;
+                    let active = !matches!(provenance.origin, PromptOrigin::Bundled);
+                    let origin = match &provenance.origin {
+                        PromptOrigin::Bundled => "bundled".to_string(),
+                        PromptOrigin::User(path) => format!("user: {}", path.display()),
+                        PromptOrigin::Project(path) => format!("project: {}", path.display()),
+                    };
+                    Ok(BrowseRow {
+                        title: template.id.to_string(),
+                        subtitle: origin,
+                        detail: format!(
+                            "SHA-256: {}\nVersion: {}\n\n{}",
+                            provenance.content_hash, provenance.version, source
+                        ),
+                        active,
+                    })
+                })
+                .collect()
+        }
         Section::Configuration => {
             let service = ConfigService::new()?;
             let rows = [
@@ -2098,6 +2537,11 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
     }
 }
 
+fn tui_prompt_catalog() -> Result<LayeredPromptCatalog> {
+    let config = EffectiveConfig::load(ConfigOverrides::default())?;
+    Ok(LayeredPromptCatalog::for_project(config.project_root)?)
+}
+
 fn panel(title: &'static str) -> Block<'static> {
     Block::new()
         .title(format!(" {title} "))
@@ -2128,19 +2572,10 @@ fn metric_line(label: &str, value: usize) -> Line<'static> {
     ])
 }
 
-fn stage_index(stage: GenerationStage) -> usize {
-    match stage {
-        GenerationStage::Draft => 0,
-        GenerationStage::SemanticReview => 1,
-        GenerationStage::LayoutCheck => 2,
-        GenerationStage::LayoutRepair => 3,
-        GenerationStage::Rendering => 4,
-    }
-}
-
 fn stage_label(stage: GenerationStage) -> &'static str {
     match stage {
         GenerationStage::Draft => "Draft",
+        GenerationStage::Edit => "Content edit",
         GenerationStage::SemanticReview => "Content review",
         GenerationStage::LayoutCheck => "Layout check",
         GenerationStage::LayoutRepair => "Layout repair",

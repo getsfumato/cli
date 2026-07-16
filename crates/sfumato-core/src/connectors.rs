@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 
 use anyhow::{Context, Result};
+use sfumato_domain::SecretRef;
 
 use crate::{
     config::{GlobalConfig, OpenAiCompatibleConnectorConfig},
@@ -67,8 +68,7 @@ impl ConnectorService {
                 "ollama",
                 OpenAiCompatibleConnectorConfig {
                     base_url: "http://localhost:11434/v1".to_string(),
-                    api_key: Some("ollama".to_string()),
-                    api_key_env: None,
+                    credential: None,
                     headers: BTreeMap::new(),
                 },
             ),
@@ -76,8 +76,7 @@ impl ConnectorService {
                 "openrouter",
                 OpenAiCompatibleConnectorConfig {
                     base_url: "https://openrouter.ai/api/v1".to_string(),
-                    api_key: None,
-                    api_key_env: Some(api_key_env),
+                    credential: Some(SecretRef::environment(&api_key_env)?),
                     headers: BTreeMap::new(),
                 },
             ),

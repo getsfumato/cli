@@ -3,15 +3,14 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
-use crate::{
-    config::{ModelProfile, OpenAiCompatibleConnectorConfig},
+use sfumato_core::{
+    config::{Capability, EffectiveConfig, ModelProfile, OpenAiCompatibleConnectorConfig},
     providers::{
-        ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
-        TextGenerationEvent, TextGenerationLimitError, TextGenerationProvider,
-        TextGenerationRequest, TextGenerationResponse, ToolCall, ToolDefinition,
-        ToolExecutionRequest,
+        AgentRunner, ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
+        ModelMessage, ProviderFactory, TextGenerationLimitError, TextGenerationProvider, TextModel,
+        TextModelRequest, TextModelResponse, ToolCall, ToolDefinition,
     },
 };
 
@@ -26,7 +25,10 @@ impl OpenAiCompatibleConnector {
     pub fn new(name: String, config: OpenAiCompatibleConnectorConfig) -> Result<Self> {
         let _ = resolve_api_key(&config)?;
         Ok(Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .context("Could not build the OpenAI-compatible HTTP client")?,
             name,
             config,
         })
@@ -41,14 +43,59 @@ impl OpenAiCompatibleConnector {
     }
 
     fn post(&self, path: &str) -> Result<RequestBuilder> {
-        let mut request = self
-            .client
-            .post(self.endpoint(path))
-            .bearer_auth(resolve_api_key(&self.config)?);
+        let mut request = self.client.post(self.endpoint(path));
+        if let Some(api_key) = resolve_api_key(&self.config)? {
+            request = request.bearer_auth(api_key);
+        }
         for (name, value) in &self.config.headers {
             request = request.header(name, value);
         }
         Ok(request)
+    }
+}
+
+/// Provider factory for connectors exposing OpenAI-compatible endpoints.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OpenAiCompatibleProviderFactory;
+
+impl ProviderFactory for OpenAiCompatibleProviderFactory {
+    fn text(
+        &self,
+        config: &EffectiveConfig,
+        profile: &ModelProfile,
+    ) -> Result<Box<dyn TextGenerationProvider>> {
+        if !profile.capabilities.contains(&Capability::Text) {
+            bail!("Selected model profile does not support text generation");
+        }
+        let connector = config
+            .connectors
+            .get(&profile.connector)
+            .with_context(|| format!("Connector '{}' was not found", profile.connector))?;
+        let model = OpenAiCompatibleTextProvider::new(
+            profile.connector.clone(),
+            connector.clone(),
+            profile.clone(),
+        )?;
+        Ok(Box::new(AgentRunner::new(std::sync::Arc::new(model))))
+    }
+
+    fn image(
+        &self,
+        config: &EffectiveConfig,
+        profile: &ModelProfile,
+    ) -> Result<Box<dyn ImageGenerationProvider>> {
+        if !profile.capabilities.contains(&Capability::Image) {
+            bail!("Selected model profile does not support image generation");
+        }
+        let connector = config
+            .connectors
+            .get(&profile.connector)
+            .with_context(|| format!("Connector '{}' was not found", profile.connector))?;
+        Ok(Box::new(OpenAiCompatibleImageProvider::new(
+            profile.connector.clone(),
+            connector.clone(),
+            profile.clone(),
+        )?))
     }
 }
 
@@ -70,9 +117,15 @@ impl OpenAiCompatibleTextProvider {
         })
     }
 
-    pub fn request_body(&self, request: &TextGenerationRequest) -> ChatCompletionsRequest {
+    /// Serializes one provider-neutral model turn as a chat-completions request.
+    pub fn request_body(&self, request: &TextModelRequest) -> ChatCompletionsRequest {
         self.request_body_for_messages(
-            initial_messages(request),
+            request
+                .messages
+                .clone()
+                .into_iter()
+                .map(ChatMessage::from)
+                .collect(),
             (!request.tools.is_empty()).then_some(request.tools.clone()),
         )
     }
@@ -94,98 +147,16 @@ impl OpenAiCompatibleTextProvider {
 }
 
 #[async_trait]
-impl TextGenerationProvider for OpenAiCompatibleTextProvider {
-    async fn generate_text(
-        &self,
-        request: TextGenerationRequest,
-    ) -> Result<TextGenerationResponse> {
-        let tools = (!request.tools.is_empty()).then_some(request.tools.clone());
-        let mut messages = initial_messages(&request);
-
-        for round in 0..request.max_tool_rounds {
-            request.emit(TextGenerationEvent::RequestStarted { round: round + 1 });
-            let body = self.request_body_for_messages(messages.clone(), tools.clone());
-            let parsed = self.send_chat_completion(&body).await?;
-            let usage = parsed.usage;
-            let choice = parsed
-                .choices
-                .into_iter()
-                .next()
-                .context("Connector response did not include any choices")?;
-            let finish_reason = choice.finish_reason;
-            let assistant_message = choice.message;
-
-            if assistant_message.tool_calls.is_empty() {
-                let content = assistant_message
-                    .content
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if content.is_empty() {
-                    bail!(empty_content_error(
-                        &self.profile,
-                        finish_reason.as_deref(),
-                        usage.as_ref()
-                    ));
-                }
-                ensure_text_response_complete(
-                    &self.profile,
-                    finish_reason.as_deref(),
-                    usage.as_ref(),
-                )?;
-                request.emit(TextGenerationEvent::ResponseCompleted);
-                return Ok(TextGenerationResponse { text: content });
-            }
-
-            let executor = request.tool_executor.as_ref().context(
-                "Connector requested tool calls, but no Sfumato tool executor is available",
-            )?;
-            let tool_calls = assistant_message.tool_calls.clone();
-            messages.push(assistant_message);
-            for tool_call in tool_calls {
-                request.emit(TextGenerationEvent::ToolCallRequested {
-                    name: tool_call.function.name.clone(),
-                    arguments: tool_call.function.arguments.clone(),
-                });
-                let result = match executor
-                    .execute(ToolExecutionRequest {
-                        name: tool_call.function.name.clone(),
-                        arguments: tool_call.function.arguments.clone(),
-                    })
-                    .await
-                {
-                    Ok(result) => {
-                        request.emit(TextGenerationEvent::ToolCallSucceeded {
-                            name: tool_call.function.name.clone(),
-                            result: result.clone(),
-                        });
-                        result
-                    }
-                    Err(error) => {
-                        let error = format!("{error:#}");
-                        request.emit(TextGenerationEvent::ToolCallFailed {
-                            name: tool_call.function.name.clone(),
-                            error: error.clone(),
-                        });
-                        tool_error_json(&tool_call, error)
-                    }
-                };
-                messages.push(ChatMessage::tool_response(tool_call, result));
-            }
-        }
-
-        messages.push(ChatMessage::text(
-            "user",
-            format!(
-                "You have reached Sfumato's limit of {} filesystem tool rounds. Stop calling tools and return the final Marp Markdown deck now, using the context already gathered.",
-                request.max_tool_rounds
-            ),
-        ));
-        request.emit(TextGenerationEvent::RequestStarted {
-            round: request.max_tool_rounds + 1,
-        });
+impl TextModel for OpenAiCompatibleTextProvider {
+    async fn complete(&self, request: TextModelRequest) -> Result<TextModelResponse> {
+        let messages = request
+            .messages
+            .into_iter()
+            .map(ChatMessage::from)
+            .collect();
+        let tools = (!request.tools.is_empty()).then_some(request.tools);
         let parsed = self
-            .send_chat_completion(&self.request_body_for_messages(messages, None))
+            .send_chat_completion(&self.request_body_for_messages(messages, tools))
             .await?;
         let usage = parsed.usage;
         let choice = parsed
@@ -194,22 +165,22 @@ impl TextGenerationProvider for OpenAiCompatibleTextProvider {
             .next()
             .context("Connector response did not include any choices")?;
         let finish_reason = choice.finish_reason;
-        let assistant_message = choice.message;
-        let content = assistant_message
-            .content
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if content.is_empty() {
-            bail!(empty_content_error(
-                &self.profile,
-                finish_reason.as_deref(),
-                usage.as_ref()
-            ));
+        let assistant = choice.message;
+        if assistant.tool_calls.is_empty() {
+            let content = assistant.content.as_deref().unwrap_or_default().trim();
+            if content.is_empty() {
+                bail!(empty_content_error(
+                    &self.profile,
+                    finish_reason.as_deref(),
+                    usage.as_ref()
+                ));
+            }
+            ensure_text_response_complete(&self.profile, finish_reason.as_deref(), usage.as_ref())?;
         }
-        ensure_text_response_complete(&self.profile, finish_reason.as_deref(), usage.as_ref())?;
-        request.emit(TextGenerationEvent::ResponseCompleted);
-        Ok(TextGenerationResponse { text: content })
+        Ok(TextModelResponse {
+            content: assistant.content,
+            tool_calls: assistant.tool_calls,
+        })
     }
 }
 
@@ -367,15 +338,19 @@ impl OpenAiCompatibleTextProvider {
     }
 }
 
-fn resolve_api_key(connector: &OpenAiCompatibleConnectorConfig) -> Result<String> {
-    if let Some(api_key) = &connector.api_key {
-        return Ok(api_key.clone());
+fn resolve_api_key(connector: &OpenAiCompatibleConnectorConfig) -> Result<Option<String>> {
+    let Some(reference) = &connector.credential else {
+        return Ok(None);
+    };
+    match reference.scheme() {
+        "env" => std::env::var(reference.target()).map(Some).map_err(|_| {
+            anyhow::anyhow!(
+                "Missing API key environment variable {}",
+                reference.target()
+            )
+        }),
+        scheme => bail!("Unsupported connector credential scheme '{scheme}'"),
     }
-    if let Some(env_name) = &connector.api_key_env {
-        return std::env::var(env_name)
-            .map_err(|_| anyhow::anyhow!("Missing API key environment variable {env_name}"));
-    }
-    bail!("OpenAI-compatible connector requires api_key or api_key_env")
 }
 
 fn option_float(profile: &ModelProfile, key: &str, default: f32) -> f32 {
@@ -515,25 +490,38 @@ impl ChatMessage {
             reasoning_details: None,
         }
     }
-
-    fn tool_response(tool_call: ToolCall, content: String) -> Self {
-        Self {
-            role: "tool".to_string(),
-            content: Some(content),
-            tool_calls: Vec::new(),
-            tool_call_id: tool_call.id,
-            reasoning: None,
-            reasoning_details: None,
-        }
-    }
 }
 
-fn tool_error_json(tool_call: &ToolCall, error: String) -> String {
-    serde_json::json!({
-        "error": error,
-        "tool": tool_call.function.name,
-    })
-    .to_string()
+impl From<ModelMessage> for ChatMessage {
+    fn from(message: ModelMessage) -> Self {
+        match message {
+            ModelMessage::System(content) => Self::text("system", content),
+            ModelMessage::User(content) => Self::text("user", content),
+            ModelMessage::Assistant {
+                content,
+                tool_calls,
+            } => Self {
+                role: "assistant".to_string(),
+                content,
+                tool_calls,
+                tool_call_id: None,
+                reasoning: None,
+                reasoning_details: None,
+            },
+            ModelMessage::Tool {
+                tool_call_id,
+                name: _,
+                content,
+            } => Self {
+                role: "tool".to_string(),
+                content: Some(content),
+                tool_calls: Vec::new(),
+                tool_call_id,
+                reasoning: None,
+                reasoning_details: None,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -563,16 +551,3 @@ struct CompletionTokenDetails {
     #[serde(default)]
     reasoning_tokens: Option<u64>,
 }
-
-fn initial_messages(request: &TextGenerationRequest) -> Vec<ChatMessage> {
-    vec![
-        ChatMessage::text("system", request.system_prompt.clone()),
-        ChatMessage::text("user", request.user_prompt.clone()),
-    ]
-}
-
-#[cfg(test)]
-// Test bodies live under tests/unit so implementation files stay focused, while
-// this module hook still lets those tests exercise private helpers.
-#[path = "../../tests/unit/openai_compatible.rs"]
-mod tests;

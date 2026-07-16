@@ -7,7 +7,8 @@ use anyhow::{Context, Result, bail};
 use toml::{Table, Value};
 
 use crate::config::{
-    ConfigOverrides, EffectiveConfig, ProjectRegistry, project_config_path, user_config_path,
+    ConfigOverrides, EffectiveConfig, GlobalConfig, ProjectConfig, ProjectRegistry,
+    project_config_path, user_config_path, write_toml,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -71,7 +72,9 @@ impl ConfigService {
     ) -> Result<PathBuf> {
         let path = self.editable_path(scope, project.as_deref())?;
         let mut table = self.read_config_table(&path)?;
+        reject_secret_key(key)?;
         set_dotted_value(&mut table, key, parse_config_value(raw_value))?;
+        self.validate_table(scope, &table)?;
         self.write_config_table(&path, &table)?;
         Ok(path)
     }
@@ -84,7 +87,9 @@ impl ConfigService {
     ) -> Result<PathBuf> {
         let path = self.editable_path(scope, project.as_deref())?;
         let mut table = self.read_config_table(&path)?;
+        reject_secret_key(key)?;
         delete_dotted_value(&mut table, key)?;
+        self.validate_table(scope, &table)?;
         self.write_config_table(&path, &table)?;
         Ok(path)
     }
@@ -125,13 +130,93 @@ impl ConfigService {
     }
 
     fn write_config_table(&self, path: &Path, table: &Table) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Could not create {}", parent.display()))?;
-        }
-        let rendered = toml::to_string_pretty(table).context("Could not render config as TOML")?;
-        fs::write(path, rendered).with_context(|| format!("Could not write {}", path.display()))
+        write_toml(path, &Value::Table(table.clone()))
     }
+
+    fn validate_table(&self, scope: ConfigTarget, table: &Table) -> Result<()> {
+        let value = Value::Table(table.clone());
+        match scope {
+            ConfigTarget::User => {
+                let config: GlobalConfig = value
+                    .try_into()
+                    .context("The change would make the user config invalid")?;
+                validate_global_references(&config)
+            }
+            ConfigTarget::Project => {
+                let project: ProjectConfig = value
+                    .try_into()
+                    .context("The change would make the project config invalid")?;
+                crate::config::validate_project_name(&project.name)?;
+                if project.theme.trim().is_empty() {
+                    bail!("Project theme cannot be empty");
+                }
+                let global = GlobalConfig::load()?;
+                for profile in project
+                    .model_defaults
+                    .values()
+                    .chain(project.model_roles.values())
+                {
+                    if !global.models.contains_key(profile) {
+                        bail!("Project references unknown model profile '{profile}'");
+                    }
+                }
+                Ok(())
+            }
+            ConfigTarget::Effective => bail!("Effective configuration is read-only"),
+        }
+    }
+}
+
+fn reject_secret_key(key: &str) -> Result<()> {
+    if split_key(key)
+        .iter()
+        .any(|part| matches!(*part, "api_key" | "secret" | "token"))
+    {
+        bail!(
+            "Secrets cannot be edited through generic config commands; configure a credential reference instead"
+        );
+    }
+    Ok(())
+}
+
+fn validate_global_references(config: &GlobalConfig) -> Result<()> {
+    for (name, model) in &config.models {
+        if !config.connectors.contains_key(&model.connector) {
+            bail!(
+                "Model profile '{name}' references unknown connector '{}'",
+                model.connector
+            );
+        }
+    }
+    for (capability, profile_name) in &config.defaults.0 {
+        let profile = config.models.get(profile_name).with_context(|| {
+            format!(
+                "Default '{}' references unknown model profile '{profile_name}'",
+                capability.as_str()
+            )
+        })?;
+        if !profile.capabilities.contains(capability) {
+            bail!(
+                "Default '{}' uses model profile '{profile_name}', which lacks that capability",
+                capability.as_str()
+            );
+        }
+    }
+    for (role, profile_name) in &config.model_roles {
+        let profile = config.models.get(profile_name).with_context(|| {
+            format!(
+                "Model role '{}' references unknown profile '{profile_name}'",
+                role.as_str()
+            )
+        })?;
+        if !profile.capabilities.contains(&role.required_capability()) {
+            bail!(
+                "Model role '{}' requires a text-capable profile",
+                role.as_str()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn parse_config_value(raw: &str) -> Value {

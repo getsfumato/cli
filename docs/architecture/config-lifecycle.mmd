@@ -1,0 +1,21 @@
+flowchart TD
+    START["Resolve configuration"] --> READ["Read global config and project registry"]
+    READ --> VERSION{"schema_version equals 4?"}
+    VERSION -- no --> FAIL["Return read-only version error"]
+    VERSION -- yes --> PARSE["Strictly parse typed TOML DTOs"]
+    PARSE --> SELECT["Select explicit or active project"]
+    SELECT --> PROJECT["Read project.toml without mutation"]
+    PROJECT --> MERGE["Merge global, project, command overrides"]
+    MERGE --> VALIDATE["Validate model, connector, role, theme, and path references"]
+    VALIDATE --> SNAPSHOT["Return EffectiveConfig snapshot"]
+
+    EDIT["config set or delete"] --> LOAD["Load complete v4 target"]
+    LOAD --> SECRET{"Raw secret key?"}
+    SECRET -- yes --> REJECT["Reject mutation"]
+    SECRET -- no --> MUTATE["Apply dotted-key mutation in memory"]
+    MUTATE --> VALIDATE_EDIT["Validate complete typed document"]
+    VALIDATE_EDIT --> TEMP["Write and sync same-directory temporary file"]
+    TEMP --> RENAME["Atomically replace target"]
+
+    FAIL --> PRESERVE["Original bytes remain unchanged"]
+    REJECT --> PRESERVE

@@ -84,6 +84,7 @@ fn injects_layout_inspection_without_touching_source_markdown() {
 }
 
 #[tokio::test]
+#[cfg(feature = "real-renderers")]
 async fn detects_real_overflow_when_marp_and_browser_are_available() {
     let Some(browser) = detected_browser_path() else {
         return;

@@ -1,0 +1,27 @@
+Edit the content of this existing generated Marp deck.
+
+Project: {{ project }}
+User instruction: {{ instruction }}
+Theme: {{ theme_name }}
+Theme colors: {{ theme_colors }}
+Theme fonts: {{ theme_fonts }}
+
+{{ project_instructions }}
+
+Requirements:
+- Return only an RFC 6902 JSON Patch array. Do not return Markdown or explanations.
+- Test `/revision` before any mutation.
+- Test `/slides/<id>/revision` before replacing that slide.
+- Only replace `/slides/<id>/markdown`; do not add, remove, reorder, or rename slides.
+- Never modify the title slide, deck title, frontmatter, theme, IDs, revisions, or derived metadata.
+- Preserve content unrelated to the user's instruction.
+- Return complete Markdown for each changed slide, without frontmatter or outer slide separators.
+- Keep images sized for a 1280x720 slide and avoid introducing content overflow.
+- Return `[]` when the requested content is already present.
+- Every slide's complete Markdown is available in the structured snapshot.
+{% if retry_present %}
+{% include "shared/edit-retry.md.j2" %}
+{% endif %}
+
+Structured existing deck:
+{{ deck_snapshot }}

@@ -1,0 +1,35 @@
+Review this generated slide deck before it is published.
+
+Original instruction: {{ instruction }}
+Project: {{ project }}
+Theme: {{ theme_name }}
+Theme colors: {{ theme_colors }}
+Theme fonts: {{ theme_fonts }}
+
+{{ project_instructions }}
+
+Review requirements:
+- Return only an RFC 6902 JSON Patch array. Do not use a Markdown code fence.
+- The patch target is the object inside `document`; paths therefore start at `/revision`, `/slides`, or `/order`, not `/document`.
+- Start with a `test` operation for `/revision` before any mutation.
+- Before replacing or removing a slide, test `/slides/<id>/revision` with the supplied value.
+- Prefer replacing only `/slides/<id>/markdown` for slides that genuinely need correction.
+- Do not return the complete deck or replace the document root.
+- Do not modify the title slide, title, frontmatter, IDs, revisions, headings, kinds, or element summaries.
+- Correct factual inconsistencies only when supported by the source material or filesystem tools.
+- Remove duplication and improve the learning sequence.
+- Keep one principal idea per slide and concise supporting content.
+- Add, remove, or reorder slides only when a targeted Markdown replacement cannot solve the problem.
+- Preserve useful explanations instead of deleting them merely to save space.
+- Keep MathJax math and Mermaid fences valid. Do not add inline CSS, raw HTML, or inline SVG.
+- Use the filesystem tools only when a claim cannot be checked from the supplied source excerpts.
+- Return `[]` when no changes are needed.
+{% if retry_present %}
+{% include "shared/review-retry.md.j2" %}
+{% endif %}
+
+Source material:
+{{ source_bundle }}
+
+Structured review snapshot:
+{{ deck_snapshot }}

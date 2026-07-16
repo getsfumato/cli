@@ -1,10 +1,14 @@
+pub mod artifacts;
 pub mod config;
 pub mod config_editor;
 pub mod connectors;
+pub mod errors;
 pub mod generation;
 pub mod instructions;
 pub mod models;
+pub mod operation;
 pub mod projects;
+pub mod prompts;
 pub mod providers;
 pub mod renderers;
 pub mod repositories;

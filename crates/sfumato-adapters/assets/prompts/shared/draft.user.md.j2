@@ -1,0 +1,47 @@
+Create a Marp Markdown slide deck.
+
+Project: {{ project }}
+Allowed filesystem root: {{ project_root }}
+Theme: {{ theme_name }}
+Theme colors: {{ theme_colors }}
+Theme fonts: {{ theme_fonts }}
+Instruction: {{ instruction }}
+
+{{ project_instructions }}
+
+Requirements:
+{% if title_provided %}
+- Use exactly "{{ title }}" as the deck title and as the first `# H1` on the title slide.
+{% else %}
+- Create a concise, specific deck title that describes the subject being taught. Do not copy or lightly rephrase the instruction as the title. Put your chosen title in the first `# H1` on the title slide; Sfumato will use it as the artifact filename.
+{% endif %}
+- Return only Markdown.
+- Return raw Marp Markdown. Never wrap the deck in a `marp`, `markdown`, or `md` code fence.
+- Start the document with Marp frontmatter as the first bytes. Do not put a slide, title, blank `---`, or any text before it.
+- Do not include `style:`, inline CSS, or generated theme CSS in Marp frontmatter.
+- Set Marp math rendering to MathJax with `math: mathjax`.
+- Use slide separators with ---.
+- Include a title slide.
+- Use `<!-- _class: lead -->` for title and section-divider slides.
+- Use `<!-- _class: compact -->` only for dense tables, formulas, or comparison slides.
+- Prefer `##` headings for normal content slides after the title slide.
+- You may use Mermaid diagrams in fenced ```mermaid blocks when a visual structure helps.
+{% if image_generation_available %}
+- You may call `sfumato_image_gen` when a purpose-built educational illustration would teach better than text or Mermaid. Give it a precise subject, composition, labels, and learning purpose. Embed the returned `markdown_path` with Marp's `![height:420px](images/file.png)` syntax so the image fits within the slide. Sfumato applies the project theme automatically.
+{% else %}
+- No image generation model is configured. Use Markdown and Mermaid for visuals.
+{% endif %}
+- Keep Mermaid diagrams simple: at most 6 nodes, short quoted labels, and no formulas inside labels.
+- Put math formulas in normal Markdown outside Mermaid diagrams.
+- Use `<br/>` inside Mermaid labels when a label needs two short lines.
+- Do not use raw HTML, inline SVG, or HTML wrapper tags.
+- Include a short learning objective slide.
+- Explain the source material for a student.
+- Use examples from the provided files.
+- Add presenter notes with short teaching cues when useful.
+- You may call Sfumato filesystem tools to list allowed directories or read allowed text files when more context is needed.
+- When calling filesystem tools, prefer absolute paths under the allowed filesystem root.
+- Explore selectively. After reading the most relevant files, stop calling tools and produce the final deck.
+
+Source material:
+{{ source_bundle }}

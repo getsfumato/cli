@@ -1,5 +1,3 @@
-mod openai_compatible;
-
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -7,9 +5,8 @@ use serde_json::Value;
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::config::{Capability, EffectiveConfig, ModelProfile};
-
-pub use openai_compatible::{OpenAiCompatibleImageProvider, OpenAiCompatibleTextProvider};
+use crate::config::{EffectiveConfig, ModelProfile};
+use crate::prompts::PromptProvenance;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextGenerationLimitKind {
@@ -30,7 +27,8 @@ pub struct TextGenerationLimitError {
 }
 
 impl TextGenerationLimitError {
-    pub(crate) fn output(
+    /// Creates a typed output truncation or empty-response error.
+    pub fn output(
         model: String,
         max_tokens: u64,
         finish_reason: Option<String>,
@@ -65,7 +63,8 @@ impl TextGenerationLimitError {
         }
     }
 
-    pub(crate) fn context(model: String, max_tokens: u64, detail: String) -> Self {
+    /// Creates a typed context-window exhaustion error.
+    pub fn context(model: String, max_tokens: u64, detail: String) -> Self {
         Self {
             kind: TextGenerationLimitKind::Context,
             model: model.clone(),
@@ -88,6 +87,10 @@ pub struct TextGenerationRequest {
     pub tool_executor: Option<Arc<dyn ToolExecutor>>,
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
     pub max_tool_rounds: usize,
+    /// Request-specific user message sent when the tool round limit is reached.
+    pub tool_exhausted_prompt: Option<String>,
+    /// Template provenance used to construct this request.
+    pub prompt_provenance: Vec<PromptProvenance>,
 }
 
 impl TextGenerationRequest {
@@ -99,6 +102,8 @@ impl TextGenerationRequest {
             tool_executor: None,
             event_sink: None,
             max_tool_rounds: 8,
+            tool_exhausted_prompt: None,
+            prompt_provenance: Vec::new(),
         }
     }
 
@@ -164,9 +169,10 @@ pub enum TextGenerationEvent {
     },
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GenerationStage {
     Draft,
+    Edit,
     SemanticReview,
     LayoutCheck,
     LayoutRepair,
@@ -177,6 +183,7 @@ impl GenerationStage {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Draft => "drafting slides",
+            Self::Edit => "editing slide content",
             Self::SemanticReview => "reviewing content",
             Self::LayoutCheck => "checking layout",
             Self::LayoutRepair => "repairing layout",
@@ -235,6 +242,168 @@ pub trait TextGenerationProvider: Send + Sync {
     -> Result<TextGenerationResponse>;
 }
 
+/// Provider-neutral conversation message used for one model turn.
+#[derive(Clone, Debug)]
+pub enum ModelMessage {
+    /// System instruction.
+    System(String),
+    /// User instruction or follow-up.
+    User(String),
+    /// Assistant response, including any requested tools.
+    Assistant {
+        /// Optional assistant text.
+        content: Option<String>,
+        /// Tool calls requested by the assistant.
+        tool_calls: Vec<ToolCall>,
+    },
+    /// Result of one tool call.
+    Tool {
+        /// Provider tool-call identifier.
+        tool_call_id: Option<String>,
+        /// Tool name.
+        name: String,
+        /// JSON or text result supplied to the model.
+        content: String,
+    },
+}
+
+/// Input for exactly one provider model turn.
+#[derive(Clone, Debug)]
+pub struct TextModelRequest {
+    /// Complete conversation transcript.
+    pub messages: Vec<ModelMessage>,
+    /// Tools available for this turn; empty disables tool calling.
+    pub tools: Vec<ToolDefinition>,
+}
+
+/// Output from exactly one provider model turn.
+#[derive(Clone, Debug)]
+pub struct TextModelResponse {
+    /// Optional assistant text.
+    pub content: Option<String>,
+    /// Tool calls requested by the assistant.
+    pub tool_calls: Vec<ToolCall>,
+}
+
+/// Low-level text model transport. Implementations perform one request only.
+#[async_trait]
+pub trait TextModel: Send + Sync {
+    /// Performs one model turn without executing tools or retrying.
+    async fn complete(&self, request: TextModelRequest) -> Result<TextModelResponse>;
+}
+
+/// Application-level agent loop that executes provider-neutral tools.
+pub struct AgentRunner {
+    model: Arc<dyn TextModel>,
+}
+
+impl AgentRunner {
+    /// Creates an agent over a one-turn model transport.
+    pub fn new(model: Arc<dyn TextModel>) -> Self {
+        Self { model }
+    }
+}
+
+#[async_trait]
+impl TextGenerationProvider for AgentRunner {
+    async fn generate_text(
+        &self,
+        request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse> {
+        let mut messages = vec![
+            ModelMessage::System(request.system_prompt.clone()),
+            ModelMessage::User(request.user_prompt.clone()),
+        ];
+
+        for round in 0..request.max_tool_rounds {
+            request.emit(TextGenerationEvent::RequestStarted { round: round + 1 });
+            let response = self
+                .model
+                .complete(TextModelRequest {
+                    messages: messages.clone(),
+                    tools: request.tools.clone(),
+                })
+                .await?;
+            if response.tool_calls.is_empty() {
+                return complete_agent_response(&request, response.content);
+            }
+
+            let executor = request.tool_executor.as_ref().context(
+                "Connector requested tool calls, but no Sfumato tool executor is available",
+            )?;
+            messages.push(ModelMessage::Assistant {
+                content: response.content,
+                tool_calls: response.tool_calls.clone(),
+            });
+            for tool_call in response.tool_calls {
+                request.emit(TextGenerationEvent::ToolCallRequested {
+                    name: tool_call.function.name.clone(),
+                    arguments: tool_call.function.arguments.clone(),
+                });
+                let result = match executor
+                    .execute(ToolExecutionRequest {
+                        name: tool_call.function.name.clone(),
+                        arguments: tool_call.function.arguments.clone(),
+                    })
+                    .await
+                {
+                    Ok(result) => {
+                        request.emit(TextGenerationEvent::ToolCallSucceeded {
+                            name: tool_call.function.name.clone(),
+                            result: result.clone(),
+                        });
+                        result
+                    }
+                    Err(error) => {
+                        let error = format!("{error:#}");
+                        request.emit(TextGenerationEvent::ToolCallFailed {
+                            name: tool_call.function.name.clone(),
+                            error: error.clone(),
+                        });
+                        serde_json::json!({ "error": error }).to_string()
+                    }
+                };
+                messages.push(ModelMessage::Tool {
+                    tool_call_id: tool_call.id,
+                    name: tool_call.function.name,
+                    content: result,
+                });
+            }
+        }
+
+        let exhausted = request.tool_exhausted_prompt.clone().context(
+            "The model exhausted its tool rounds, but this request has no output-contract prompt",
+        )?;
+        messages.push(ModelMessage::User(exhausted));
+        request.emit(TextGenerationEvent::RequestStarted {
+            round: request.max_tool_rounds + 1,
+        });
+        let response = self
+            .model
+            .complete(TextModelRequest {
+                messages,
+                tools: Vec::new(),
+            })
+            .await?;
+        if !response.tool_calls.is_empty() {
+            bail!("Model requested tools after tool calling was disabled");
+        }
+        complete_agent_response(&request, response.content)
+    }
+}
+
+fn complete_agent_response(
+    request: &TextGenerationRequest,
+    content: Option<String>,
+) -> Result<TextGenerationResponse> {
+    let text = content.unwrap_or_default().trim().to_string();
+    if text.is_empty() {
+        bail!("Connector response did not include text content");
+    }
+    request.emit(TextGenerationEvent::ResponseCompleted);
+    Ok(TextGenerationResponse { text })
+}
+
 #[derive(Clone, Debug)]
 pub struct ImageGenerationRequest {
     pub prompt: String,
@@ -253,47 +422,19 @@ pub trait ImageGenerationProvider: Send + Sync {
         request: ImageGenerationRequest,
     ) -> Result<ImageGenerationResponse>;
 }
-#[allow(dead_code)]
-pub trait VideoGenerationProvider: Send + Sync {}
-#[allow(dead_code)]
-pub trait SpeechSynthesisProvider: Send + Sync {}
+/// Port for resolving model profiles into provider implementations.
+pub trait ProviderFactory: Send + Sync {
+    /// Builds a text-generation provider for a resolved profile.
+    fn text(
+        &self,
+        config: &EffectiveConfig,
+        profile: &ModelProfile,
+    ) -> Result<Box<dyn TextGenerationProvider>>;
 
-pub fn build_text_provider(
-    config: &EffectiveConfig,
-    profile: &ModelProfile,
-) -> Result<Box<dyn TextGenerationProvider>> {
-    if !profile.capabilities.contains(&Capability::Text) {
-        bail!("Selected model profile does not support text generation");
-    }
-    let connector = config.connectors.get(&profile.connector).with_context(|| {
-        format!(
-            "OpenAI-compatible connector '{}' was not found",
-            profile.connector
-        )
-    })?;
-    Ok(Box::new(OpenAiCompatibleTextProvider::new(
-        profile.connector.clone(),
-        connector.clone(),
-        profile.clone(),
-    )?))
-}
-
-pub fn build_image_provider(
-    config: &EffectiveConfig,
-    profile: &ModelProfile,
-) -> Result<Box<dyn ImageGenerationProvider>> {
-    if !profile.capabilities.contains(&Capability::Image) {
-        bail!("Selected model profile does not support image generation");
-    }
-    let connector = config.connectors.get(&profile.connector).with_context(|| {
-        format!(
-            "OpenAI-compatible connector '{}' was not found",
-            profile.connector
-        )
-    })?;
-    Ok(Box::new(OpenAiCompatibleImageProvider::new(
-        profile.connector.clone(),
-        connector.clone(),
-        profile.clone(),
-    )?))
+    /// Builds an image-generation provider for a resolved profile.
+    fn image(
+        &self,
+        config: &EffectiveConfig,
+        profile: &ModelProfile,
+    ) -> Result<Box<dyn ImageGenerationProvider>>;
 }

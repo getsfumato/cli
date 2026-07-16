@@ -65,9 +65,9 @@ fn directory_tool_result_does_not_leak_json() {
 }
 
 #[test]
-fn stage_indices_follow_the_generation_pipeline() {
-    assert_eq!(stage_index(GenerationStage::Draft), 0);
-    assert_eq!(stage_index(GenerationStage::Rendering), 4);
+fn stage_labels_include_generation_and_editing() {
+    assert_eq!(stage_label(GenerationStage::Draft), "Draft");
+    assert_eq!(stage_label(GenerationStage::Edit), "Content edit");
 }
 
 #[test]
@@ -95,14 +95,57 @@ fn compact_viewport_keeps_the_selected_form_control_visible() {
 }
 
 #[test]
-fn home_enter_opens_the_selected_nested_view() {
+fn home_enter_opens_the_selected_resource_form() {
     let mut app = App::new(Picker::halfblocks());
-    app.nav_index = 2;
+    app.nav_index = 0;
 
     app.handle_home_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert_eq!(app.screen, Screen::Browse(Section::Models));
-    assert_eq!(app.browse_focus, BrowseFocus::Actions);
+    assert_eq!(app.screen, Screen::Generate);
+}
+
+#[test]
+fn main_menu_exposes_prompt_management() {
+    assert!(NAV_ITEMS.iter().any(|(name, _)| *name == "Prompts"));
+    assert_eq!(
+        section_actions(Section::Prompts),
+        &[
+            BrowseAction::PromptCustomizeUser,
+            BrowseAction::PromptCustomizeProject,
+            BrowseAction::PromptValidate,
+        ]
+    );
+}
+
+#[test]
+fn edit_form_builds_a_focused_slide_command() {
+    let mut form = EditForm::default();
+    for field in &mut form.fields {
+        match field {
+            FormField::Text {
+                label: "Deck",
+                value,
+                ..
+            } => *value = "/tmp/deck.md".into(),
+            FormField::Text {
+                label: "Instruction",
+                value,
+                ..
+            } => *value = "Clarify slide two".into(),
+            FormField::Text {
+                label: "Text model",
+                value,
+                ..
+            } => *value = "cloud-draft".into(),
+            _ => {}
+        }
+    }
+
+    let args = form.to_args().unwrap();
+
+    assert_eq!(args.markdown_path, PathBuf::from("/tmp/deck.md"));
+    assert_eq!(args.instruction, "Clarify slide two");
+    assert_eq!(args.model_overrides, vec!["text=cloud-draft"]);
 }
 
 #[test]

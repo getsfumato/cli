@@ -1,0 +1,225 @@
+schema_version = 1
+
+[[prompts]]
+id = "tools.generation.descriptions"
+path = "tools/generation.descriptions.json.j2"
+required = []
+
+[[prompts]]
+id = "image.generation.user"
+path = "image/generation.user.md.j2"
+required = [
+  "requested_prompt",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "project_instructions",
+]
+
+[[prompts]]
+id = "slides.draft.system"
+path = "slides/draft.system.md.j2"
+required = ["learning_style"]
+
+[[prompts]]
+id = "slides.draft.user"
+path = "slides/draft.user.md.j2"
+required = [
+  "project",
+  "project_root",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "instruction",
+  "project_instructions",
+  "title",
+  "title_provided",
+  "image_generation_available",
+  "source_bundle",
+]
+
+[[prompts]]
+id = "slides.draft.tool-exhausted.user"
+path = "slides/draft.tool-exhausted.user.md.j2"
+required = ["max_tool_rounds"]
+
+[[prompts]]
+id = "slides.compact-draft.system"
+path = "slides/compact-draft.system.md.j2"
+required = ["learning_style"]
+
+[[prompts]]
+id = "slides.compact-draft.user"
+path = "slides/compact-draft.user.md.j2"
+required = [
+  "project",
+  "project_root",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "instruction",
+  "project_instructions",
+  "title",
+  "title_provided",
+  "image_generation_available",
+  "source_bundle",
+]
+
+[[prompts]]
+id = "slides.title-repair.system"
+path = "slides/title-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.title-repair.user"
+path = "slides/title-repair.user.md.j2"
+required = [
+  "project",
+  "instruction",
+  "validation_error",
+  "project_instructions",
+  "headings",
+]
+
+[[prompts]]
+id = "slides.review.system"
+path = "slides/review.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.review.user"
+path = "slides/review.user.md.j2"
+required = [
+  "instruction",
+  "project",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "project_instructions",
+  "retry_present",
+  "retry_error",
+  "retry_invalid_response",
+  "source_bundle",
+  "deck_snapshot",
+]
+
+[[prompts]]
+id = "slides.review.tool-exhausted.user"
+path = "slides/review.tool-exhausted.user.md.j2"
+required = ["max_tool_rounds"]
+
+[[prompts]]
+id = "slides.compact-review.system"
+path = "slides/compact-review.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.compact-review.user"
+path = "slides/compact-review.user.md.j2"
+required = [
+  "instruction",
+  "project",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "project_instructions",
+  "retry_present",
+  "retry_error",
+  "retry_invalid_response",
+  "source_bundle",
+  "deck_snapshot",
+]
+
+[[prompts]]
+id = "slides.layout-repair.system"
+path = "slides/layout-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.layout-repair.user"
+path = "slides/layout-repair.user.md.j2"
+required = [
+  "instruction",
+  "title",
+  "project",
+  "theme_name",
+  "project_instructions",
+  "issue_report",
+  "retry_present",
+  "retry_error",
+  "retry_invalid_response",
+  "slide_markdown",
+]
+
+[[prompts]]
+id = "slides.layout-repair.tool-exhausted.user"
+path = "slides/layout-repair.tool-exhausted.user.md.j2"
+required = ["max_tool_rounds"]
+
+[[prompts]]
+id = "slides.compact-layout-repair.system"
+path = "slides/compact-layout-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.compact-layout-repair.user"
+path = "slides/compact-layout-repair.user.md.j2"
+required = [
+  "instruction",
+  "title",
+  "project",
+  "theme_name",
+  "project_instructions",
+  "issue_report",
+  "retry_present",
+  "retry_error",
+  "retry_invalid_response",
+  "slide_markdown",
+]
+
+[[prompts]]
+id = "slides.edit.system"
+path = "slides/edit.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.edit.user"
+path = "slides/edit.user.md.j2"
+required = [
+  "project",
+  "instruction",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "project_instructions",
+  "retry_present",
+  "retry_error",
+  "retry_invalid_response",
+  "deck_snapshot",
+]
+
+[[prompts]]
+id = "slides.edit.tool-exhausted.user"
+path = "slides/edit.tool-exhausted.user.md.j2"
+required = ["max_tool_rounds"]
+
+[[prompts]]
+id = "slides.compact-edit.system"
+path = "slides/compact-edit.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.compact-edit.user"
+path = "slides/compact-edit.user.md.j2"
+required = [
+  "project",
+  "instruction",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "project_instructions",
+  "retry_present",
+  "retry_error",
+  "retry_invalid_response",
+  "deck_snapshot",
+]

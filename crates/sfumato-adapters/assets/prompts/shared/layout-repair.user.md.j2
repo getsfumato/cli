@@ -1,0 +1,29 @@
+Repair the measured layout problem in this single Marp slide.
+
+Original instruction: {{ instruction }}
+Deck title: {{ title }}
+Project: {{ project }}
+Theme: {{ theme_name }}
+
+{{ project_instructions }}
+
+Measured layout issue:
+{{ issue_report }}
+
+Requirements:
+- Return only replacement Markdown for the supplied slide, without a code fence.
+- Do not return Marp frontmatter or a leading/trailing `---` separator.
+- Preserve the slide's factual meaning and useful explanations.
+- Prefer concise wording when it resolves the overflow.
+- If a generated image contributes to overflow, reduce its native Marp `height:` directive. Keep its aspect ratio and do not replace it with raw HTML.
+- If necessary, split this slide into two coherent slides using one `---` separator between them.
+- Do not add inline CSS, raw HTML, or alter global theme settings.
+- Keep MathJax formulas and Mermaid diagrams valid.
+{% if retry_present %}
+{% include "shared/layout-repair-retry.md.j2" %}
+{% endif %}
+
+Exact slide fragment to replace:
+```markdown
+{{ slide_markdown }}
+```

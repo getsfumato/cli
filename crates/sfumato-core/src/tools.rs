@@ -1,17 +1,17 @@
 use std::{
     fs,
-    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use slug::slugify;
+use sha2::{Digest, Sha256};
 
 use crate::{
+    prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
         ImageGenerationProvider, ImageGenerationRequest, ToolDefinition, ToolExecutionRequest,
         ToolExecutor, ToolFunctionDefinition,
@@ -28,6 +28,7 @@ pub struct ToolSet {
     pub definitions: Vec<ToolDefinition>,
     pub executor: Arc<dyn ToolExecutor>,
     artifacts: Arc<Mutex<Vec<PathBuf>>>,
+    prompts: Arc<Mutex<Vec<PromptProvenance>>>,
 }
 
 impl ToolSet {
@@ -36,6 +37,13 @@ impl ToolSet {
             .lock()
             .map(|artifacts| artifacts.clone())
             .map_err(|_| anyhow::anyhow!("Generated image artifact registry is unavailable"))
+    }
+
+    pub fn generated_prompts(&self) -> Result<Vec<PromptProvenance>> {
+        self.prompts
+            .lock()
+            .map(|prompts| prompts.clone())
+            .map_err(|_| anyhow::anyhow!("Generated image prompt registry is unavailable"))
     }
 }
 
@@ -176,9 +184,20 @@ struct ImageGenerationTool {
     provider: Arc<dyn ImageGenerationProvider>,
     profile_name: String,
     output_dir: PathBuf,
-    theme_prompt: String,
+    theme: ThemePackage,
     project_instructions: Option<String>,
+    prompt_catalog: Arc<dyn PromptCatalog>,
     artifacts: Arc<Mutex<Vec<PathBuf>>>,
+    prompts: Arc<Mutex<Vec<PromptProvenance>>>,
+}
+
+#[derive(Serialize)]
+struct ImagePromptContext<'a> {
+    requested_prompt: &'a str,
+    theme_name: &'a str,
+    theme_colors: String,
+    theme_fonts: String,
+    project_instructions: &'a str,
 }
 
 impl ImageGenerationTool {
@@ -186,23 +205,25 @@ impl ImageGenerationTool {
         let prompt = string_arg(arguments, "prompt")?;
         let alt_text = optional_string_arg(arguments, "alt_text")?
             .unwrap_or_else(|| "Generated educational illustration".to_string());
-        let project_instructions = self
-            .project_instructions
-            .as_deref()
-            .map(|instructions| {
-                format!(
-                    "\n\nProject instructions from SFUMATO.md:\n<sfumato_project_instructions>\n{instructions}\n</sfumato_project_instructions>"
-                )
-            })
-            .unwrap_or_default();
-        let themed_prompt = format!(
-            "{prompt}\n\nSfumato project visual direction:\n{}{project_instructions}\nCreate one clear educational visual suitable for a presentation slide. Keep labels concise and do not add a decorative frame.",
-            self.theme_prompt
-        );
+        let context = ImagePromptContext {
+            requested_prompt: &prompt,
+            theme_name: &self.theme.manifest.name,
+            theme_colors: format_tokens(&self.theme.manifest.tokens.colors),
+            theme_fonts: format_tokens(&self.theme.manifest.tokens.fonts),
+            project_instructions: self.project_instructions.as_deref().unwrap_or_default(),
+        };
+        let rendered = self.prompt_catalog.render(PromptRenderRequest {
+            id: PromptId::ImageGenerationUser,
+            variables: PromptVariables::from_serializable(&context)?,
+        })?;
+        self.prompts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Generated image prompt registry is unavailable"))?
+            .push(rendered.provenance);
         let response = self
             .provider
             .generate_image(ImageGenerationRequest {
-                prompt: themed_prompt,
+                prompt: rendered.text,
             })
             .await?;
         if response.bytes.len() > MAX_GENERATED_IMAGE_BYTES {
@@ -213,17 +234,8 @@ impl ImageGenerationTool {
             );
         }
         let extension = image_extension(&response.media_type)?;
-        let mut hasher = DefaultHasher::new();
-        response.bytes.hash(&mut hasher);
-        let content_hash = hasher.finish();
-        let prompt_slug = slugify(&prompt);
-        let prompt_slug = prompt_slug.chars().take(48).collect::<String>();
-        let prompt_slug = if prompt_slug.is_empty() {
-            "illustration"
-        } else {
-            &prompt_slug
-        };
-        let filename = format!("generated-{prompt_slug}-{content_hash:016x}.{extension}");
+        let content_hash = format!("{:x}", Sha256::digest(&response.bytes));
+        let filename = format!("image-{}.{extension}", &content_hash[..24]);
         let path = self.output_dir.join(&filename);
         fs::create_dir_all(&self.output_dir)
             .with_context(|| format!("Could not create {}", self.output_dir.display()))?;
@@ -276,6 +288,7 @@ pub fn generation_tools(
     project_root: &Path,
     sources: &[PathBuf],
     image: Option<ImageToolConfig>,
+    prompt_catalog: Arc<dyn PromptCatalog>,
 ) -> Result<ToolSet> {
     let mut roots = vec![project_root.to_path_buf()];
     for source in sources {
@@ -289,16 +302,28 @@ pub fn generation_tools(
     }
 
     let artifacts = Arc::new(Mutex::new(Vec::new()));
-    let mut definitions = vec![list_directory_tool(), read_file_tool()];
+    let rendered_descriptions = prompt_catalog.render(PromptRenderRequest {
+        id: PromptId::ToolsGenerationDescriptions,
+        variables: PromptVariables::default(),
+    })?;
+    let descriptions: ToolDescriptions = serde_json::from_str(&rendered_descriptions.text)
+        .context("Generation tool description prompt must render a JSON object")?;
+    let prompts = Arc::new(Mutex::new(vec![rendered_descriptions.provenance]));
+    let mut definitions = vec![
+        list_directory_tool(&descriptions),
+        read_file_tool(&descriptions),
+    ];
     let image = image.map(|image| {
-        definitions.push(image_generation_tool());
+        definitions.push(image_generation_tool(&descriptions));
         ImageGenerationTool {
             provider: image.provider,
             profile_name: image.profile_name,
             output_dir: image.output_dir,
-            theme_prompt: theme_prompt(&image.theme),
+            theme: image.theme,
             project_instructions: image.project_instructions,
+            prompt_catalog: prompt_catalog.clone(),
             artifacts: artifacts.clone(),
+            prompts: prompts.clone(),
         }
     });
     Ok(ToolSet {
@@ -308,23 +333,34 @@ pub fn generation_tools(
             image,
         }),
         artifacts,
+        prompts,
     })
 }
 
-fn list_directory_tool() -> ToolDefinition {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolDescriptions {
+    list_directory: String,
+    list_directory_path: String,
+    read_file: String,
+    read_file_path: String,
+    image_generation: String,
+    image_prompt: String,
+    image_alt_text: String,
+}
+
+fn list_directory_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
     ToolDefinition {
         kind: "function".to_string(),
         function: ToolFunctionDefinition {
             name: "sfumato_list_directory".to_string(),
-            description:
-                "List files and directories inside the allowed Sfumato project/source roots."
-                    .to_string(),
+            description: descriptions.list_directory.clone(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Directory path to list. Must be inside an allowed Sfumato project/source root."
+                        "description": descriptions.list_directory_path
                     }
                 },
                 "required": ["path"]
@@ -333,19 +369,18 @@ fn list_directory_tool() -> ToolDefinition {
     }
 }
 
-fn read_file_tool() -> ToolDefinition {
+fn read_file_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
     ToolDefinition {
         kind: "function".to_string(),
         function: ToolFunctionDefinition {
             name: "sfumato_read_file".to_string(),
-            description: "Read a UTF-8 text file inside the allowed Sfumato project/source roots."
-                .to_string(),
+            description: descriptions.read_file.clone(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path to read. Must be inside an allowed Sfumato project/source root."
+                        "description": descriptions.read_file_path
                     }
                 },
                 "required": ["path"]
@@ -354,23 +389,22 @@ fn read_file_tool() -> ToolDefinition {
     }
 }
 
-fn image_generation_tool() -> ToolDefinition {
+fn image_generation_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
     ToolDefinition {
         kind: "function".to_string(),
         function: ToolFunctionDefinition {
             name: "sfumato_image_gen".to_string(),
-            description: "Generate a themed educational image and save it beside the slide deck. Use the returned markdown_path in a Markdown image link."
-                .to_string(),
+            description: descriptions.image_generation.clone(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "A concrete visual description including subject, composition, relevant labels, and learning purpose. Do not describe the project theme; Sfumato injects it."
+                        "description": descriptions.image_prompt
                     },
                     "alt_text": {
                         "type": "string",
-                        "description": "Concise accessible description of the requested image."
+                        "description": descriptions.image_alt_text
                     }
                 },
                 "required": ["prompt"]
@@ -418,37 +452,15 @@ fn image_extension(media_type: &str) -> Result<&'static str> {
     }
 }
 
-fn theme_prompt(theme: &ThemePackage) -> String {
-    let colors = theme
-        .manifest
-        .tokens
-        .colors
+fn format_tokens(tokens: &std::collections::BTreeMap<String, String>) -> String {
+    if tokens.is_empty() {
+        return "unspecified".to_string();
+    }
+    tokens
         .iter()
         .map(|(name, value)| format!("{name}={value}"))
         .collect::<Vec<_>>()
-        .join(", ");
-    let fonts = theme
-        .manifest
-        .tokens
-        .fonts
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "Theme: {}. Semantic colors: {}. Typography: {}.",
-        theme.manifest.name,
-        if colors.is_empty() {
-            "unspecified"
-        } else {
-            &colors
-        },
-        if fonts.is_empty() {
-            "unspecified"
-        } else {
-            &fonts
-        },
-    )
+        .join(", ")
 }
 
 #[cfg(test)]

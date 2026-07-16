@@ -1,0 +1,30 @@
+Perform a focused review of this generated slide deck.
+
+Original instruction: {{ instruction }}
+Project: {{ project }}
+Theme: {{ theme_name }}
+Theme colors: {{ theme_colors }}
+Theme fonts: {{ theme_fonts }}
+
+{{ project_instructions }}
+
+Token-limit recovery requirements:
+- Do not perform an exhaustive review. Select at most 3 highest-impact factual, duplication, or sequencing corrections.
+- Return only an RFC 6902 JSON Patch array and keep the response under 4,000 tokens.
+- Start with a `test` operation for `/revision` before any mutation.
+- Test `/slides/<id>/revision` before replacing or removing that slide.
+- Prefer replacing only `/slides/<id>/markdown`.
+- The compact snapshot is a read-only reference for the original document; patch paths still start at `/revision`, `/slides`, or `/order`.
+- Replace a slide only when `markdown_complete` is true, because a truncated excerpt cannot safely reconstruct the original slide.
+- Do not modify the title slide, metadata, IDs, revisions, headings, kinds, or element summaries.
+- Use only the compact evidence below. Do not call filesystem tools.
+- Return `[]` when no high-confidence correction is necessary.
+{% if retry_present %}
+{% include "shared/compact-review-retry.md.j2" %}
+{% endif %}
+
+Compact source evidence:
+{{ source_bundle }}
+
+Compact deck snapshot:
+{{ deck_snapshot }}

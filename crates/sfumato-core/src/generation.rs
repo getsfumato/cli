@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 use serde::Serialize;
 
 use crate::config::Capability;
+use crate::prompts::PromptProvenance;
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct GenerationRequest {
     pub instruction: String,
     pub sources: Vec<PathBuf>,
@@ -15,13 +15,8 @@ pub struct GenerationRequest {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub enum ResourceKind {
     Slides,
-    Html,
-    Image,
-    Video,
-    Audio,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,6 +28,8 @@ pub struct GenerationOutput {
     pub artifacts: Vec<PathBuf>,
     pub published_artifacts: Vec<PathBuf>,
     pub review: SlideReviewSummary,
+    /// Prompt templates that contributed to model requests in this run.
+    pub prompts: Vec<PromptProvenance>,
 }
 
 #[derive(Clone, Debug, Serialize)]

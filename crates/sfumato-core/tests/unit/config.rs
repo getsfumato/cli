@@ -70,75 +70,16 @@ fn command_theme_wins_over_project_theme() {
 }
 
 #[test]
-fn migrates_global_project_and_registry_configs_with_backups() {
-    let temp = tempfile::tempdir().unwrap();
-    let global_path = temp.path().join("config.toml");
-    let global = GlobalConfig::default_config();
-    let mut global_value = toml::Value::try_from(global).unwrap();
-    global_value
-        .as_table_mut()
-        .unwrap()
-        .remove("schema_version");
-    global_value["user"].as_table_mut().unwrap().insert(
-        "theme".to_string(),
-        toml::Value::String("legacy".to_string()),
-    );
-    global_value["marp"].as_table_mut().unwrap().insert(
-        "theme".to_string(),
-        toml::Value::String("default".to_string()),
-    );
-    global_value.as_table_mut().unwrap().insert(
-        "diagrams".to_string(),
-        toml::Value::Table(toml::Table::from_iter([(
-            "renderer".to_string(),
-            toml::Value::String("mermaid-cli".to_string()),
-        )])),
-    );
-    fs::write(&global_path, toml::to_string_pretty(&global_value).unwrap()).unwrap();
-    migrate_global_config(&global_path).unwrap();
-    let migrated_global: GlobalConfig = read_toml(&global_path).unwrap();
-    assert_eq!(migrated_global.schema_version, CONFIG_SCHEMA_VERSION);
-    assert!(
-        read_toml_value(&global_path)
-            .unwrap()
-            .get("diagrams")
-            .is_none()
-    );
-    assert!(PathBuf::from(format!("{}.bak", global_path.display())).exists());
-
-    let project_path = temp.path().join("project.toml");
-    fs::write(
-        &project_path,
-        "name = \"demo\"\noutput_dir = \"Resources/Sfumato\"\n\n[marp]\ntheme = \"default\"\npdf = true\n",
-    )
-    .unwrap();
-    let project = load_project_config(&project_path, "legacy").unwrap();
-    assert_eq!(project.theme, "legacy");
-    assert_eq!(project.publish_dir, None);
-    assert!(project.marp.unwrap().pdf);
-    assert!(PathBuf::from(format!("{}.bak", project_path.display())).exists());
-
-    let registry_path = temp.path().join("projects.toml");
-    fs::write(&registry_path, "active = \"demo\"\n\n[projects]\n").unwrap();
-    let registry = ProjectRegistry::load_from(&registry_path).unwrap();
-    assert_eq!(registry.schema_version, CONFIG_SCHEMA_VERSION);
-    assert!(PathBuf::from(format!("{}.bak", registry_path.display())).exists());
-}
-
-#[test]
-fn migrates_a_custom_legacy_output_as_publish_destination() {
+fn rejects_legacy_project_config_without_rewriting_it() {
     let temp = tempfile::tempdir().unwrap();
     let project_path = temp.path().join("project.toml");
-    fs::write(
-        &project_path,
-        "schema_version = 2\nname = \"demo\"\ntheme = \"gruvbox\"\noutput_dir = \"Published\"\n",
-    )
-    .unwrap();
+    let legacy = "schema_version = 2\nname = \"demo\"\ntheme = \"gruvbox\"\n";
+    fs::write(&project_path, legacy).unwrap();
 
-    let project = load_project_config(&project_path, "legacy").unwrap();
+    let error = load_project_config(&project_path, "ignored").unwrap_err();
 
-    assert_eq!(project.publish_dir, Some(PathBuf::from("Published")));
-    assert!(PathBuf::from(format!("{}.bak", project_path.display())).exists());
+    assert!(!format!("{error:#}").is_empty());
+    assert_eq!(fs::read_to_string(project_path).unwrap(), legacy);
 }
 
 #[test]
@@ -248,57 +189,15 @@ fn existing_config_without_model_roles_still_loads() {
 }
 
 #[test]
-fn migrates_hybrid_v2_config_with_legacy_inference_and_providers() {
+fn rejects_future_global_config_without_rewriting_it() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("config.toml");
-    let old = r#"
-schema_version = 2
+    let future = "schema_version = 99\n[user]\nlearning_style = []\n";
+    fs::write(&path, future).unwrap();
 
-[user]
-learning_style = ["visual"]
+    let error = read_toml::<GlobalConfig>(&path).unwrap_err();
 
-[inference]
-provider = "ollama"
-model = "llama3.2"
-temperature = 0.5
-max_tokens = 4000
-
-[providers.ollama]
-base_url = "http://localhost:11434/v1"
-api_key = "ollama"
-
-[providers.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[marp]
-pdf = false
-"#;
-    fs::write(&path, old).unwrap();
-    migrate_global_config(&path).unwrap();
-    let migrated: GlobalConfig = read_toml(&path).unwrap();
-    assert!(migrated.connectors.contains_key("ollama"));
-    assert!(migrated.connectors.contains_key("openrouter"));
-    assert_eq!(
-        migrated
-            .defaults
-            .0
-            .get(&Capability::Text)
-            .map(String::as_str),
-        Some("local-text")
-    );
-    let profile = migrated.models.get("local-text").unwrap();
-    assert_eq!(profile.connector, "ollama");
-    assert_eq!(profile.model, "llama3.2");
-    assert_eq!(
-        profile
-            .options
-            .get("temperature")
-            .and_then(toml::Value::as_float),
-        Some(0.5)
-    );
-    let rendered = fs::read_to_string(&path).unwrap();
-    assert!(!rendered.contains("[inference]"));
-    assert!(!rendered.contains("[providers."));
-    assert!(PathBuf::from(format!("{}.bak", path.display())).exists());
+    let message = format!("{error:#}");
+    assert!(message.contains("version") && message.contains("99"));
+    assert_eq!(fs::read_to_string(path).unwrap(), future);
 }

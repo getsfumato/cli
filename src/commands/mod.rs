@@ -3,14 +3,20 @@ use std::{collections::BTreeMap, str::FromStr};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
+use sfumato_adapters::{
+    artifacts::FilesystemArtifactStore,
+    openai_compatible::OpenAiCompatibleProviderFactory,
+    prompts::{LayeredPromptCatalog, PromptOverrideScope},
+};
 
 use crate::{
     cli::{
         Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs, ConfigShowArgs,
-        ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, GenerateCommands,
-        InitProjectArgs, InitTarget, ModelAddArgs, ModelCommands, ModelEditArgs, ModelNameArgs,
-        ModelUseArgs, ProjectCommands, ProjectNameArgs, ProjectShowArgs, SlidesArgs, ThemeCommands,
-        ThemeUseArgs,
+        ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, EditCommands, EditSlidesArgs,
+        GenerateCommands, InitProjectArgs, InitTarget, ModelAddArgs, ModelCommands, ModelEditArgs,
+        ModelNameArgs, ModelUseArgs, ProjectCommands, ProjectNameArgs, ProjectShowArgs,
+        PromptCommands, PromptCustomizeArgs, PromptProjectArgs, PromptScope, PromptShowArgs,
+        SlidesArgs, ThemeCommands, ThemeUseArgs,
     },
     init::InitService,
 };
@@ -21,8 +27,12 @@ use sfumato_core::{
     generation::{GenerationRequest, ResourceKind},
     models::ModelService,
     projects::ProjectService,
+    prompts::{PromptCatalog, PromptId, PromptOrigin},
     providers::TextGenerationEvent,
-    resources::slides::{GenerateSlidesOptions, GenerateSlidesResult, generate_slides},
+    resources::slides::{
+        EditSlidesOptions, EditSlidesRequest, EditSlidesResult, GenerateSlidesOptions,
+        GenerateSlidesResult, edit_slides, generate_slides,
+    },
     themes::ThemeService,
 };
 
@@ -41,8 +51,96 @@ impl RunnableCommand for Commands {
             Self::Connector { command } => command.run().await,
             Self::Model { command } => command.run().await,
             Self::Theme { command } => command.run().await,
+            Self::Prompt { command } => command.run().await,
             Self::Generate { command } => command.run().await,
+            Self::Edit { command } => command.run().await,
         }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for PromptCommands {
+    async fn run(self) -> Result<()> {
+        match self {
+            Self::List(args) => args.list(),
+            Self::Show(args) => args.run().await,
+            Self::Customize(args) => args.run().await,
+            Self::Validate(args) => args.validate(),
+        }
+    }
+}
+
+impl PromptProjectArgs {
+    fn list(self) -> Result<()> {
+        let catalog = prompt_catalog(self.project)?;
+        for info in catalog.list()? {
+            let (_, provenance) = catalog.source(info.id)?;
+            println!("{}\t{}", info.id, prompt_origin_label(&provenance.origin));
+        }
+        Ok(())
+    }
+
+    fn validate(self) -> Result<()> {
+        let catalog = prompt_catalog(self.project)?;
+        let resolved = catalog.validate()?;
+        println!("Validated {} prompt templates.", resolved.len());
+        for prompt in resolved {
+            println!(
+                "{}\t{}\t{}",
+                prompt.id,
+                prompt_origin_label(&prompt.origin),
+                &prompt.content_hash[..12]
+            );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for PromptShowArgs {
+    async fn run(self) -> Result<()> {
+        let id = PromptId::from_str(&self.id)?;
+        let catalog = prompt_catalog(self.project)?;
+        let (source, provenance) = catalog.source(id)?;
+        println!(
+            "# {}\n# origin: {}\n# sha256: {}\n\n{}",
+            id,
+            prompt_origin_label(&provenance.origin),
+            provenance.content_hash,
+            source
+        );
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for PromptCustomizeArgs {
+    async fn run(self) -> Result<()> {
+        let id = PromptId::from_str(&self.id)?;
+        let catalog = prompt_catalog(self.project)?;
+        let scope = match self.scope {
+            PromptScope::User => PromptOverrideScope::User,
+            PromptScope::Project => PromptOverrideScope::Project,
+        };
+        let path = catalog.customize(id, scope)?;
+        println!("Created prompt override at {}", path.display());
+        Ok(())
+    }
+}
+
+fn prompt_catalog(project: Option<String>) -> Result<LayeredPromptCatalog> {
+    let config = EffectiveConfig::load(ConfigOverrides {
+        project,
+        ..Default::default()
+    })?;
+    Ok(LayeredPromptCatalog::for_project(config.project_root)?)
+}
+
+fn prompt_origin_label(origin: &PromptOrigin) -> String {
+    match origin {
+        PromptOrigin::Bundled => "bundled".to_string(),
+        PromptOrigin::User(path) => format!("user:{}", path.display()),
+        PromptOrigin::Project(path) => format!("project:{}", path.display()),
     }
 }
 
@@ -356,6 +454,97 @@ impl RunnableCommand for GenerateCommands {
 }
 
 #[async_trait]
+impl RunnableCommand for EditCommands {
+    async fn run(self) -> Result<()> {
+        match self {
+            Self::Slides(args) => args.run().await,
+        }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for EditSlidesArgs {
+    async fn run(self) -> Result<()> {
+        let json = self.json;
+        let event_sink = (!json).then_some(std::sync::Arc::new(render_generation_event)
+            as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
+        match execute_edit_slides(self, event_sink).await {
+            Ok(result) => render_edit_slides_result(result, json),
+            Err(error) if json => {
+                println!("{}", serde_json::json!({ "error": format!("{error:#}") }));
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+pub(crate) async fn execute_edit_slides(
+    args: EditSlidesArgs,
+    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+) -> Result<EditSlidesResult> {
+    if args.instruction.trim().is_empty() {
+        bail!("Instruction cannot be empty");
+    }
+    let model_overrides = parse_model_overrides(&args.model_overrides)?;
+    if model_overrides
+        .keys()
+        .any(|capability| *capability != Capability::Text)
+    {
+        bail!("Slide editing only accepts a text model override");
+    }
+    let config = EffectiveConfig::load(ConfigOverrides {
+        project: args.project,
+        theme: None,
+        model_overrides,
+        reviewer_model: None,
+        publish_dir: None,
+        pdf: true,
+    })?;
+    let prompt_catalog =
+        std::sync::Arc::new(LayeredPromptCatalog::for_project(&config.project_root)?);
+    let artifact_store = std::sync::Arc::new(FilesystemArtifactStore::default_path()?);
+    let provider_factory = std::sync::Arc::new(OpenAiCompatibleProviderFactory);
+    edit_slides(
+        config,
+        EditSlidesRequest {
+            markdown_path: args.markdown_path,
+            instruction: args.instruction,
+        },
+        EditSlidesOptions {
+            event_sink,
+            prompt_catalog,
+            artifact_store,
+            provider_factory,
+        },
+    )
+    .await
+}
+
+fn render_edit_slides_result(result: EditSlidesResult, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+    for warning in &result.warnings {
+        eprintln!("{warning}");
+    }
+    if result.operations == 0 {
+        println!("No content changes were needed; regenerated the PDF.");
+    } else {
+        println!(
+            "Applied {} patch operation(s) to {} slide(s) with '{}'.",
+            result.operations,
+            result.changed_slides.len(),
+            result.model
+        );
+    }
+    println!("Wrote {}", result.markdown_path.display());
+    println!("Wrote {}", result.pdf_path.display());
+    Ok(())
+}
+
+#[async_trait]
 impl RunnableCommand for SlidesArgs {
     async fn run(self) -> Result<()> {
         let json = self.json;
@@ -393,6 +582,10 @@ pub(crate) async fn execute_slides(
         publish_dir: args.out,
         pdf: args.pdf,
     })?;
+    let prompt_catalog =
+        std::sync::Arc::new(LayeredPromptCatalog::for_project(&config.project_root)?);
+    let artifact_store = std::sync::Arc::new(FilesystemArtifactStore::default_path()?);
+    let provider_factory = std::sync::Arc::new(OpenAiCompatibleProviderFactory);
     let request = GenerationRequest {
         instruction: args.instruction,
         sources: args.inputs,
@@ -408,6 +601,9 @@ pub(crate) async fn execute_slides(
             dry_run: args.dry_run,
             review: !args.no_review,
             event_sink,
+            prompt_catalog,
+            artifact_store,
+            provider_factory,
         },
     )
     .await

@@ -1,0 +1,21 @@
+stateDiagram-v2
+    [*] --> Locked: acquire project artifact lock
+    Locked --> Staging: create unique job staging directory
+    Staging --> Staging: write deck, media, diagrams, theme, and render outputs
+    Staging --> Validating: build complete ResourceArtifactManifest
+    Validating --> RolledBack: missing file, unsafe path, symlink, or cancellation
+    Validating --> Committing: manifest identity and every declared file validate
+    Committing --> Committed: rename staging directory to immutable revision
+    Committed --> Current: atomically replace current.json pointer
+    Current --> Publishing: optional processed PDF publication
+    Publishing --> Completed: atomic publication rename succeeds
+    Publishing --> CompletedWithWarning: publication fails after workspace commit
+    Current --> Completed: no publication requested
+    RolledBack --> [*]
+    Completed --> [*]
+    CompletedWithWarning --> [*]
+
+    note right of Committing
+      The whole revision is one directory rename.
+      Existing revisions are immutable and never replaced.
+    end note
