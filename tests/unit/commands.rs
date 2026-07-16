@@ -89,6 +89,19 @@ fn summarizes_generated_image_results_without_raw_json() {
     assert!(!formatted.contains("markdown_path"));
 }
 
+#[test]
+fn serializes_typed_operation_errors_for_agent_callers() {
+    let error = sfumato_core::errors::SfumatoError::cancelled(Some(
+        sfumato_core::errors::OperationStage::Render,
+    ));
+    let rendered = json_operation_error(&anyhow::Error::new(error));
+
+    assert_eq!(rendered["error"]["code"], "cancelled");
+    assert_eq!(rendered["error"]["class"], "cancelled");
+    assert_eq!(rendered["error"]["stage"], "render");
+    assert_eq!(rendered["error"]["retryable"], false);
+}
+
 fn strip_ansi(value: &str) -> String {
     let mut output = String::new();
     let mut chars = value.chars().peekable();

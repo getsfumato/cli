@@ -2,10 +2,12 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use thiserror::Error;
 
 use crate::config::{EffectiveConfig, ModelProfile};
+use crate::errors::{ErrorClass, OperationStage, SfumatoError};
+use crate::operation::{OperationContext, OperationEventKind};
 use crate::prompts::PromptProvenance;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,7 +216,12 @@ pub struct ToolExecutionRequest {
 
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
-    async fn execute(&self, request: ToolExecutionRequest) -> Result<String>;
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<String>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -238,8 +245,12 @@ fn function_tool_kind() -> String {
 
 #[async_trait]
 pub trait TextGenerationProvider: Send + Sync {
-    async fn generate_text(&self, request: TextGenerationRequest)
-    -> Result<TextGenerationResponse>;
+    async fn generate_text(
+        &self,
+        request: TextGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<TextGenerationResponse>;
 }
 
 /// Provider-neutral conversation message used for one model turn.
@@ -289,7 +300,12 @@ pub struct TextModelResponse {
 #[async_trait]
 pub trait TextModel: Send + Sync {
     /// Performs one model turn without executing tools or retrying.
-    async fn complete(&self, request: TextModelRequest) -> Result<TextModelResponse>;
+    async fn complete(
+        &self,
+        request: TextModelRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<TextModelResponse>;
 }
 
 /// Application-level agent loop that executes provider-neutral tools.
@@ -309,20 +325,36 @@ impl TextGenerationProvider for AgentRunner {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
     ) -> Result<TextGenerationResponse> {
+        operation.checkpoint(stage)?;
         let mut messages = vec![
             ModelMessage::System(request.system_prompt.clone()),
             ModelMessage::User(request.user_prompt.clone()),
         ];
 
         for round in 0..request.max_tool_rounds {
+            operation.checkpoint(stage)?;
+            operation.emit(
+                stage,
+                OperationEventKind::Progress,
+                BTreeMap::from([
+                    ("activity".to_string(), "model_request".to_string()),
+                    ("round".to_string(), (round + 1).to_string()),
+                ]),
+            );
             request.emit(TextGenerationEvent::RequestStarted { round: round + 1 });
             let response = self
                 .model
-                .complete(TextModelRequest {
-                    messages: messages.clone(),
-                    tools: request.tools.clone(),
-                })
+                .complete(
+                    TextModelRequest {
+                        messages: messages.clone(),
+                        tools: request.tools.clone(),
+                    },
+                    operation,
+                    stage,
+                )
                 .await?;
             if response.tool_calls.is_empty() {
                 return complete_agent_response(&request, response.content);
@@ -336,15 +368,28 @@ impl TextGenerationProvider for AgentRunner {
                 tool_calls: response.tool_calls.clone(),
             });
             for tool_call in response.tool_calls {
+                operation.checkpoint(stage)?;
+                operation.emit(
+                    stage,
+                    OperationEventKind::Progress,
+                    BTreeMap::from([
+                        ("activity".to_string(), "tool_call".to_string()),
+                        ("tool".to_string(), tool_call.function.name.clone()),
+                    ]),
+                );
                 request.emit(TextGenerationEvent::ToolCallRequested {
                     name: tool_call.function.name.clone(),
                     arguments: tool_call.function.arguments.clone(),
                 });
                 let result = match executor
-                    .execute(ToolExecutionRequest {
-                        name: tool_call.function.name.clone(),
-                        arguments: tool_call.function.arguments.clone(),
-                    })
+                    .execute(
+                        ToolExecutionRequest {
+                            name: tool_call.function.name.clone(),
+                            arguments: tool_call.function.arguments.clone(),
+                        },
+                        operation,
+                        stage,
+                    )
                     .await
                 {
                     Ok(result) => {
@@ -355,6 +400,12 @@ impl TextGenerationProvider for AgentRunner {
                         result
                     }
                     Err(error) => {
+                        if error
+                            .downcast_ref::<SfumatoError>()
+                            .is_some_and(|error| error.class == ErrorClass::Cancelled)
+                        {
+                            return Err(error);
+                        }
                         let error = format!("{error:#}");
                         request.emit(TextGenerationEvent::ToolCallFailed {
                             name: tool_call.function.name.clone(),
@@ -378,12 +429,17 @@ impl TextGenerationProvider for AgentRunner {
         request.emit(TextGenerationEvent::RequestStarted {
             round: request.max_tool_rounds + 1,
         });
+        operation.checkpoint(stage)?;
         let response = self
             .model
-            .complete(TextModelRequest {
-                messages,
-                tools: Vec::new(),
-            })
+            .complete(
+                TextModelRequest {
+                    messages,
+                    tools: Vec::new(),
+                },
+                operation,
+                stage,
+            )
             .await?;
         if !response.tool_calls.is_empty() {
             bail!("Model requested tools after tool calling was disabled");
@@ -420,6 +476,8 @@ pub trait ImageGenerationProvider: Send + Sync {
     async fn generate_image(
         &self,
         request: ImageGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
     ) -> Result<ImageGenerationResponse>;
 }
 /// Port for resolving model profiles into provider implementations.

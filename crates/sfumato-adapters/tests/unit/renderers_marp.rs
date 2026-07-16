@@ -98,7 +98,13 @@ async fn detects_real_overflow_when_dependencies_are_available() {
         .join("\n");
     std::fs::write(&markdown, format!("---\nmarp: true\ntheme: overflow-test\n---\n\n# Dense\n\n{dense}\n\n---\n\n# Short\n\nFits.")).unwrap();
     let issues = MarpCliRenderer
-        .inspect_layout(&markdown, &theme, &html, Some(&browser))
+        .inspect_layout(
+            &markdown,
+            &theme,
+            &html,
+            Some(&browser),
+            &sfumato_core::operation::OperationContext::detached(),
+        )
         .await
         .unwrap();
     assert_eq!(issues.first().map(|issue| issue.slide), Some(1));

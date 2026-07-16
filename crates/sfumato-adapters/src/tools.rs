@@ -11,6 +11,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sfumato_core::{
+    errors::OperationStage,
+    operation::OperationContext,
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
         ImageGenerationRequest, ToolDefinition, ToolExecutionRequest, ToolExecutor,
@@ -138,7 +140,13 @@ impl FilesystemToolExecutor {
 
 #[async_trait]
 impl ToolExecutor for FilesystemToolExecutor {
-    async fn execute(&self, request: ToolExecutionRequest) -> Result<String> {
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<String> {
+        operation.checkpoint(stage)?;
         match request.name.as_str() {
             "sfumato_list_directory" => {
                 let path = string_arg(&request.arguments, "path")?;
@@ -170,7 +178,13 @@ struct ImagePromptContext<'a> {
 }
 
 impl ImageGenerationTool {
-    async fn execute(&self, arguments: &Value) -> Result<String> {
+    async fn execute(
+        &self,
+        arguments: &Value,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<String> {
+        operation.checkpoint(stage)?;
         let prompt = string_arg(arguments, "prompt")?;
         let alt_text = optional_string_arg(arguments, "alt_text")?
             .unwrap_or_else(|| "Generated educational illustration".to_string());
@@ -196,10 +210,15 @@ impl ImageGenerationTool {
         let response = self
             .config
             .provider
-            .generate_image(ImageGenerationRequest {
-                prompt: rendered.text,
-            })
+            .generate_image(
+                ImageGenerationRequest {
+                    prompt: rendered.text,
+                },
+                operation,
+                stage,
+            )
             .await?;
+        operation.checkpoint(stage)?;
         if response.bytes.len() > MAX_GENERATED_IMAGE_BYTES {
             bail!(
                 "Generated image is {} bytes; the current limit is {} bytes",
@@ -237,16 +256,21 @@ struct GenerationToolExecutor {
 
 #[async_trait]
 impl ToolExecutor for GenerationToolExecutor {
-    async fn execute(&self, request: ToolExecutionRequest) -> Result<String> {
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<String> {
         if request.name == "sfumato_image_gen" {
             return self
                 .image
                 .as_ref()
                 .context("No image model is configured for this project")?
-                .execute(&request.arguments)
+                .execute(&request.arguments, operation, stage)
                 .await;
         }
-        self.filesystem.execute(request).await
+        self.filesystem.execute(request, operation, stage).await
     }
 }
 

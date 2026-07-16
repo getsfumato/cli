@@ -870,12 +870,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "futures-sink"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
-
-[[package]]
 name = "futures-task"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2598,7 +2592,6 @@ dependencies = [
  "sfumato-domain",
  "tachyonfx",
  "tokio",
- "tokio-util",
  "toml",
  "tui-widgets",
 ]
@@ -2633,18 +2626,15 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "dirs",
  "json-patch",
  "serde",
  "serde_json",
  "sfumato-domain",
  "sha2",
  "slug",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",
- "walkdir",
 ]
 
 [[package]]
@@ -3076,20 +3066,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
- "tokio",
-]
-
-[[package]]
-name = "tokio-util"
-version = "0.7.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-sink",
- "futures-util",
- "pin-project-lite",
  "tokio",
 ]
 

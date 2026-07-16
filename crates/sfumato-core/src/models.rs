@@ -9,6 +9,7 @@ use crate::{
 
 pub struct ModelService {
     config: GlobalConfig,
+    revision: String,
     global_repository: Arc<dyn GlobalConfigRepository>,
     project_repository: Arc<dyn ProjectRepository>,
 }
@@ -70,8 +71,10 @@ impl ModelService {
         global_repository: Arc<dyn GlobalConfigRepository>,
         project_repository: Arc<dyn ProjectRepository>,
     ) -> Result<Self> {
+        let snapshot = global_repository.load_snapshot()?;
         Ok(Self {
-            config: global_repository.load()?,
+            config: snapshot.value,
+            revision: snapshot.revision,
             global_repository,
             project_repository,
         })
@@ -259,7 +262,8 @@ impl ModelService {
         }
 
         if let Some(project_name) = project {
-            let mut project_config = self.project_repository.load(Some(project_name))?;
+            let snapshot = self.project_repository.load_snapshot(Some(project_name))?;
+            let mut project_config = snapshot.value;
             match selection {
                 ModelSelection::Capability(capability) => {
                     project_config
@@ -272,7 +276,8 @@ impl ModelService {
                         .insert(role, profile_name.to_string());
                 }
             }
-            self.project_repository.save(&project_config)?;
+            self.project_repository
+                .save_if_revision(&project_config, &snapshot.revision)?;
             return Ok(ModelDefaultChanged {
                 selection,
                 profile: profile_name.to_string(),
@@ -301,8 +306,11 @@ impl ModelService {
         })
     }
 
-    fn save(&self) -> Result<()> {
-        self.global_repository.save(&self.config)
+    fn save(&mut self) -> Result<()> {
+        self.revision = self
+            .global_repository
+            .save_if_revision(&self.config, &self.revision)?;
+        Ok(())
     }
 }
 

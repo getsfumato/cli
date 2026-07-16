@@ -125,6 +125,8 @@ pub enum OperationStage {
     RenderPrompt,
     /// Generate an initial resource draft.
     Draft,
+    /// Apply focused edits to an existing resource.
+    Edit,
     /// Review generated content.
     Review,
     /// Inspect rendered layout and media fitting.
@@ -147,6 +149,7 @@ impl OperationStage {
             Self::ReadSources => "read_sources",
             Self::RenderPrompt => "render_prompt",
             Self::Draft => "draft",
+            Self::Edit => "edit",
             Self::Review => "review",
             Self::InspectLayout => "inspect_layout",
             Self::Repair => "repair",
@@ -201,6 +204,11 @@ impl SfumatoError {
             message: message.into(),
             details: BTreeMap::new(),
         }
+    }
+
+    /// Creates a public error from adapter or workflow text after redaction.
+    pub fn sanitized(code: ErrorCode, class: ErrorClass, message: impl fmt::Display) -> Self {
+        Self::new(code, class, sanitize_message(&message.to_string()))
     }
 
     /// Creates a cooperative-cancellation error at an optional stage.
@@ -261,3 +269,40 @@ impl Error for SfumatoError {}
 
 /// Result type returned by public Sfumato operations.
 pub type SfumatoResult<T> = Result<T, SfumatoError>;
+
+fn sanitize_message(message: &str) -> String {
+    let mut sanitized = message
+        .split_whitespace()
+        .map(redact_token)
+        .collect::<Vec<_>>()
+        .join(" ");
+    const MAX_MESSAGE_CHARS: usize = 2_000;
+    if sanitized.chars().count() > MAX_MESSAGE_CHARS {
+        let boundary = sanitized
+            .char_indices()
+            .nth(MAX_MESSAGE_CHARS)
+            .map(|(index, _)| index)
+            .unwrap_or(sanitized.len());
+        sanitized.truncate(boundary);
+        sanitized.push_str("...");
+    }
+    sanitized
+}
+
+fn redact_token(token: &str) -> String {
+    let normalized = token.trim_matches(|character: char| {
+        matches!(character, '"' | '\'' | ',' | ':' | '{' | '}' | '[' | ']')
+    });
+    if normalized.starts_with("sk-")
+        || normalized.starts_with("sk_or_")
+        || normalized.starts_with("sk-or-")
+        || normalized.len() > 80
+            && normalized
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+    {
+        token.replace(normalized, "[REDACTED]")
+    } else {
+        token.to_string()
+    }
+}

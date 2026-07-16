@@ -350,6 +350,103 @@ impl GlobalConfig {
             },
         }
     }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != CONFIG_SCHEMA_VERSION {
+            bail!(
+                "Global config schema {} is invalid; expected {}",
+                self.schema_version,
+                CONFIG_SCHEMA_VERSION
+            );
+        }
+        if self
+            .user
+            .learning_style
+            .iter()
+            .any(|style| style.trim().is_empty())
+        {
+            bail!("Learning styles cannot contain empty values");
+        }
+        for (name, connector) in &self.connectors {
+            if name.trim().is_empty() || connector.base_url.trim().is_empty() {
+                bail!("Connector names and base URLs cannot be empty");
+            }
+        }
+        for (name, profile) in &self.models {
+            if !self.connectors.contains_key(&profile.connector) {
+                bail!(
+                    "Model profile '{name}' references unknown connector '{}'",
+                    profile.connector
+                );
+            }
+            if profile.model.trim().is_empty() || profile.capabilities.is_empty() {
+                bail!("Model profile '{name}' requires a model ID and capabilities");
+            }
+            if profile
+                .options
+                .temperature
+                .is_some_and(|value| !(0.0..=2.0).contains(&value))
+            {
+                bail!("Model profile '{name}' temperature must be between 0 and 2");
+            }
+            if profile
+                .options
+                .top_p
+                .is_some_and(|value| !(0.0..=1.0).contains(&value))
+            {
+                bail!("Model profile '{name}' top_p must be between 0 and 1");
+            }
+            if profile.options.max_tokens == Some(0) || profile.options.max_tool_rounds == Some(0) {
+                bail!("Model profile '{name}' token and tool limits must be positive");
+            }
+        }
+        for (capability, profile_name) in &self.defaults.0 {
+            let profile = self.models.get(profile_name).with_context(|| {
+                format!(
+                    "Default '{}' references unknown model profile '{profile_name}'",
+                    capability.as_str()
+                )
+            })?;
+            if !profile.capabilities.contains(capability) {
+                bail!(
+                    "Default '{}' uses model profile '{profile_name}', which lacks that capability",
+                    capability.as_str()
+                );
+            }
+        }
+        for (role, profile_name) in &self.model_roles {
+            let profile = self.models.get(profile_name).with_context(|| {
+                format!(
+                    "Model role '{}' references unknown profile '{profile_name}'",
+                    role.as_str()
+                )
+            })?;
+            if !profile.capabilities.contains(&role.required_capability()) {
+                bail!(
+                    "Model role '{}' requires a text-capable profile",
+                    role.as_str()
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ProjectConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != CONFIG_SCHEMA_VERSION {
+            bail!(
+                "Project config schema {} is invalid; expected {}",
+                self.schema_version,
+                CONFIG_SCHEMA_VERSION
+            );
+        }
+        validate_project_name(&self.name)?;
+        if self.theme.trim().is_empty() {
+            bail!("Project theme cannot be empty");
+        }
+        Ok(())
+    }
 }
 
 impl ProjectRegistry {

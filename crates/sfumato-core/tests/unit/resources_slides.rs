@@ -31,6 +31,8 @@ impl TextGenerationProvider for ImmediateFailureProvider {
     async fn generate_text(
         &self,
         _request: TextGenerationRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
     ) -> Result<TextGenerationResponse> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         anyhow::bail!("connector unavailable")
@@ -42,6 +44,8 @@ impl TextGenerationProvider for LimitThenSuccessProvider {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
     ) -> Result<TextGenerationResponse> {
         let mut prompts = self.prompts.lock().unwrap();
         prompts.push(request.user_prompt);
@@ -79,6 +83,8 @@ async fn token_limit_retries_once_with_the_compact_request() {
         TextGenerationRequest::new("system".into(), "full payload".into()),
         TextGenerationRequest::new("system".into(), "compact payload".into()),
         GenerationStage::SemanticReview,
+        &OperationContext::detached(),
+        OperationStage::Review,
         &sink,
     )
     .await
@@ -115,6 +121,8 @@ async fn unrelated_provider_errors_do_not_trigger_compaction() {
         TextGenerationRequest::new("system".into(), "full payload".into()),
         TextGenerationRequest::new("system".into(), "compact payload".into()),
         GenerationStage::Draft,
+        &OperationContext::detached(),
+        OperationStage::Draft,
         &None,
     )
     .await

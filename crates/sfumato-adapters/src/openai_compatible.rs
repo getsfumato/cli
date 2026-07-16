@@ -7,12 +7,16 @@ use std::{collections::BTreeMap, time::Duration};
 
 use sfumato_core::{
     config::{Capability, EffectiveConfig, ModelProfile, OpenAiCompatibleConnectorConfig},
+    errors::OperationStage,
+    operation::OperationContext,
     providers::{
         AgentRunner, ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
         ModelMessage, ProviderFactory, TextGenerationLimitError, TextGenerationProvider, TextModel,
         TextModelRequest, TextModelResponse, ToolCall, ToolDefinition,
     },
 };
+
+use crate::runtime::await_operation;
 
 #[derive(Clone, Debug)]
 pub struct OpenAiCompatibleConnector {
@@ -150,7 +154,12 @@ impl OpenAiCompatibleTextProvider {
 
 #[async_trait]
 impl TextModel for OpenAiCompatibleTextProvider {
-    async fn complete(&self, request: TextModelRequest) -> Result<TextModelResponse> {
+    async fn complete(
+        &self,
+        request: TextModelRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<TextModelResponse> {
         let messages = request
             .messages
             .into_iter()
@@ -158,7 +167,11 @@ impl TextModel for OpenAiCompatibleTextProvider {
             .collect();
         let tools = (!request.tools.is_empty()).then_some(request.tools);
         let parsed = self
-            .send_chat_completion(&self.request_body_for_messages(messages, tools))
+            .send_chat_completion(
+                &self.request_body_for_messages(messages, tools),
+                operation,
+                stage,
+            )
             .await?;
         let usage = parsed.usage;
         let choice = parsed
@@ -233,23 +246,24 @@ impl ImageGenerationProvider for OpenAiCompatibleImageProvider {
     async fn generate_image(
         &self,
         request: ImageGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
     ) -> Result<ImageGenerationResponse> {
         let body = self.request_body(&request)?;
-        let response = self
-            .connector
-            .post("images")?
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| {
-                format!(
-                    "Could not reach OpenAI-compatible connector '{}' for image generation",
-                    self.connector.name
-                )
-            })?;
+        let response = await_operation(
+            operation,
+            stage,
+            self.connector.post("images")?.json(&body).send(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Could not reach OpenAI-compatible connector '{}' for image generation",
+                self.connector.name
+            )
+        })?;
         let status = response.status();
-        let text = response
-            .text()
+        let text = await_operation(operation, stage, response.text())
             .await
             .context("Could not read image generation response body")?;
         if !status.is_success() {
@@ -305,22 +319,23 @@ impl OpenAiCompatibleTextProvider {
     async fn send_chat_completion(
         &self,
         body: &ChatCompletionsRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
     ) -> Result<ChatCompletionsResponse> {
-        let response = self
-            .connector
-            .post("chat/completions")?
-            .json(body)
-            .send()
-            .await
-            .with_context(|| {
-                format!(
-                    "Could not reach OpenAI-compatible connector '{}'",
-                    self.connector.name
-                )
-            })?;
+        let response = await_operation(
+            operation,
+            stage,
+            self.connector.post("chat/completions")?.json(body).send(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Could not reach OpenAI-compatible connector '{}'",
+                self.connector.name
+            )
+        })?;
         let status = response.status();
-        let text = response
-            .text()
+        let text = await_operation(operation, stage, response.text())
             .await
             .context("Could not read connector response body")?;
         if !status.is_success() {

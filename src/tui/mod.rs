@@ -15,15 +15,20 @@ use ratatui::{
 };
 use ratatui_image::{Resize, StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use serde_json::Value;
-use sfumato_adapters::prompts::{LayeredPromptCatalog, PromptOverrideScope};
+mod effects;
+mod model;
+mod reducer;
+mod view;
+
+use model::OperationLifecycle;
 use sfumato_core::{
     application::SfumatoApplication,
-    config::{
-        Capability, ConfigOverrides, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile,
-    },
+    config::{Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile},
     config_editor::ConfigTarget,
     connectors::ConnectorPreset,
-    prompts::{PromptCatalog, PromptId, PromptOrigin},
+    errors::{ErrorClass, OperationStage, SfumatoError},
+    operation::{EventSink, EventSinkError, OperationContext, OperationEvent, OperationEventKind},
+    prompts::{PromptId, PromptOrigin, PromptOverrideScope},
     providers::{GenerationStage, TextGenerationEvent},
     resources::slides::{EditSlidesResult, GenerateSlidesResult},
 };
@@ -33,7 +38,6 @@ use tokio::{
     sync::mpsc::{Receiver, Sender, channel},
     task::JoinHandle,
 };
-use tokio_util::sync::CancellationToken;
 use tui_widgets::big_text::{BigText, PixelSize};
 
 use crate::{
@@ -88,7 +92,7 @@ async fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 
     while !app.should_quit {
         if app.dirty {
-            terminal.draw(|frame| app.draw(frame))?;
+            terminal.draw(|frame| view::draw(app, frame))?;
             app.dirty = false;
         }
         tokio::select! {
@@ -643,12 +647,57 @@ impl Activity {
             },
         }
     }
+
+    fn from_operation_event(event: &OperationEvent) -> Option<Self> {
+        if event.kind == OperationEventKind::Progress {
+            return None;
+        }
+        let title = operation_stage_label(event.stage).to_string();
+        let detail = event
+            .fields
+            .iter()
+            .map(|(key, value)| format!("{key}: {value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(Self {
+            kind: match event.kind {
+                OperationEventKind::Completed => ActivityKind::Success,
+                OperationEventKind::Warning | OperationEventKind::Retry => ActivityKind::Warning,
+                OperationEventKind::Started | OperationEventKind::Progress => ActivityKind::Model,
+                _ => ActivityKind::Model,
+            },
+            title,
+            detail,
+            image_path: None,
+        })
+    }
+}
+
+fn operation_stage_label(stage: OperationStage) -> &'static str {
+    match stage {
+        OperationStage::Resolve => "Resolving configuration",
+        OperationStage::ReadSources => "Reading source material",
+        OperationStage::RenderPrompt => "Rendering prompts",
+        OperationStage::Draft => "Drafting resource",
+        OperationStage::Edit => "Editing resource",
+        OperationStage::Review => "Reviewing content",
+        OperationStage::InspectLayout => "Inspecting layout",
+        OperationStage::Repair => "Repairing resource",
+        OperationStage::Render => "Rendering artifacts",
+        OperationStage::CommitArtifacts => "Committing revision",
+        OperationStage::Publish => "Publishing output",
+        _ => "Running operation",
+    }
 }
 
 enum UiMessage {
     GenerationEvent {
         job_id: u64,
         event: TextGenerationEvent,
+    },
+    OperationEvent {
+        job_id: u64,
+        event: OperationEvent,
     },
     ResourceFinished {
         job_id: u64,
@@ -710,9 +759,7 @@ struct App {
     should_quit: bool,
     sender: Sender<UiMessage>,
     messages: Receiver<UiMessage>,
-    next_job_id: u64,
-    active_job_id: Option<u64>,
-    cancellation: Option<CancellationToken>,
+    jobs: OperationLifecycle,
     active_task: Option<JoinHandle<()>>,
     picker: Picker,
     image: Option<StatefulProtocol>,
@@ -746,9 +793,7 @@ impl App {
             should_quit: false,
             sender,
             messages,
-            next_job_id: 1,
-            active_job_id: None,
-            cancellation: None,
+            jobs: OperationLifecycle::default(),
             active_task: None,
             picker,
             image: None,
@@ -1323,34 +1368,18 @@ impl App {
         self.resource_operation = ResourceOperation::Generate;
         self.transition(Screen::Running);
 
-        let job_id = self.begin_job();
-        let cancellation = self
-            .cancellation
-            .as_ref()
-            .expect("a started job has a cancellation token")
-            .clone();
+        let (job_id, operation) = self.begin_job();
         let sender = self.sender.clone();
         let application = Arc::clone(&self.application);
-        let sink_sender = sender.clone();
-        let sink = Arc::new(move |event| {
-            let _ = sink_sender.try_send(UiMessage::GenerationEvent { job_id, event });
-        });
-        self.active_task = Some(tokio::spawn(async move {
-            tokio::select! {
-                () = cancellation.cancelled() => {
-                    let _ = sender.send(UiMessage::ResourceCancelled { job_id }).await;
-                }
-                result = execute_slides(&application, args, Some(sink)) => {
-                    let result = result
-                        .map(ResourceResult::Generated)
-                        .map_err(|error| format!("{error:#}"));
-                    let _ = sender.send(UiMessage::ResourceFinished {
-                        job_id,
-                        result: Box::new(result),
-                    }).await;
-                }
-            }
-        }));
+        let sink = effects::generation_event_sink(job_id, sender.clone());
+        self.active_task = Some(effects::spawn_generation(
+            job_id,
+            application,
+            args,
+            sink,
+            operation,
+            sender,
+        ));
     }
 
     fn start_edit(&mut self) {
@@ -1371,49 +1400,29 @@ impl App {
         self.resource_operation = ResourceOperation::Edit;
         self.transition(Screen::Running);
 
-        let job_id = self.begin_job();
-        let cancellation = self
-            .cancellation
-            .as_ref()
-            .expect("a started job has a cancellation token")
-            .clone();
+        let (job_id, operation) = self.begin_job();
         let sender = self.sender.clone();
         let application = Arc::clone(&self.application);
-        let sink_sender = sender.clone();
-        let sink = Arc::new(move |event| {
-            let _ = sink_sender.try_send(UiMessage::GenerationEvent { job_id, event });
-        });
-        self.active_task = Some(tokio::spawn(async move {
-            tokio::select! {
-                () = cancellation.cancelled() => {
-                    let _ = sender.send(UiMessage::ResourceCancelled { job_id }).await;
-                }
-                result = execute_edit_slides(&application, args, Some(sink)) => {
-                    let result = result
-                        .map(ResourceResult::Edited)
-                        .map_err(|error| format!("{error:#}"));
-                    let _ = sender.send(UiMessage::ResourceFinished {
-                        job_id,
-                        result: Box::new(result),
-                    }).await;
-                }
-            }
-        }));
+        let sink = effects::generation_event_sink(job_id, sender.clone());
+        self.active_task = Some(effects::spawn_edit(
+            job_id,
+            application,
+            args,
+            sink,
+            operation,
+            sender,
+        ));
     }
 
-    fn begin_job(&mut self) -> u64 {
+    fn begin_job(&mut self) -> (u64, OperationContext) {
         self.cancel_active_job();
-        let job_id = self.next_job_id;
-        self.next_job_id = self.next_job_id.wrapping_add(1).max(1);
-        self.active_job_id = Some(job_id);
-        self.cancellation = Some(CancellationToken::new());
-        job_id
+        let job_id = self.jobs.next_job_id();
+        let events = effects::operation_event_sink(job_id, self.sender.clone());
+        self.jobs.begin(events)
     }
 
     fn cancel_active_job(&self) {
-        if let Some(cancellation) = &self.cancellation {
-            cancellation.cancel();
-        }
+        self.jobs.cancel();
     }
 
     async fn shutdown(&mut self) {
@@ -1463,74 +1472,7 @@ impl App {
     }
 
     fn handle_message(&mut self, message: UiMessage) {
-        match message {
-            UiMessage::GenerationEvent { job_id, event } => {
-                if self.active_job_id != Some(job_id) {
-                    return;
-                }
-                if let TextGenerationEvent::StageStarted { stage, .. } = &event {
-                    self.current_stage = Some(*stage);
-                }
-                let activity = Activity::from_event(&event);
-                let image_path = activity.image_path.clone();
-                self.activities.push(activity);
-                self.activity_index = self.activities.len().saturating_sub(1);
-                if let Some(path) = image_path {
-                    self.load_image(&path);
-                }
-            }
-            UiMessage::ResourceFinished { job_id, result } => {
-                if self.active_job_id != Some(job_id) {
-                    return;
-                }
-                self.active_job_id = None;
-                self.cancellation = None;
-                self.active_task = None;
-                match *result {
-                    Ok(result) => {
-                        for warning in result.warnings() {
-                            self.activities.push(Activity {
-                                kind: ActivityKind::Warning,
-                                title: "Resource warning".to_string(),
-                                detail: warning.clone(),
-                                image_path: None,
-                            });
-                        }
-                        self.status = Some((result.completion_message().to_string(), false));
-                        self.result = Some(result);
-                    }
-                    Err(error) => {
-                        self.generation_failed = true;
-                        self.activities.push(Activity {
-                            kind: ActivityKind::Warning,
-                            title: "Resource operation failed".to_string(),
-                            detail: error.clone(),
-                            image_path: None,
-                        });
-                        self.status = Some((error, true));
-                    }
-                }
-                self.activity_index = self.activities.len().saturating_sub(1);
-                self.transition(Screen::Complete);
-            }
-            UiMessage::ResourceCancelled { job_id } => {
-                if self.active_job_id != Some(job_id) {
-                    return;
-                }
-                self.active_job_id = None;
-                self.cancellation = None;
-                self.active_task = None;
-                self.status = Some(("Operation cancelled".to_string(), false));
-                self.activities.push(Activity {
-                    kind: ActivityKind::Warning,
-                    title: "Operation cancelled".to_string(),
-                    detail: "No staged artifacts were committed.".to_string(),
-                    image_path: None,
-                });
-                self.activity_index = self.activities.len().saturating_sub(1);
-                self.transition(Screen::Complete);
-            }
-        }
+        reducer::reduce_message(self, message);
     }
 
     fn load_selected_image(&mut self) {
@@ -1556,31 +1498,6 @@ impl App {
                 ));
             }
         }
-    }
-
-    fn draw(&mut self, frame: &mut Frame<'_>) {
-        let area = frame.area();
-        frame.render_widget(Block::new().style(Style::default().bg(BG).fg(TEXT)), area);
-        let [header, body, footer] = Layout::vertical([
-            Constraint::Length(if area.height >= 24 { 6 } else { 3 }),
-            Constraint::Min(8),
-            Constraint::Length(2),
-        ])
-        .areas(area);
-        self.draw_header(frame, header);
-        match self.screen {
-            Screen::Home => self.draw_home(frame, body),
-            Screen::Browse(section) => self.draw_browse(frame, body, section),
-            Screen::Generate => self.draw_generate(frame, body),
-            Screen::Edit => self.draw_edit(frame, body),
-            Screen::Running | Screen::Complete => self.draw_generation(frame, body),
-        }
-        if self.operation.is_some() {
-            self.draw_operation(frame, body);
-        }
-        self.draw_footer(frame, footer);
-        self.effects
-            .process_effects(TICK_RATE.into(), frame.buffer_mut(), area);
     }
 
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -2292,11 +2209,11 @@ fn execute_operation(form: &OperationForm, application: &SfumatoApplication) -> 
                     .as_deref()
                     .context("Prompt identifier is missing")?,
             )?;
-            let path = tui_prompt_catalog(application)?.customize(id, scope)?;
+            let path = application.customize_prompt(id, scope, None)?;
             Ok(format!("Created prompt override at {}", path.display()))
         }
         OperationKind::PromptValidate => {
-            let prompts = tui_prompt_catalog(application)?.validate()?;
+            let prompts = application.validate_prompts(None)?;
             Ok(format!("Validated {} prompt templates", prompts.len()))
         }
         OperationKind::ConfigSet => {
@@ -2473,31 +2390,29 @@ fn load_section(section: Section, application: &SfumatoApplication) -> Result<Ve
                 })
             })
             .collect(),
-        Section::Prompts => {
-            let catalog = tui_prompt_catalog(application)?;
-            catalog
-                .list()?
-                .into_iter()
-                .map(|template| {
-                    let (source, provenance) = catalog.source(template.id)?;
-                    let active = !matches!(provenance.origin, PromptOrigin::Bundled);
-                    let origin = match &provenance.origin {
-                        PromptOrigin::Bundled => "bundled".to_string(),
-                        PromptOrigin::User(path) => format!("user: {}", path.display()),
-                        PromptOrigin::Project(path) => format!("project: {}", path.display()),
-                    };
-                    Ok(BrowseRow {
-                        title: template.id.to_string(),
-                        subtitle: origin,
-                        detail: format!(
-                            "SHA-256: {}\nVersion: {}\n\n{}",
-                            provenance.content_hash, provenance.version, source
-                        ),
-                        active,
-                    })
+        Section::Prompts => application
+            .list_prompts(None)?
+            .into_iter()
+            .map(|template| {
+                let source = application.show_prompt(template.id, None)?;
+                let provenance = template.provenance;
+                let active = !matches!(provenance.origin, PromptOrigin::Bundled);
+                let origin = match &provenance.origin {
+                    PromptOrigin::Bundled => "bundled".to_string(),
+                    PromptOrigin::User(path) => format!("user: {}", path.display()),
+                    PromptOrigin::Project(path) => format!("project: {}", path.display()),
+                };
+                Ok(BrowseRow {
+                    title: template.id.to_string(),
+                    subtitle: origin,
+                    detail: format!(
+                        "SHA-256: {}\nVersion: {}\n\n{}",
+                        provenance.content_hash, provenance.version, source.text
+                    ),
+                    active,
                 })
-                .collect()
-        }
+            })
+            .collect(),
         Section::Configuration => {
             let rows = [
                 ("Effective", ConfigTarget::Effective),
@@ -2535,11 +2450,6 @@ fn load_section(section: Section, application: &SfumatoApplication) -> Result<Ve
             }])
         }
     }
-}
-
-fn tui_prompt_catalog(application: &SfumatoApplication) -> Result<LayeredPromptCatalog> {
-    let config = application.resolve_config(ConfigOverrides::default())?;
-    Ok(LayeredPromptCatalog::for_project(config.project_root)?)
 }
 
 fn panel(title: &'static str) -> Block<'static> {

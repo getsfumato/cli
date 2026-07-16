@@ -19,6 +19,7 @@ pub enum ConnectorPreset {
 
 pub struct ConnectorService {
     config: GlobalConfig,
+    revision: String,
     repository: Arc<dyn GlobalConfigRepository>,
 }
 
@@ -28,10 +29,19 @@ pub struct ConnectorSummary {
     pub base_url: String,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ConnectorDetails {
+    pub base_url: String,
+    pub credential: Option<String>,
+    pub headers: BTreeMap<String, String>,
+}
+
 impl ConnectorService {
     pub fn new(repository: Arc<dyn GlobalConfigRepository>) -> Result<Self> {
+        let snapshot = repository.load_snapshot()?;
         Ok(Self {
-            config: repository.load()?,
+            config: snapshot.value,
+            revision: snapshot.revision,
             repository,
         })
     }
@@ -47,12 +57,34 @@ impl ConnectorService {
             .collect()
     }
 
-    pub fn show(&self, name: &str) -> Result<OpenAiCompatibleConnectorConfig> {
-        self.config
+    pub fn show(&self, name: &str) -> Result<ConnectorDetails> {
+        let connector = self
+            .config
             .connectors
             .get(name)
-            .cloned()
-            .with_context(|| format!("Connector '{name}' was not found"))
+            .with_context(|| format!("Connector '{name}' was not found"))?;
+        Ok(ConnectorDetails {
+            base_url: connector.base_url.clone(),
+            credential: connector.credential.as_ref().map(ToString::to_string),
+            headers: connector
+                .headers
+                .iter()
+                .map(|(name, value)| {
+                    let normalized = name.to_ascii_lowercase();
+                    let sensitive = ["authorization", "key", "token", "secret", "cookie"]
+                        .iter()
+                        .any(|fragment| normalized.contains(fragment));
+                    (
+                        name.clone(),
+                        if sensitive {
+                            "[REDACTED]".to_string()
+                        } else {
+                            value.clone()
+                        },
+                    )
+                })
+                .collect(),
+        })
     }
 
     pub fn setup(
@@ -89,7 +121,9 @@ impl ConnectorService {
                 entry.insert(connector);
             }
         }
-        self.repository.save(&self.config)?;
+        self.revision = self
+            .repository
+            .save_if_revision(&self.config, &self.revision)?;
         Ok(ConnectorSummary { name, base_url })
     }
 }

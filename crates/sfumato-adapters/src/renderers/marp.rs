@@ -5,8 +5,13 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use sfumato_core::{generation::SlideLayoutIssue, renderers::SlideRenderer};
+use sfumato_core::{
+    errors::OperationStage, generation::SlideLayoutIssue, operation::OperationContext,
+    renderers::SlideRenderer,
+};
 use tokio::process::Command;
+
+use crate::runtime::run_command;
 
 /// Marp CLI and headless-browser renderer adapter.
 #[derive(Clone, Copy, Debug, Default)]
@@ -26,15 +31,18 @@ impl SlideRenderer for MarpCliRenderer {
         theme_css_path: &Path,
         pdf_path: &Path,
         browser_path: Option<&Path>,
+        operation: &OperationContext,
     ) -> Result<()> {
         let args = command_args(markdown_path, theme_css_path, pdf_path, browser_path)?;
-        let output = Command::new("marp").args(args).output().await;
+        let mut command = Command::new("marp");
+        command.args(args);
+        let output = run_command(&mut command, operation, OperationStage::Render).await;
         let output = match output {
             Ok(output) => output,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(error) if is_not_found(&error) => {
                 return Err(MarpError::Missing.into());
             }
-            Err(error) => return Err(error).context("Could not start Marp CLI"),
+            Err(error) => return Err(error).context("Could not run Marp CLI"),
         };
         if !output.status.success() {
             bail!(
@@ -53,24 +61,25 @@ impl SlideRenderer for MarpCliRenderer {
         theme_css_path: &Path,
         html_path: &Path,
         browser_path: Option<&Path>,
+        operation: &OperationContext,
     ) -> Result<Vec<SlideLayoutIssue>> {
-        render_html(markdown_path, theme_css_path, html_path).await?;
+        render_html(markdown_path, theme_css_path, html_path, operation).await?;
         inject_layout_inspector(html_path)?;
         let browser = resolved_browser_path(browser_path)?
             .context("Could not find Chrome, Chromium, or Edge for Marp layout inspection")?;
         let url = format!("file://{}", html_path.canonicalize()?.display());
-        let output = Command::new(browser)
-            .args([
-                "--headless",
-                "--disable-gpu",
-                "--allow-file-access-from-files",
-                "--dump-dom",
-                "--virtual-time-budget=3000",
-                &url,
-            ])
-            .output()
+        let mut command = Command::new(browser);
+        command.args([
+            "--headless",
+            "--disable-gpu",
+            "--allow-file-access-from-files",
+            "--dump-dom",
+            "--virtual-time-budget=3000",
+            &url,
+        ]);
+        let output = run_command(&mut command, operation, OperationStage::InspectLayout)
             .await
-            .context("Could not start the browser for Marp layout inspection")?;
+            .context("Could not run the browser for Marp layout inspection")?;
         if !output.status.success() {
             bail!(
                 "Browser layout inspection exited with status {}{}",
@@ -82,26 +91,30 @@ impl SlideRenderer for MarpCliRenderer {
     }
 }
 
-async fn render_html(markdown_path: &Path, theme_css_path: &Path, html_path: &Path) -> Result<()> {
-    let output = Command::new("marp")
-        .args([
-            "--template".as_ref(),
-            "bare".as_ref(),
-            "--allow-local-files".as_ref(),
-            "--theme".as_ref(),
-            theme_css_path.as_os_str(),
-            markdown_path.as_os_str(),
-            "-o".as_ref(),
-            html_path.as_os_str(),
-        ])
-        .output()
-        .await;
+async fn render_html(
+    markdown_path: &Path,
+    theme_css_path: &Path,
+    html_path: &Path,
+    operation: &OperationContext,
+) -> Result<()> {
+    let mut command = Command::new("marp");
+    command.args([
+        "--template".as_ref(),
+        "bare".as_ref(),
+        "--allow-local-files".as_ref(),
+        "--theme".as_ref(),
+        theme_css_path.as_os_str(),
+        markdown_path.as_os_str(),
+        "-o".as_ref(),
+        html_path.as_os_str(),
+    ]);
+    let output = run_command(&mut command, operation, OperationStage::InspectLayout).await;
     let output = match output {
         Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error) if is_not_found(&error) => {
             return Err(MarpError::Missing.into());
         }
-        Err(error) => return Err(error).context("Could not start Marp CLI"),
+        Err(error) => return Err(error).context("Could not run Marp CLI"),
     };
     if !output.status.success() {
         bail!(
@@ -111,6 +124,12 @@ async fn render_html(markdown_path: &Path, theme_css_path: &Path, html_path: &Pa
         );
     }
     Ok(())
+}
+
+fn is_not_found(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn inject_layout_inspector(html_path: &Path) -> Result<()> {

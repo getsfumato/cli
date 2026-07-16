@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
-use sfumato_adapters::prompts::{LayeredPromptCatalog, PromptOverrideScope};
 
 use crate::{
     cli::{
@@ -22,7 +21,8 @@ use sfumato_core::{
     config_editor::ConfigTarget,
     connectors::ConnectorPreset as CoreConnectorPreset,
     generation::{GenerationRequest, ResourceKind},
-    prompts::{PromptCatalog, PromptId, PromptOrigin},
+    operation::OperationContext,
+    prompts::{PromptId, PromptOrigin, PromptOverrideScope},
     providers::TextGenerationEvent,
     resources::slides::{EditSlidesRequest, EditSlidesResult, GenerateSlidesResult},
 };
@@ -63,17 +63,18 @@ impl RunnableCommand for PromptCommands {
 
 impl PromptProjectArgs {
     fn list(self, application: &SfumatoApplication) -> Result<()> {
-        let catalog = prompt_catalog(application, self.project)?;
-        for info in catalog.list()? {
-            let (_, provenance) = catalog.source(info.id)?;
-            println!("{}\t{}", info.id, prompt_origin_label(&provenance.origin));
+        for prompt in application.list_prompts(self.project)? {
+            println!(
+                "{}\t{}",
+                prompt.id,
+                prompt_origin_label(&prompt.provenance.origin)
+            );
         }
         Ok(())
     }
 
     fn validate(self, application: &SfumatoApplication) -> Result<()> {
-        let catalog = prompt_catalog(application, self.project)?;
-        let resolved = catalog.validate()?;
+        let resolved = application.validate_prompts(self.project)?;
         println!("Validated {} prompt templates.", resolved.len());
         for prompt in resolved {
             println!(
@@ -91,14 +92,13 @@ impl PromptProjectArgs {
 impl RunnableCommand for PromptShowArgs {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         let id = PromptId::from_str(&self.id)?;
-        let catalog = prompt_catalog(&application, self.project)?;
-        let (source, provenance) = catalog.source(id)?;
+        let source = application.show_prompt(id, self.project)?;
         println!(
             "# {}\n# origin: {}\n# sha256: {}\n\n{}",
             id,
-            prompt_origin_label(&provenance.origin),
-            provenance.content_hash,
-            source
+            prompt_origin_label(&source.provenance.origin),
+            source.provenance.content_hash,
+            source.text
         );
         Ok(())
     }
@@ -108,26 +108,14 @@ impl RunnableCommand for PromptShowArgs {
 impl RunnableCommand for PromptCustomizeArgs {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         let id = PromptId::from_str(&self.id)?;
-        let catalog = prompt_catalog(&application, self.project)?;
         let scope = match self.scope {
             PromptScope::User => PromptOverrideScope::User,
             PromptScope::Project => PromptOverrideScope::Project,
         };
-        let path = catalog.customize(id, scope)?;
+        let path = application.customize_prompt(id, scope, self.project)?;
         println!("Created prompt override at {}", path.display());
         Ok(())
     }
-}
-
-fn prompt_catalog(
-    application: &SfumatoApplication,
-    project: Option<String>,
-) -> Result<LayeredPromptCatalog> {
-    let config = application.resolve_config(ConfigOverrides {
-        project,
-        ..Default::default()
-    })?;
-    Ok(LayeredPromptCatalog::for_project(config.project_root)?)
 }
 
 fn prompt_origin_label(origin: &PromptOrigin) -> String {
@@ -468,10 +456,12 @@ impl RunnableCommand for EditSlidesArgs {
         let json = self.json;
         let event_sink = (!json).then_some(std::sync::Arc::new(render_generation_event)
             as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
-        match execute_edit_slides(&application, self, event_sink).await {
+        match execute_edit_slides(&application, self, event_sink, OperationContext::detached())
+            .await
+        {
             Ok(result) => render_edit_slides_result(result, json),
             Err(error) if json => {
-                println!("{}", serde_json::json!({ "error": format!("{error:#}") }));
+                println!("{}", json_operation_error(&error));
                 Err(error)
             }
             Err(error) => Err(error),
@@ -483,6 +473,7 @@ pub(crate) async fn execute_edit_slides(
     application: &SfumatoApplication,
     args: EditSlidesArgs,
     event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    operation: OperationContext,
 ) -> Result<EditSlidesResult> {
     if args.instruction.trim().is_empty() {
         bail!("Instruction cannot be empty");
@@ -502,8 +493,9 @@ pub(crate) async fn execute_edit_slides(
         publish_dir: None,
         pdf: true,
     };
-    application
+    Ok(application
         .edit_slides(EditSlidesCommand {
+            operation,
             config,
             request: EditSlidesRequest {
                 markdown_path: args.markdown_path,
@@ -511,7 +503,7 @@ pub(crate) async fn execute_edit_slides(
             },
             event_sink,
         })
-        .await
+        .await?)
 }
 
 fn render_edit_slides_result(result: EditSlidesResult, json: bool) -> Result<()> {
@@ -545,13 +537,13 @@ impl RunnableCommand for SlidesArgs {
         let event_sink = (!json && !dry_run)
             .then_some(std::sync::Arc::new(render_generation_event)
                 as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
-        match execute_slides(&application, self, event_sink).await {
+        match execute_slides(&application, self, event_sink, OperationContext::detached()).await {
             Ok(result) => {
                 render_slides_result(result, json, dry_run)?;
                 Ok(())
             }
             Err(error) if json => {
-                println!("{}", serde_json::json!({ "error": format!("{error:#}") }));
+                println!("{}", json_operation_error(&error));
                 Err(error)
             }
             Err(error) => Err(error),
@@ -559,10 +551,18 @@ impl RunnableCommand for SlidesArgs {
     }
 }
 
+fn json_operation_error(error: &anyhow::Error) -> serde_json::Value {
+    error
+        .downcast_ref::<sfumato_core::errors::SfumatoError>()
+        .map(|error| serde_json::json!({ "error": error }))
+        .unwrap_or_else(|| serde_json::json!({ "error": { "message": format!("{error:#}") } }))
+}
+
 pub(crate) async fn execute_slides(
     application: &SfumatoApplication,
     args: SlidesArgs,
     event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    operation: OperationContext,
 ) -> Result<GenerateSlidesResult> {
     if args.instruction.trim().is_empty() {
         bail!("Instruction cannot be empty");
@@ -583,8 +583,9 @@ pub(crate) async fn execute_slides(
         project: args.project,
         model_overrides,
     };
-    application
+    Ok(application
         .generate_slides(GenerateSlidesCommand {
+            operation,
             config,
             request,
             title: args.title,
@@ -592,7 +593,7 @@ pub(crate) async fn execute_slides(
             review: !args.no_review,
             event_sink,
         })
-        .await
+        .await?)
 }
 
 fn render_slides_result(result: GenerateSlidesResult, json: bool, dry_run: bool) -> Result<()> {

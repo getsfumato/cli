@@ -39,7 +39,7 @@ impl SetupService {
     }
 
     pub fn user_config_exists(&self) -> bool {
-        self.user_config_path.exists()
+        self.global_repository.exists()
     }
 
     pub fn user_config_path(&self) -> &Path {

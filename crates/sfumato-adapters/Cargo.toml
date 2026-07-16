@@ -23,7 +23,7 @@ sfumato-domain = { path = "../sfumato-domain" }
 tempfile = "3.23"
 thiserror = "2.0"
 toml = "0.9"
-tokio = { version = "1.48", features = ["process"] }
+tokio = { version = "1.48", features = ["macros", "process", "time"] }
 walkdir = "2.5"
 
 [dev-dependencies]

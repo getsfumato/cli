@@ -5,6 +5,10 @@ use std::sync::{Arc, Mutex};
 struct MemoryGlobal(Mutex<GlobalConfig>);
 
 impl GlobalConfigRepository for MemoryGlobal {
+    fn exists(&self) -> bool {
+        true
+    }
+
     fn load(&self) -> Result<GlobalConfig> {
         Ok(self.0.lock().unwrap().clone())
     }

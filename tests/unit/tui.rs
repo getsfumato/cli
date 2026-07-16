@@ -160,7 +160,7 @@ fn dashboard_renders_at_eighty_by_twenty_four() {
     let mut terminal = Terminal::new(backend).unwrap();
     let mut app = App::new(Picker::halfblocks(), test_application());
 
-    terminal.draw(|frame| app.draw(frame)).unwrap();
+    terminal.draw(|frame| view::draw(&mut app, frame)).unwrap();
     let rendered = terminal
         .backend()
         .buffer()

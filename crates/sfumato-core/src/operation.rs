@@ -14,6 +14,8 @@ use sfumato_domain::JobId;
 
 use crate::errors::{OperationStage, SfumatoError, SfumatoResult};
 
+static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Sending side of a cooperative, one-way cancellation signal.
 #[derive(Clone, Debug)]
 pub struct CancellationHandle {
@@ -152,6 +154,26 @@ pub struct OperationContext {
 }
 
 impl OperationContext {
+    /// Creates a fresh operation and its presentation-owned cancellation handle.
+    pub fn create(
+        timeout: Option<Duration>,
+        events: Arc<dyn EventSink>,
+    ) -> (CancellationHandle, Self) {
+        let sequence = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+        let job_id = JobId::new(format!("job-{sequence}"))
+            .expect("generated operation job IDs satisfy the domain invariant");
+        let (handle, cancellation) = CancellationHandle::new_pair();
+        let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
+        (handle, Self::new(job_id, deadline, cancellation, events))
+    }
+
+    /// Creates a context for callers that do not need events or cancellation.
+    ///
+    /// Production frontends should prefer [`OperationContext::create`].
+    pub fn detached() -> Self {
+        Self::create(None, Arc::new(DiscardEvents)).1
+    }
+
     /// Creates an operation context with an optional monotonic deadline.
     pub fn new(
         job_id: JobId,

@@ -6,8 +6,14 @@ use std::{
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Serialize;
-use sfumato_core::renderers::{DiagramRenderer, MermaidThemeConfig};
+use sfumato_core::{
+    errors::OperationStage,
+    operation::OperationContext,
+    renderers::{DiagramRenderer, MermaidThemeConfig},
+};
 use tokio::process::Command;
+
+use crate::runtime::run_command;
 
 /// Mermaid CLI adapter producing transparent themed SVG files.
 #[derive(Clone, Copy, Debug, Default)]
@@ -20,29 +26,34 @@ impl DiagramRenderer for MermaidCliRenderer {
         input_path: &Path,
         output_path: &Path,
         theme: &MermaidThemeConfig,
+        operation: &OperationContext,
+        stage: OperationStage,
     ) -> Result<String> {
         let puppeteer_config = write_puppeteer_config(output_path)?;
         let mermaid_config = write_mermaid_config(output_path, theme)?;
-        let output = Command::new("mmdc")
-            .args(mermaid_cli_args(
-                input_path,
-                output_path,
-                puppeteer_config.as_deref(),
-                Some(&mermaid_config),
-            ))
-            .output()
-            .await;
+        let mut command = Command::new("mmdc");
+        command.args(mermaid_cli_args(
+            input_path,
+            output_path,
+            puppeteer_config.as_deref(),
+            Some(&mermaid_config),
+        ));
+        let output = run_command(&mut command, operation, stage).await;
         remove_config(puppeteer_config.as_deref());
         remove_config(Some(&mermaid_config));
 
         let output = match output {
             Ok(output) => output,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
                 bail!(
                     "Mermaid CLI is not installed. Install @mermaid-js/mermaid-cli to render Mermaid diagrams."
                 );
             }
-            Err(error) => return Err(error).context("Could not start Mermaid CLI"),
+            Err(error) => return Err(error).context("Could not run Mermaid CLI"),
         };
         if !output.status.success() {
             bail!(

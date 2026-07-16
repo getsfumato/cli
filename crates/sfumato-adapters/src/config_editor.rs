@@ -15,7 +15,7 @@ use sfumato_core::{
 };
 use toml::{Table, Value};
 
-use crate::config_files::{project_config_path, write_toml};
+use crate::config_files::{edit_toml, project_config_path};
 
 /// Schema-aware TOML editor for production configuration files.
 pub struct TomlConfigEditor {
@@ -81,16 +81,13 @@ impl TomlConfigEditor {
                 let config: GlobalConfig = value
                     .try_into()
                     .context("The change would make the user config invalid")?;
-                validate_global_references(&config)
+                config.validate()
             }
             ConfigTarget::Project => {
                 let project: ProjectConfig = value
                     .try_into()
                     .context("The change would make the project config invalid")?;
-                sfumato_core::config::validate_project_name(&project.name)?;
-                if project.theme.trim().is_empty() {
-                    bail!("Project theme cannot be empty");
-                }
+                project.validate()?;
                 let global = self.global.load()?;
                 for profile in project
                     .model_defaults
@@ -115,7 +112,7 @@ impl ConfigEditor for TomlConfigEditor {
         project: Option<String>,
         key: Option<String>,
     ) -> Result<String> {
-        let value = match scope {
+        let mut value = match scope {
             ConfigTarget::Effective => {
                 let config = self.effective.resolve(ConfigOverrides {
                     project,
@@ -131,6 +128,7 @@ impl ConfigEditor for TomlConfigEditor {
                 Value::Table(self.read_config_table(&self.project_path(project.as_deref())?)?)
             }
         };
+        redact_sensitive_values(&mut value);
         let shown = if let Some(key) = key {
             get_dotted_value(&value, &key)
                 .with_context(|| format!("Config key '{key}' was not found"))?
@@ -149,21 +147,21 @@ impl ConfigEditor for TomlConfigEditor {
         raw_value: &str,
     ) -> Result<PathBuf> {
         let path = self.editable_path(scope, project.as_deref())?;
-        let mut table = self.read_config_table(&path)?;
         reject_secret_key(key)?;
-        set_dotted_value(&mut table, key, parse_config_value(raw_value))?;
-        self.validate_table(scope, &table)?;
-        write_toml(&path, &Value::Table(table))?;
+        edit_toml(&path, |table| {
+            set_dotted_value(table, key, parse_config_value(raw_value))?;
+            self.validate_table(scope, table)
+        })?;
         Ok(path)
     }
 
     fn delete(&self, scope: ConfigTarget, project: Option<String>, key: &str) -> Result<PathBuf> {
         let path = self.editable_path(scope, project.as_deref())?;
-        let mut table = self.read_config_table(&path)?;
         reject_secret_key(key)?;
-        delete_dotted_value(&mut table, key)?;
-        self.validate_table(scope, &table)?;
-        write_toml(&path, &Value::Table(table))?;
+        edit_toml(&path, |table| {
+            delete_dotted_value(table, key)?;
+            self.validate_table(scope, table)
+        })?;
         Ok(path)
     }
 }
@@ -180,44 +178,22 @@ fn reject_secret_key(key: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_global_references(config: &GlobalConfig) -> Result<()> {
-    for (name, model) in &config.models {
-        if !config.connectors.contains_key(&model.connector) {
-            bail!(
-                "Model profile '{name}' references unknown connector '{}'",
-                model.connector
-            );
+fn redact_sensitive_values(value: &mut Value) {
+    let Some(table) = value.as_table_mut() else {
+        return;
+    };
+    for (key, value) in table {
+        let key = key.to_ascii_lowercase();
+        let sensitive = key != "credential"
+            && ["authorization", "api_key", "secret", "token", "cookie"]
+                .iter()
+                .any(|fragment| key.contains(fragment));
+        if sensitive {
+            *value = Value::String("[REDACTED]".to_string());
+        } else {
+            redact_sensitive_values(value);
         }
     }
-    for (capability, profile_name) in &config.defaults.0 {
-        let profile = config.models.get(profile_name).with_context(|| {
-            format!(
-                "Default '{}' references unknown model profile '{profile_name}'",
-                capability.as_str()
-            )
-        })?;
-        if !profile.capabilities.contains(capability) {
-            bail!(
-                "Default '{}' uses model profile '{profile_name}', which lacks that capability",
-                capability.as_str()
-            );
-        }
-    }
-    for (role, profile_name) in &config.model_roles {
-        let profile = config.models.get(profile_name).with_context(|| {
-            format!(
-                "Model role '{}' references unknown profile '{profile_name}'",
-                role.as_str()
-            )
-        })?;
-        if !profile.capabilities.contains(&role.required_capability()) {
-            bail!(
-                "Model role '{}' requires a text-capable profile",
-                role.as_str()
-            );
-        }
-    }
-    Ok(())
 }
 
 fn parse_config_value(raw: &str) -> Value {

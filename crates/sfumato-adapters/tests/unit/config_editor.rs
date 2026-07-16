@@ -24,3 +24,28 @@ fn sets_gets_and_deletes_dotted_values() {
 fn renders_scalar_config_values() {
     assert_eq!(render_config_value(&Value::Integer(4)).unwrap(), "4");
 }
+
+#[test]
+fn redacts_sensitive_headers_but_keeps_secret_references() {
+    let mut value: Value = toml::from_str(
+        r#"
+credential = "env:OPENROUTER_API_KEY"
+[headers]
+Authorization = "Bearer actual-secret"
+HTTP-Referer = "https://example.test"
+"#,
+    )
+    .unwrap();
+
+    redact_sensitive_values(&mut value);
+
+    assert_eq!(value["credential"].as_str(), Some("env:OPENROUTER_API_KEY"));
+    assert_eq!(
+        value["headers"]["Authorization"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert_eq!(
+        value["headers"]["HTTP-Referer"].as_str(),
+        Some("https://example.test")
+    );
+}

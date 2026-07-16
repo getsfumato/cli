@@ -12,16 +12,23 @@ use std::{
 use anyhow::Result;
 
 use crate::{
-    artifacts::ArtifactStore,
+    artifacts::{ArtifactStore, ArtifactStoreError},
     config::{ConfigOverrides, EffectiveConfig, GlobalConfig},
     config_editor::{ConfigEditor, ConfigTarget},
-    connectors::{ConnectorPreset, ConnectorService, ConnectorSummary},
+    connectors::{ConnectorDetails, ConnectorPreset, ConnectorService, ConnectorSummary},
+    errors::{ErrorClass, ErrorCode, OperationStage, SfumatoError, SfumatoResult},
     filesystem::WorkspaceFileSystem,
     generation::GenerationRequest,
     models::{ModelDefaultChanged, ModelService, ModelSummary},
+    operation::OperationContext,
     projects::{ProjectRemoved, ProjectService, ProjectSummary},
-    prompts::PromptCatalog,
-    providers::{ProviderFactory, TextGenerationEvent},
+    prompts::{
+        PromptCatalog, PromptError, PromptId, PromptManager, PromptOverrideScope, PromptProvenance,
+        PromptTemplateSource, PromptTemplateSummary,
+    },
+    providers::{
+        ProviderFactory, TextGenerationEvent, TextGenerationLimitError, TextGenerationLimitKind,
+    },
     renderers::{DiagramRenderer, SlideRenderer},
     repositories::{GlobalConfigRepository, ProjectRepository, ThemeRepository},
     resources::slides::{
@@ -48,6 +55,8 @@ pub trait PromptCatalogFactory: Send + Sync {
 
 /// Complete request for the slide-generation use case.
 pub struct GenerateSlidesCommand {
+    /// Job lifecycle, cancellation, deadline, and event context.
+    pub operation: OperationContext,
     /// Configuration and command-line precedence overrides.
     pub config: ConfigOverrides,
     /// Resource instruction, sources, and model selections.
@@ -64,6 +73,8 @@ pub struct GenerateSlidesCommand {
 
 /// Complete request for the focused slide-editing use case.
 pub struct EditSlidesCommand {
+    /// Job lifecycle, cancellation, deadline, and event context.
+    pub operation: OperationContext,
     /// Configuration and command-line precedence overrides.
     pub config: ConfigOverrides,
     /// Existing artifact and focused editing instruction.
@@ -81,6 +92,8 @@ pub struct SfumatoApplicationDependencies {
     pub config: Arc<dyn EffectiveConfigResolver>,
     /// Project-scoped prompt catalog factory.
     pub prompts: Arc<dyn PromptCatalogFactory>,
+    /// Prompt template management port.
+    pub prompt_manager: Arc<dyn PromptManager>,
     /// Transactional artifact store.
     pub artifacts: Arc<dyn ArtifactStore>,
     /// Model provider factory.
@@ -115,6 +128,7 @@ pub struct SfumatoApplicationDependencies {
 pub struct SfumatoApplication {
     config: Arc<dyn EffectiveConfigResolver>,
     prompts: Arc<dyn PromptCatalogFactory>,
+    prompt_manager: Arc<dyn PromptManager>,
     artifacts: Arc<dyn ArtifactStore>,
     providers: Arc<dyn ProviderFactory>,
     diagrams: Arc<dyn DiagramRenderer>,
@@ -135,6 +149,7 @@ impl SfumatoApplication {
         let SfumatoApplicationDependencies {
             config,
             prompts,
+            prompt_manager,
             artifacts,
             providers,
             diagrams,
@@ -152,6 +167,7 @@ impl SfumatoApplication {
         Self {
             config,
             prompts,
+            prompt_manager,
             artifacts,
             providers,
             diagrams,
@@ -171,14 +187,23 @@ impl SfumatoApplication {
     pub async fn generate_slides(
         &self,
         command: GenerateSlidesCommand,
-    ) -> Result<GenerateSlidesResult> {
-        let config = self.config.resolve(command.config)?;
-        let prompt_catalog = self.prompts.for_project(&config.project_root)?;
+    ) -> SfumatoResult<GenerateSlidesResult> {
+        command.operation.checkpoint(OperationStage::Resolve)?;
+        let config = self.config.resolve(command.config).map_err(|error| {
+            application_error(error, ErrorCode::Config, Some(OperationStage::Resolve))
+        })?;
+        let prompt_catalog = self
+            .prompts
+            .for_project(&config.project_root)
+            .map_err(|error| {
+                application_error(error, ErrorCode::Config, Some(OperationStage::RenderPrompt))
+            })?;
         generate_slides(
             config,
             command.request,
             GenerateSlidesOptions {
                 title: command.title,
+                operation: command.operation,
                 dry_run: command.dry_run,
                 review: command.review,
                 event_sink: command.event_sink,
@@ -194,16 +219,26 @@ impl SfumatoApplication {
             },
         )
         .await
+        .map_err(|error| application_error(error, ErrorCode::Internal, None))
     }
 
     /// Applies focused content patches and commits a new deck revision.
-    pub async fn edit_slides(&self, command: EditSlidesCommand) -> Result<EditSlidesResult> {
-        let config = self.config.resolve(command.config)?;
-        let prompt_catalog = self.prompts.for_project(&config.project_root)?;
+    pub async fn edit_slides(&self, command: EditSlidesCommand) -> SfumatoResult<EditSlidesResult> {
+        command.operation.checkpoint(OperationStage::Resolve)?;
+        let config = self.config.resolve(command.config).map_err(|error| {
+            application_error(error, ErrorCode::Config, Some(OperationStage::Resolve))
+        })?;
+        let prompt_catalog = self
+            .prompts
+            .for_project(&config.project_root)
+            .map_err(|error| {
+                application_error(error, ErrorCode::Config, Some(OperationStage::RenderPrompt))
+            })?;
         edit_slides(
             config,
             command.request,
             EditSlidesOptions {
+                operation: command.operation,
                 event_sink: command.event_sink,
                 prompt_catalog,
                 artifact_store: Arc::clone(&self.artifacts),
@@ -216,6 +251,7 @@ impl SfumatoApplication {
             },
         )
         .await
+        .map_err(|error| application_error(error, ErrorCode::Internal, Some(OperationStage::Edit)))
     }
 
     /// Creates a reusable theme package from the bundled scaffold.
@@ -357,10 +393,7 @@ impl SfumatoApplication {
     }
 
     /// Loads one connector connection.
-    pub fn show_connector(
-        &self,
-        name: &str,
-    ) -> Result<crate::config::OpenAiCompatibleConnectorConfig> {
+    pub fn show_connector(&self, name: &str) -> Result<ConnectorDetails> {
         self.connector_service()?.show(name)
     }
 
@@ -421,4 +454,83 @@ impl SfumatoApplication {
     pub fn resolve_config(&self, overrides: ConfigOverrides) -> Result<EffectiveConfig> {
         self.config.resolve(overrides)
     }
+
+    /// Lists prompt templates resolved for the active or selected project.
+    pub fn list_prompts(&self, project: Option<String>) -> Result<Vec<PromptTemplateSummary>> {
+        let root = self.prompt_project_root(project)?;
+        Ok(self.prompt_manager.list(&root)?)
+    }
+
+    /// Loads one unrendered prompt template for presentation.
+    pub fn show_prompt(
+        &self,
+        id: PromptId,
+        project: Option<String>,
+    ) -> Result<PromptTemplateSource> {
+        let root = self.prompt_project_root(project)?;
+        Ok(self.prompt_manager.source(&root, id)?)
+    }
+
+    /// Creates one user or project prompt override.
+    pub fn customize_prompt(
+        &self,
+        id: PromptId,
+        scope: PromptOverrideScope,
+        project: Option<String>,
+    ) -> Result<PathBuf> {
+        let root = self.prompt_project_root(project)?;
+        Ok(self.prompt_manager.customize(&root, id, scope)?)
+    }
+
+    /// Validates every prompt resolved for the active or selected project.
+    pub fn validate_prompts(&self, project: Option<String>) -> Result<Vec<PromptProvenance>> {
+        let root = self.prompt_project_root(project)?;
+        Ok(self.prompt_manager.validate(&root)?)
+    }
+
+    fn prompt_project_root(&self, project: Option<String>) -> Result<PathBuf> {
+        Ok(self
+            .config
+            .resolve(ConfigOverrides {
+                project,
+                ..Default::default()
+            })?
+            .project_root)
+    }
 }
+
+fn application_error(
+    error: anyhow::Error,
+    fallback_code: ErrorCode,
+    stage: Option<OperationStage>,
+) -> SfumatoError {
+    if let Some(error) = error.downcast_ref::<SfumatoError>() {
+        return error.clone();
+    }
+
+    let (code, class) = if let Some(limit) = error.downcast_ref::<TextGenerationLimitError>() {
+        let class = match limit.kind {
+            TextGenerationLimitKind::Context => ErrorClass::ContextLimit,
+            TextGenerationLimitKind::Output => ErrorClass::InvalidOutput,
+        };
+        (ErrorCode::Provider, class)
+    } else if error.downcast_ref::<ArtifactStoreError>().is_some() {
+        (ErrorCode::Artifact, ErrorClass::Permanent)
+    } else if error.downcast_ref::<PromptError>().is_some() {
+        (ErrorCode::Config, ErrorClass::Permanent)
+    } else {
+        (fallback_code, ErrorClass::Permanent)
+    };
+
+    let public = SfumatoError::sanitized(code, class, format_args!("{error:#}"));
+    match stage {
+        Some(stage) => public.at_stage(stage),
+        None => public,
+    }
+}
+
+#[cfg(test)]
+// Test bodies live outside the implementation while retaining access to the
+// private application-boundary classifier.
+#[path = "../tests/unit/application.rs"]
+mod tests;

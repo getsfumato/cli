@@ -3,7 +3,11 @@
 //! Workflows select stable prompt identifiers and supply structured values.
 //! Loading, overriding, and rendering template text belongs to an adapter.
 
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -203,6 +207,39 @@ pub struct RenderedPrompt {
     pub provenance: PromptProvenance,
 }
 
+/// Scope into which a bundled prompt template is customized.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PromptOverrideScope {
+    /// User-global override.
+    User,
+    /// Selected-project override.
+    Project,
+}
+
+/// Prompt metadata and resolved provenance shown by management frontends.
+#[derive(Clone, Debug)]
+pub struct PromptTemplateSummary {
+    /// Stable identifier.
+    pub id: PromptId,
+    /// Relative bundled template path.
+    pub path: PathBuf,
+    /// Variables required by the template manifest.
+    pub required: Vec<String>,
+    /// Layer selected for this project.
+    pub provenance: PromptProvenance,
+}
+
+/// Unrendered prompt source selected by layered resolution.
+#[derive(Clone, Debug)]
+pub struct PromptTemplateSource {
+    /// Stable identifier.
+    pub id: PromptId,
+    /// Resolved template text.
+    pub text: String,
+    /// Layer and content hash of the source.
+    pub provenance: PromptProvenance,
+}
+
 /// Prompt loading or rendering failure.
 #[derive(Debug, Error)]
 pub enum PromptError {
@@ -246,6 +283,30 @@ pub trait PromptCatalog: Send + Sync {
 
     /// Validates that every required template resolves and compiles.
     fn validate(&self) -> Result<Vec<PromptProvenance>, PromptError>;
+}
+
+/// Port for listing, inspecting, validating, and customizing prompt templates.
+pub trait PromptManager: Send + Sync {
+    /// Lists all templates as resolved for one project root.
+    fn list(&self, project_root: &Path) -> Result<Vec<PromptTemplateSummary>, PromptError>;
+
+    /// Loads one unrendered resolved template.
+    fn source(
+        &self,
+        project_root: &Path,
+        id: PromptId,
+    ) -> Result<PromptTemplateSource, PromptError>;
+
+    /// Copies the bundled template into a user or project override layer.
+    fn customize(
+        &self,
+        project_root: &Path,
+        id: PromptId,
+        scope: PromptOverrideScope,
+    ) -> Result<PathBuf, PromptError>;
+
+    /// Validates every template resolved for one project root.
+    fn validate(&self, project_root: &Path) -> Result<Vec<PromptProvenance>, PromptError>;
 }
 
 /// Prompt identifiers that define one text-model request.

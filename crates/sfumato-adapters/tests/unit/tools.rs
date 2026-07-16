@@ -1,6 +1,8 @@
 use super::*;
 use async_trait::async_trait;
 use sfumato_core::{
+    errors::OperationStage,
+    operation::OperationContext,
     prompts::{PromptError, PromptOrigin, PromptProvenance, RenderedPrompt},
     providers::{ImageGenerationProvider, ImageGenerationResponse},
     themes::{THEME_SCHEMA_VERSION, ThemeAdapters, ThemeManifest, ThemePackage, ThemeTokens},
@@ -72,6 +74,8 @@ impl ImageGenerationProvider for MockImageProvider {
     async fn generate_image(
         &self,
         request: ImageGenerationRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
     ) -> Result<ImageGenerationResponse> {
         self.prompts.lock().unwrap().push(request.prompt);
         Ok(ImageGenerationResponse {
@@ -89,19 +93,27 @@ async fn lists_and_reads_inside_allowed_roots() {
     let executor = FilesystemToolExecutor::new(vec![temp.path().to_path_buf()]).unwrap();
 
     let listing = executor
-        .execute(ToolExecutionRequest {
-            name: "sfumato_list_directory".to_string(),
-            arguments: json!({ "path": temp.path() }),
-        })
+        .execute(
+            ToolExecutionRequest {
+                name: "sfumato_list_directory".to_string(),
+                arguments: json!({ "path": temp.path() }),
+            },
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
         .await
         .unwrap();
     assert!(listing.contains("note.md"));
 
     let content = executor
-        .execute(ToolExecutionRequest {
-            name: "sfumato_read_file".to_string(),
-            arguments: json!({ "path": note }),
-        })
+        .execute(
+            ToolExecutionRequest {
+                name: "sfumato_read_file".to_string(),
+                arguments: json!({ "path": note }),
+            },
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
         .await
         .unwrap();
     assert!(content.contains("# Note"));
@@ -117,10 +129,14 @@ async fn rejects_paths_outside_allowed_roots() {
 
     assert!(
         executor
-            .execute(ToolExecutionRequest {
-                name: "sfumato_read_file".to_string(),
-                arguments: json!({ "path": secret }),
-            })
+            .execute(
+                ToolExecutionRequest {
+                    name: "sfumato_read_file".to_string(),
+                    arguments: json!({ "path": secret }),
+                },
+                &OperationContext::detached(),
+                OperationStage::Draft
+            )
             .await
             .is_err()
     );
@@ -134,10 +150,14 @@ async fn tool_arguments_accept_json_strings() {
     let executor = FilesystemToolExecutor::new(vec![temp.path().to_path_buf()]).unwrap();
 
     let content = executor
-        .execute(ToolExecutionRequest {
-            name: "sfumato_read_file".to_string(),
-            arguments: Value::String(format!(r#"{{"path":"{}"}}"#, note.display())),
-        })
+        .execute(
+            ToolExecutionRequest {
+                name: "sfumato_read_file".to_string(),
+                arguments: Value::String(format!(r#"{{"path":"{}"}}"#, note.display())),
+            },
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
         .await
         .unwrap();
     assert!(content.contains("# Note"));
@@ -191,13 +211,17 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
     );
     let result = tools
         .executor
-        .execute(ToolExecutionRequest {
-            name: "sfumato_image_gen".to_string(),
-            arguments: json!({
-                "prompt": "A labeled unit circle",
-                "alt_text": "Unit circle with sine and cosine"
-            }),
-        })
+        .execute(
+            ToolExecutionRequest {
+                name: "sfumato_image_gen".to_string(),
+                arguments: json!({
+                    "prompt": "A labeled unit circle",
+                    "alt_text": "Unit circle with sine and cosine"
+                }),
+            },
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
         .await
         .unwrap();
     let result: Value = serde_json::from_str(&result).unwrap();

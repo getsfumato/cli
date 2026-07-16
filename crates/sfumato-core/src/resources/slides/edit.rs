@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -20,8 +21,10 @@ use super::{
 use crate::{
     artifacts::{ArtifactResourceKind, ArtifactStore, ResourceArtifactManifest},
     config::{Capability, EffectiveConfig},
+    errors::OperationStage,
     filesystem::WorkspaceFileSystem,
     generation::SlideLayoutIssue,
+    operation::{OperationContext, OperationEventKind},
     prompts::{PromptCatalog, PromptId, PromptPair, PromptProvenance},
     providers::{
         GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationProvider,
@@ -42,6 +45,7 @@ pub struct EditSlidesRequest {
 }
 
 pub struct EditSlidesOptions {
+    pub operation: OperationContext,
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
     pub prompt_catalog: Arc<dyn PromptCatalog>,
     pub artifact_store: Arc<dyn ArtifactStore>,
@@ -74,6 +78,12 @@ pub async fn edit_slides(
     request: EditSlidesRequest,
     options: EditSlidesOptions,
 ) -> Result<EditSlidesResult> {
+    options.operation.checkpoint(OperationStage::Edit)?;
+    options.operation.emit(
+        OperationStage::Edit,
+        OperationEventKind::Started,
+        BTreeMap::new(),
+    );
     let instruction = request.instruction.trim();
     if instruction.is_empty() {
         bail!("Instruction cannot be empty");
@@ -149,8 +159,10 @@ pub async fn edit_slides(
         &project_instructions_prompt,
         &options.event_sink,
         options.prompt_catalog.as_ref(),
+        &options.operation,
     )
     .await?;
+    options.operation.checkpoint(OperationStage::Edit)?;
     let candidate = constrain_generated_images(&edit.markdown);
     validate_normalized_deck(&candidate, &title)?;
 
@@ -175,17 +187,25 @@ pub async fn edit_slides(
 
     emit_stage(&options.event_sink, GenerationStage::LayoutCheck, None);
     let mut warnings = Vec::new();
-    let layout_issues = match inspect_candidate_layout(
+    options.operation.emit(
+        OperationStage::InspectLayout,
+        OperationEventKind::Started,
+        BTreeMap::new(),
+    );
+    let layout_result = inspect_candidate_layout(
         &candidate,
         &theme,
-        &slug,
         config.marp.browser_path.as_deref(),
         options.diagram_renderer.as_ref(),
         options.slide_renderer.as_ref(),
         options.workspace.as_ref(),
+        &options.operation,
     )
-    .await
-    {
+    .await;
+    options
+        .operation
+        .checkpoint(OperationStage::InspectLayout)?;
+    let layout_issues = match layout_result {
         Ok(issues) => {
             emit_layout_result(&options.event_sink, issues.len());
             if !issues.is_empty() {
@@ -205,28 +225,46 @@ pub async fn edit_slides(
             Vec::new()
         }
     };
+    options.operation.emit(
+        OperationStage::InspectLayout,
+        OperationEventKind::Completed,
+        BTreeMap::from([("issues".to_string(), layout_issues.len().to_string())]),
+    );
 
     let (rendered_markdown, diagram_artifacts) = render_mermaid_diagrams(
         &candidate,
         &diagrams_dir,
-        &slug,
         &theme,
         options.diagram_renderer.as_ref(),
         options.workspace.as_ref(),
+        &options.operation,
+        OperationStage::Render,
     )
     .await?;
     copy_theme_css(&theme, &theme_css_path, options.workspace.as_ref())?;
     emit_stage(&options.event_sink, GenerationStage::Rendering, None);
+    options.operation.emit(
+        OperationStage::Render,
+        OperationEventKind::Started,
+        BTreeMap::new(),
+    );
+    options
+        .workspace
+        .write(&markdown_path, rendered_markdown.as_bytes())?;
     replace_deck_and_pdf(
         &markdown_path,
         &pdf_path,
         &theme_css_path,
-        &rendered_markdown,
         config.marp.browser_path.as_deref(),
         options.slide_renderer.as_ref(),
-        options.workspace.as_ref(),
+        &options.operation,
     )
     .await?;
+    options.operation.emit(
+        OperationStage::Render,
+        OperationEventKind::Completed,
+        BTreeMap::new(),
+    );
 
     let mut artifacts = vec![markdown_path.clone(), pdf_path.clone(), theme_css_path];
     artifacts.extend(diagram_artifacts);
@@ -255,7 +293,15 @@ pub async fn edit_slides(
         warnings: warnings.clone(),
     };
     let staging_root = transaction.staging_root().to_path_buf();
+    options
+        .operation
+        .checkpoint(OperationStage::CommitArtifacts)?;
     let committed = transaction.commit(manifest)?;
+    options.operation.emit(
+        OperationStage::CommitArtifacts,
+        OperationEventKind::Completed,
+        BTreeMap::new(),
+    );
     let remap = |path: &Path| -> Result<PathBuf> {
         Ok(committed
             .root
@@ -309,6 +355,7 @@ async fn request_edit_patch(
     project_instructions: &str,
     event_sink: &Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
     prompt_catalog: &dyn PromptCatalog,
+    operation: &OperationContext,
 ) -> Result<AppliedEdit> {
     let mut retry = None;
     let mut compacted = false;
@@ -339,12 +386,15 @@ async fn request_edit_patch(
 
         let response = if compacted {
             provider
-                .generate_text(compact_request)
+                .generate_text(compact_request, operation, OperationStage::Edit)
                 .await
                 .context("Compact slide edit request failed")?
         } else {
             let original_chars = request_chars(&full_request);
-            match provider.generate_text(full_request).await {
+            match provider
+                .generate_text(full_request, operation, OperationStage::Edit)
+                .await
+            {
                 Ok(response) => response,
                 Err(error) if generation_limit(&error).is_some() => {
                     compacted = true;
@@ -355,7 +405,7 @@ async fn request_edit_patch(
                         request_chars(&compact_request),
                     );
                     provider
-                        .generate_text(compact_request)
+                        .generate_text(compact_request, operation, OperationStage::Edit)
                         .await
                         .context("Compact slide edit request failed after a model limit")?
                 }
@@ -547,14 +597,19 @@ async fn replace_deck_and_pdf(
     markdown_path: &Path,
     pdf_path: &Path,
     theme_css_path: &Path,
-    markdown: &str,
     browser_path: Option<&Path>,
     slide_renderer: &dyn SlideRenderer,
-    workspace: &dyn WorkspaceFileSystem,
+    operation: &OperationContext,
 ) -> Result<()> {
-    workspace.write(markdown_path, markdown.as_bytes())?;
+    operation.checkpoint(OperationStage::Render)?;
     slide_renderer
-        .render_pdf(markdown_path, theme_css_path, pdf_path, browser_path)
+        .render_pdf(
+            markdown_path,
+            theme_css_path,
+            pdf_path,
+            browser_path,
+            operation,
+        )
         .await
         .context(
             "Could not render the edited slide deck to PDF; the original deck was preserved",

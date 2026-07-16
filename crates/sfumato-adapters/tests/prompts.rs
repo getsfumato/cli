@@ -1,9 +1,10 @@
 use std::{fs, path::PathBuf};
 
 use serde_json::{Map, Value, json};
-use sfumato_adapters::prompts::{LayeredPromptCatalog, PromptOverrideScope};
+use sfumato_adapters::prompts::LayeredPromptCatalog;
 use sfumato_core::prompts::{
-    PromptCatalog, PromptId, PromptOrigin, PromptRenderRequest, PromptVariables,
+    PromptCatalog, PromptId, PromptOrigin, PromptOverrideScope, PromptRenderRequest,
+    PromptVariables,
 };
 
 fn representative_variables() -> PromptVariables {

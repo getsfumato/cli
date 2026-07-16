@@ -11,7 +11,8 @@ use include_dir::{Dir, include_dir};
 use minijinja::{AutoEscape, Environment, UndefinedBehavior};
 use serde::Deserialize;
 use sfumato_core::prompts::{
-    PromptCatalog, PromptError, PromptId, PromptOrigin, PromptProvenance, PromptRenderRequest,
+    PromptCatalog, PromptError, PromptId, PromptManager, PromptOrigin, PromptOverrideScope,
+    PromptProvenance, PromptRenderRequest, PromptTemplateSource, PromptTemplateSummary,
     RenderedPrompt,
 };
 use sha2::{Digest, Sha256};
@@ -245,13 +246,54 @@ impl PromptCatalog for LayeredPromptCatalog {
     }
 }
 
-/// Scope into which a bundled prompt should be copied for customization.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PromptOverrideScope {
-    /// User-global prompt override.
-    User,
-    /// Selected-project prompt override.
-    Project,
+/// Filesystem-backed prompt management adapter.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LayeredPromptManager;
+
+impl PromptManager for LayeredPromptManager {
+    fn list(&self, project_root: &Path) -> Result<Vec<PromptTemplateSummary>, PromptError> {
+        let catalog = LayeredPromptCatalog::for_project(project_root)?;
+        catalog
+            .list()?
+            .into_iter()
+            .map(|info| {
+                let (_, provenance) = catalog.source(info.id)?;
+                Ok(PromptTemplateSummary {
+                    id: info.id,
+                    path: info.path,
+                    required: info.required,
+                    provenance,
+                })
+            })
+            .collect()
+    }
+
+    fn source(
+        &self,
+        project_root: &Path,
+        id: PromptId,
+    ) -> Result<PromptTemplateSource, PromptError> {
+        let catalog = LayeredPromptCatalog::for_project(project_root)?;
+        let (text, provenance) = catalog.source(id)?;
+        Ok(PromptTemplateSource {
+            id,
+            text,
+            provenance,
+        })
+    }
+
+    fn customize(
+        &self,
+        project_root: &Path,
+        id: PromptId,
+        scope: PromptOverrideScope,
+    ) -> Result<PathBuf, PromptError> {
+        LayeredPromptCatalog::for_project(project_root)?.customize(id, scope)
+    }
+
+    fn validate(&self, project_root: &Path) -> Result<Vec<PromptProvenance>, PromptError> {
+        LayeredPromptCatalog::for_project(project_root)?.validate()
+    }
 }
 
 #[derive(serde::Serialize)]

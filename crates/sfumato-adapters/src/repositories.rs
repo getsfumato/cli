@@ -11,11 +11,14 @@ use sfumato_core::{
         CONFIG_SCHEMA_VERSION, GlobalConfig, ProjectConfig, ProjectRegistry, RegisteredProject,
         validate_project_name,
     },
-    repositories::{GlobalConfigRepository, ProjectRepository},
+    repositories::{GlobalConfigRepository, ProjectRepository, RepositorySnapshot},
     themes::DEFAULT_THEME,
 };
 
-use crate::config_files::{ConfigPaths, project_config_path, read_versioned, write_toml};
+use crate::config_files::{
+    ConfigPaths, edit_toml, project_config_path, read_versioned, read_versioned_snapshot,
+    write_toml, write_toml_if_revision,
+};
 
 /// Filesystem-backed global configuration repository.
 #[derive(Clone, Debug)]
@@ -34,20 +37,45 @@ impl FilesystemGlobalConfigRepository {
 }
 
 impl GlobalConfigRepository for FilesystemGlobalConfigRepository {
+    fn exists(&self) -> bool {
+        self.path.is_file()
+    }
+
     fn load(&self) -> Result<GlobalConfig> {
         if !self.path.exists() {
             return Ok(GlobalConfig::default_config());
         }
-        read_versioned(&self.path, "global").with_context(|| {
+        let config: GlobalConfig = read_versioned(&self.path, "global").with_context(|| {
             format!(
                 "Could not load {}. Run `sfumato init user --force` to create a v0.2 configuration.",
                 self.path.display()
             )
-        })
+        })?;
+        config.validate()?;
+        Ok(config)
     }
 
     fn save(&self, config: &GlobalConfig) -> Result<()> {
+        config.validate()?;
         write_toml(&self.path, config)
+    }
+
+    fn load_snapshot(&self) -> Result<RepositorySnapshot<GlobalConfig>> {
+        if !self.path.exists() {
+            return Ok(RepositorySnapshot {
+                value: GlobalConfig::default_config(),
+                revision: "missing".to_string(),
+            });
+        }
+        let snapshot: RepositorySnapshot<GlobalConfig> =
+            read_versioned_snapshot(&self.path, "global")?;
+        snapshot.value.validate()?;
+        Ok(snapshot)
+    }
+
+    fn save_if_revision(&self, config: &GlobalConfig, expected: &str) -> Result<String> {
+        config.validate()?;
+        write_toml_if_revision(&self.path, config, expected)
     }
 }
 
@@ -64,6 +92,27 @@ impl FilesystemProjectRepository {
 
     pub fn default_path() -> Result<Self> {
         Ok(Self::new(ConfigPaths::discover()?.project_registry))
+    }
+
+    fn edit_registry<T>(&self, edit: impl FnOnce(&mut ProjectRegistry) -> Result<T>) -> Result<T> {
+        let mut output = None;
+        edit_toml(&self.registry_path, |table| {
+            let mut registry = if table.is_empty() {
+                ProjectRegistry::default()
+            } else {
+                toml::Value::Table(table.clone())
+                    .try_into()
+                    .context("Could not parse project registry")?
+            };
+            output = Some(edit(&mut registry)?);
+            *table = toml::Value::try_from(&registry)
+                .context("Could not serialize project registry")?
+                .as_table()
+                .cloned()
+                .context("Serialized project registry was not a TOML table")?;
+            Ok(())
+        })?;
+        output.context("Project registry edit did not produce a result")
     }
 }
 
@@ -90,10 +139,13 @@ impl ProjectRepository for FilesystemProjectRepository {
     fn load(&self, name: Option<&str>) -> Result<ProjectConfig> {
         let registry = self.registry()?;
         let (_, root) = registry.selected(name)?;
-        read_versioned(&project_config_path(&root), "project")
+        let project: ProjectConfig = read_versioned(&project_config_path(&root), "project")?;
+        project.validate()?;
+        Ok(project)
     }
 
     fn save(&self, project: &ProjectConfig) -> Result<()> {
+        project.validate()?;
         let registry = self.registry()?;
         let registered = registry
             .projects
@@ -102,19 +154,31 @@ impl ProjectRepository for FilesystemProjectRepository {
         write_toml(&project_config_path(&registered.path), project)
     }
 
+    fn load_snapshot(&self, name: Option<&str>) -> Result<RepositorySnapshot<ProjectConfig>> {
+        let registry = self.registry()?;
+        let (_, root) = registry.selected(name)?;
+        let snapshot: RepositorySnapshot<ProjectConfig> =
+            read_versioned_snapshot(&project_config_path(&root), "project")?;
+        snapshot.value.validate()?;
+        Ok(snapshot)
+    }
+
+    fn save_if_revision(&self, project: &ProjectConfig, expected: &str) -> Result<String> {
+        project.validate()?;
+        let registry = self.registry()?;
+        let registered = registry
+            .projects
+            .get(&project.name)
+            .with_context(|| format!("Project '{}' is not registered", project.name))?;
+        write_toml_if_revision(&project_config_path(&registered.path), project, expected)
+    }
+
     fn register(&self, name: String, path: PathBuf, activate: bool) -> Result<ProjectConfig> {
-        let mut registry = self.registry()?;
-        if registry.projects.contains_key(&name) {
-            bail!("Project '{name}' is already registered");
-        }
         validate_project_name(&name)?;
         let root = absolute_path(&path)?;
         fs::create_dir_all(&root)
             .with_context(|| format!("Could not create project root {}", root.display()))?;
         let config_path = project_config_path(&root);
-        if config_path.exists() {
-            bail!("Project config already exists at {}", config_path.display());
-        }
         let project = ProjectConfig {
             schema_version: CONFIG_SCHEMA_VERSION,
             name: name.clone(),
@@ -124,39 +188,46 @@ impl ProjectRepository for FilesystemProjectRepository {
             model_roles: Default::default(),
             marp: None,
         };
-        write_toml(&config_path, &project)?;
-        registry
-            .projects
-            .insert(name.clone(), RegisteredProject { path: root });
-        if activate || registry.active.is_none() {
-            registry.active = Some(name);
-        }
-        write_toml(&self.registry_path, &registry)?;
-        Ok(project)
+        self.edit_registry(|registry| {
+            if registry.projects.contains_key(&name) {
+                bail!("Project '{name}' is already registered");
+            }
+            if config_path.exists() {
+                bail!("Project config already exists at {}", config_path.display());
+            }
+            write_toml(&config_path, &project)?;
+            registry
+                .projects
+                .insert(name.clone(), RegisteredProject { path: root });
+            if activate || registry.active.is_none() {
+                registry.active = Some(name);
+            }
+            Ok(project)
+        })
     }
 
     fn set_active(&self, name: &str) -> Result<String> {
-        let mut registry = self.registry()?;
-        if !registry.projects.contains_key(name) {
-            bail!("Project '{name}' is not registered");
-        }
-        registry.active = Some(name.to_string());
-        write_toml(&self.registry_path, &registry)?;
-        Ok(name.to_string())
+        self.edit_registry(|registry| {
+            if !registry.projects.contains_key(name) {
+                bail!("Project '{name}' is not registered");
+            }
+            registry.active = Some(name.to_string());
+            Ok(name.to_string())
+        })
     }
 
     fn remove(&self, name: &str) -> Result<ProjectConfig> {
-        let mut registry = self.registry()?;
-        let registered = registry
-            .projects
-            .remove(name)
-            .with_context(|| format!("Project '{name}' is not registered"))?;
-        let project = read_versioned(&project_config_path(&registered.path), "project")?;
-        if registry.active.as_deref() == Some(name) {
-            registry.active = None;
-        }
-        write_toml(&self.registry_path, &registry)?;
-        Ok(project)
+        self.edit_registry(|registry| {
+            let registered = registry
+                .projects
+                .remove(name)
+                .with_context(|| format!("Project '{name}' is not registered"))?;
+            let project = read_versioned(&project_config_path(&registered.path), "project")?;
+            if registry.active.as_deref() == Some(name) {
+                registry.active = None;
+            }
+            Ok(project)
+        })
     }
 }
 

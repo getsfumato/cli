@@ -19,7 +19,7 @@ use crate::{
     config_files::ConfigPaths,
     filesystem::LocalWorkspaceFileSystem,
     openai_compatible::OpenAiCompatibleProviderFactory,
-    prompts::LayeredPromptCatalog,
+    prompts::{LayeredPromptCatalog, LayeredPromptManager},
     renderers::{MarpCliRenderer, MermaidCliRenderer},
     repositories::{FilesystemGlobalConfigRepository, FilesystemProjectRepository},
     sources::FilesystemSourceReader,
@@ -84,6 +84,7 @@ pub fn production_application() -> Result<SfumatoApplication> {
     Ok(SfumatoApplication::new(SfumatoApplicationDependencies {
         config: config_resolver,
         prompts: Arc::new(LayeredPromptCatalogFactory),
+        prompt_manager: Arc::new(LayeredPromptManager),
         artifacts: Arc::new(FilesystemArtifactStore::default_path()?),
         providers: Arc::new(OpenAiCompatibleProviderFactory),
         diagrams: Arc::new(MermaidCliRenderer),

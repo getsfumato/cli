@@ -15,11 +15,13 @@ use crate::{
         ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
     },
     config::{Capability, EffectiveConfig, ModelRole},
+    errors::OperationStage,
     filesystem::WorkspaceFileSystem,
     generation::{
         GenerationOutput, GenerationRequest, GenerationToolSummary, ReviewStatus, SlideLayoutIssue,
         SlideReviewSummary,
     },
+    operation::{OperationContext, OperationEventKind},
     prompts::{PromptCatalog, PromptId, PromptPair, PromptRenderRequest, PromptVariables},
     providers::{
         GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationLimitError,
@@ -41,6 +43,7 @@ const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
 const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
 
 pub struct GenerateSlidesOptions {
+    pub operation: OperationContext,
     pub title: Option<String>,
     pub dry_run: bool,
     pub review: bool,
@@ -73,6 +76,7 @@ pub async fn generate_slides(
     options: GenerateSlidesOptions,
 ) -> Result<GenerateSlidesResult> {
     let GenerateSlidesOptions {
+        operation,
         title: title_override,
         dry_run,
         review,
@@ -87,6 +91,7 @@ pub async fn generate_slides(
         theme_repository,
         workspace,
     } = options;
+    operation.checkpoint(OperationStage::Resolve)?;
     let publish_root = config.publish_root()?;
     let mut artifact_transaction = if dry_run {
         None
@@ -118,6 +123,12 @@ pub async fn generate_slides(
     ensure_inside(&artifact_root, &diagrams_dir)?;
     ensure_inside(&artifact_root, &images_dir)?;
 
+    operation.emit(
+        OperationStage::ReadSources,
+        OperationEventKind::Started,
+        BTreeMap::new(),
+    );
+    operation.checkpoint(OperationStage::ReadSources)?;
     let project_instructions = source_reader.project_instructions(&config.project_root)?;
     let project_instructions_prompt = project_instructions
         .as_ref()
@@ -128,6 +139,11 @@ pub async fn generate_slides(
         .map(|instructions| instructions.path.clone());
     let theme = theme_repository.load(&config.theme)?;
     let documents = source_reader.collect(&request.sources)?;
+    operation.emit(
+        OperationStage::ReadSources,
+        OperationEventKind::Completed,
+        BTreeMap::from([("documents".to_string(), documents.len().to_string())]),
+    );
     let image_selection = config
         .model_defaults
         .contains_key(&Capability::Image)
@@ -165,6 +181,12 @@ pub async fn generate_slides(
     let compact_source_bundle = build_compact_source_bundle(&documents, 12_000);
     let (draft_profile_name, draft_profile) = config.resolve_model(Capability::Text)?;
     let draft_tool_rounds = model_tool_rounds(draft_profile);
+    operation.checkpoint(OperationStage::RenderPrompt)?;
+    operation.emit(
+        OperationStage::RenderPrompt,
+        OperationEventKind::Started,
+        BTreeMap::new(),
+    );
     let mut provider_request = build_generation_request(DraftPromptRequestContext {
         catalog: prompt_catalog.as_ref(),
         config: &config,
@@ -182,6 +204,11 @@ pub async fn generate_slides(
     provider_request.tool_executor = Some(tool_set.executor.clone());
     provider_request.event_sink = event_sink.clone();
     provider_request.max_tool_rounds = draft_tool_rounds;
+    operation.emit(
+        OperationStage::RenderPrompt,
+        OperationEventKind::Completed,
+        BTreeMap::new(),
+    );
     let mut used_prompts = provider_request.prompt_provenance.clone();
     let reviewer_selection = review
         .then(|| config.resolve_model_role(ModelRole::Reviewer))
@@ -230,6 +257,11 @@ pub async fn generate_slides(
         GenerationStage::Draft,
         Some(draft_profile_name),
     );
+    operation.emit(
+        OperationStage::Draft,
+        OperationEventKind::Started,
+        BTreeMap::from([("model".to_string(), draft_profile_name.to_string())]),
+    );
     let provider = provider_factory.text(&config, draft_profile)?;
     let compact_request = build_compact_generation_request(DraftPromptRequestContext {
         catalog: prompt_catalog.as_ref(),
@@ -250,6 +282,8 @@ pub async fn generate_slides(
         provider_request,
         compact_request,
         GenerationStage::Draft,
+        &operation,
+        OperationStage::Draft,
         &event_sink,
     )
     .await
@@ -261,6 +295,11 @@ pub async fn generate_slides(
         ));
     }
     let response = draft_outcome.response;
+    operation.emit(
+        OperationStage::Draft,
+        OperationEventKind::Completed,
+        BTreeMap::new(),
+    );
     let title = match title_override {
         Some(title) => title,
         None => match validate_draft_title(&response.text, &request.instruction) {
@@ -279,7 +318,7 @@ pub async fn generate_slides(
                 used_prompts.extend(title_request.prompt_provenance.clone());
                 title_request.event_sink = event_sink.clone();
                 let repaired = provider
-                    .generate_text(title_request)
+                    .generate_text(title_request, &operation, OperationStage::Repair)
                     .await
                     .context("The drafter could not repair the missing deck title")?;
                 parse_repaired_title(&repaired.text, &request.instruction)
@@ -343,7 +382,11 @@ pub async fn generate_slides(
                         review_request.event_sink = event_sink.clone();
                         used_prompts.extend(review_request.prompt_provenance.clone());
                         let original_chars = request_chars(&review_request);
-                        let response = match reviewer.generate_text(review_request).await {
+                        operation.checkpoint(OperationStage::Review)?;
+                        let response = match reviewer
+                            .generate_text(review_request, &operation, OperationStage::Review)
+                            .await
+                        {
                             Ok(response) => response,
                             Err(error)
                                 if !compacted && generation_limit(&error).is_some() =>
@@ -395,9 +438,9 @@ pub async fn generate_slides(
                             Ok(reviewed) => validate_mermaid_candidate(
                                 &reviewed,
                                 &theme,
-                                &slug,
                                 diagram_renderer.as_ref(),
                                 workspace.as_ref(),
+                                &operation,
                             )
                                 .await
                                 .map(|()| reviewed),
@@ -434,6 +477,7 @@ pub async fn generate_slides(
                     }
                 }
                 .await;
+                operation.checkpoint(OperationStage::Review)?;
                 review_summary.context_compaction = compaction_status;
                 match review_result {
                     Ok(reviewed) => {
@@ -461,17 +505,23 @@ pub async fn generate_slides(
         }
 
         emit_stage(&event_sink, GenerationStage::LayoutCheck, None);
-        match inspect_candidate_layout(
+        operation.emit(
+            OperationStage::InspectLayout,
+            OperationEventKind::Started,
+            BTreeMap::new(),
+        );
+        let layout_result = inspect_candidate_layout(
             &markdown,
             &theme,
-            &slug,
             config.marp.browser_path.as_deref(),
             diagram_renderer.as_ref(),
             slide_renderer.as_ref(),
             workspace.as_ref(),
+            &operation,
         )
-        .await
-        {
+        .await;
+        operation.checkpoint(OperationStage::InspectLayout)?;
+        match layout_result {
             Ok(issues) => {
                 review_summary.layout_check = ReviewStatus::Completed;
                 emit_layout_result(&event_sink, issues.len());
@@ -547,7 +597,14 @@ pub async fn generate_slides(
                                 event_sink.clone(),
                             )?;
                             let response = if compacted_context {
-                                match reviewer.generate_text(compact_repair_request).await {
+                                match reviewer
+                                    .generate_text(
+                                        compact_repair_request,
+                                        &operation,
+                                        OperationStage::Repair,
+                                    )
+                                    .await
+                                {
                                     Ok(response) => response,
                                     Err(error) => {
                                         review_summary.context_compaction = ReviewStatus::Failed;
@@ -564,6 +621,8 @@ pub async fn generate_slides(
                                     repair_request,
                                     compact_repair_request,
                                     GenerationStage::LayoutRepair,
+                                    &operation,
+                                    OperationStage::Repair,
                                     &event_sink,
                                 )
                                 .await
@@ -605,9 +664,9 @@ pub async fn generate_slides(
                                     validate_mermaid_candidate(
                                         &candidate,
                                         &theme,
-                                        &slug,
                                         diagram_renderer.as_ref(),
                                         workspace.as_ref(),
+                                        &operation,
                                     )
                                     .await
                                     .map(|()| replacement)
@@ -661,11 +720,11 @@ pub async fn generate_slides(
                         match inspect_candidate_layout(
                             &repaired,
                             &theme,
-                            &slug,
                             config.marp.browser_path.as_deref(),
                             diagram_renderer.as_ref(),
                             slide_renderer.as_ref(),
                             workspace.as_ref(),
+                            &operation,
                         )
                         .await
                         {
@@ -704,6 +763,14 @@ pub async fn generate_slides(
                 warnings.push(format!("Layout inspection skipped: {error:#}"));
             }
         }
+        operation.emit(
+            OperationStage::InspectLayout,
+            OperationEventKind::Completed,
+            BTreeMap::from([(
+                "remaining_issues".to_string(),
+                review_summary.remaining_issues.len().to_string(),
+            )]),
+        );
         if !review_summary.remaining_issues.is_empty() {
             let slides = review_summary
                 .remaining_issues
@@ -717,35 +784,49 @@ pub async fn generate_slides(
         }
     }
 
+    operation.checkpoint(OperationStage::Render)?;
+    operation.emit(
+        OperationStage::Render,
+        OperationEventKind::Started,
+        BTreeMap::new(),
+    );
     workspace.create_dir_all(&slides_dir)?;
     let (markdown, diagram_artifacts) = render_mermaid_diagrams(
         &markdown,
         &diagrams_dir,
-        &slug,
         &theme,
         diagram_renderer.as_ref(),
         workspace.as_ref(),
+        &operation,
+        OperationStage::Render,
     )
     .await?;
     copy_theme_css(&theme, &theme_css_path, workspace.as_ref())?;
     workspace.write(&markdown_path, markdown.as_bytes())?;
 
     emit_stage(&event_sink, GenerationStage::Rendering, None);
-    let rendered_pdf = match slide_renderer
+    let rendered_pdf_result = slide_renderer
         .render_pdf(
             &markdown_path,
             &theme_css_path,
             &pdf_path,
             config.marp.browser_path.as_deref(),
+            &operation,
         )
-        .await
-    {
+        .await;
+    operation.checkpoint(OperationStage::Render)?;
+    let rendered_pdf = match rendered_pdf_result {
         Ok(()) => Some(pdf_path),
         Err(error) => {
             warnings.push(format!("PDF export skipped: {error}"));
             None
         }
     };
+    operation.emit(
+        OperationStage::Render,
+        OperationEventKind::Completed,
+        BTreeMap::from([("pdf".to_string(), rendered_pdf.is_some().to_string())]),
+    );
 
     let mut staged_artifacts = vec![markdown_path.clone(), theme_css_path];
     staged_artifacts.extend(tool_set.generated_artifacts()?);
@@ -763,6 +844,12 @@ pub async fn generate_slides(
         }
     }
     let used_prompts = unique_prompts;
+    operation.checkpoint(OperationStage::CommitArtifacts)?;
+    operation.emit(
+        OperationStage::CommitArtifacts,
+        OperationEventKind::Started,
+        BTreeMap::new(),
+    );
     let transaction = artifact_transaction
         .take()
         .context("Generation artifact transaction is unavailable")?;
@@ -784,7 +871,13 @@ pub async fn generate_slides(
         prompts: used_prompts.clone(),
         warnings: warnings.clone(),
     };
+    let committed_revision = transaction.revision_id().to_string();
     let committed = transaction.commit(manifest)?;
+    operation.emit(
+        OperationStage::CommitArtifacts,
+        OperationEventKind::Completed,
+        BTreeMap::from([("revision".to_string(), committed_revision)]),
+    );
     let remap = |path: &Path| -> Result<PathBuf> {
         Ok(committed.root.join(
             path.strip_prefix(&slides_dir)
@@ -798,6 +891,7 @@ pub async fn generate_slides(
         .map(|path| remap(path))
         .collect::<Result<Vec<_>>>()?;
     artifacts.push(committed.manifest_path.clone());
+    operation.checkpoint(OperationStage::Publish)?;
     let published_pdf_path = match (&committed_pdf, publish_root) {
         (Some(pdf), Some(destination)) => Some(workspace.publish_atomic(pdf, &destination)?),
         _ => None,
@@ -891,10 +985,15 @@ async fn generate_with_compact_retry(
     request: TextGenerationRequest,
     compact_request: TextGenerationRequest,
     stage: GenerationStage,
+    operation: &OperationContext,
+    operation_stage: OperationStage,
     event_sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
 ) -> Result<CompactRetryOutcome> {
     let original_chars = request_chars(&request);
-    match provider.generate_text(request).await {
+    match provider
+        .generate_text(request, operation, operation_stage)
+        .await
+    {
         Ok(response) => Ok(CompactRetryOutcome {
             response,
             limit_error: None,
@@ -908,7 +1007,7 @@ async fn generate_with_compact_retry(
             );
             let limit_error = format!("{error:#}");
             let response = provider
-                .generate_text(compact_request)
+                .generate_text(compact_request, operation, operation_stage)
                 .await
                 .map_err(CompactRetryError)?;
             Ok(CompactRetryOutcome {
@@ -1021,11 +1120,13 @@ fn copy_theme_css(
 async fn render_mermaid_diagrams(
     markdown: &str,
     diagrams_dir: &Path,
-    _slug: &str,
     theme: &ThemePackage,
     renderer: &dyn DiagramRenderer,
     workspace: &dyn WorkspaceFileSystem,
+    operation: &OperationContext,
+    stage: OperationStage,
 ) -> Result<(String, Vec<PathBuf>)> {
+    operation.checkpoint(stage)?;
     let blocks = extract_mermaid_blocks(markdown)?;
     if blocks.is_empty() {
         return Ok((markdown.to_string(), Vec::new()));
@@ -1047,7 +1148,13 @@ async fn render_mermaid_diagrams(
         let artifact_path = diagrams_dir.join(format!("{name}.svg"));
         workspace.write(&source_path, source.as_bytes())?;
         let _svg = renderer
-            .render_svg(&source_path, &artifact_path, &mermaid_theme)
+            .render_svg(
+                &source_path,
+                &artifact_path,
+                &mermaid_theme,
+                operation,
+                stage,
+            )
             .await?;
         if !workspace.is_file(&artifact_path) {
             bail!(
@@ -1703,19 +1810,20 @@ struct LayoutRepairRetryContext {
 async fn validate_mermaid_candidate(
     markdown: &str,
     theme: &ThemePackage,
-    slug: &str,
     diagram_renderer: &dyn DiagramRenderer,
     workspace: &dyn WorkspaceFileSystem,
+    operation: &OperationContext,
 ) -> Result<()> {
     let temp = workspace.temporary_directory("sfumato-mermaid-review-")?;
     let diagrams_dir = temp.path().join("diagrams");
     render_mermaid_diagrams(
         markdown,
         &diagrams_dir,
-        slug,
         theme,
         diagram_renderer,
         workspace,
+        operation,
+        OperationStage::Repair,
     )
     .await
     .map(|_| ())
@@ -1730,12 +1838,13 @@ fn should_retry_model_output(error: &anyhow::Error) -> bool {
 async fn inspect_candidate_layout(
     markdown: &str,
     theme: &ThemePackage,
-    slug: &str,
     browser_path: Option<&Path>,
     diagram_renderer: &dyn DiagramRenderer,
     slide_renderer: &dyn SlideRenderer,
     workspace: &dyn WorkspaceFileSystem,
+    operation: &OperationContext,
 ) -> Result<Vec<SlideLayoutIssue>> {
+    operation.checkpoint(OperationStage::InspectLayout)?;
     let temp = workspace.temporary_directory("sfumato-layout-review-")?;
     let markdown_path = temp.path().join("review.md");
     let theme_path = temp.path().join("theme.css");
@@ -1744,16 +1853,23 @@ async fn inspect_candidate_layout(
     let (rendered, _) = render_mermaid_diagrams(
         markdown,
         &diagrams_dir,
-        slug,
         theme,
         diagram_renderer,
         workspace,
+        operation,
+        OperationStage::InspectLayout,
     )
     .await?;
     copy_theme_css(theme, &theme_path, workspace)?;
     workspace.write(&markdown_path, rendered.as_bytes())?;
     slide_renderer
-        .inspect_layout(&markdown_path, &theme_path, &html_path, browser_path)
+        .inspect_layout(
+            &markdown_path,
+            &theme_path,
+            &html_path,
+            browser_path,
+            operation,
+        )
         .await
 }
 

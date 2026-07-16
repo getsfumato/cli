@@ -121,9 +121,11 @@ impl ThemeService {
         requested_project: Option<&str>,
     ) -> Result<ProjectConfig> {
         self.repository.load(name)?;
-        let mut project = self.project_repository.load(requested_project)?;
+        let snapshot = self.project_repository.load_snapshot(requested_project)?;
+        let mut project = snapshot.value;
         project.theme = name.to_string();
-        self.project_repository.save(&project)?;
+        self.project_repository
+            .save_if_revision(&project, &snapshot.revision)?;
         Ok(project)
     }
 

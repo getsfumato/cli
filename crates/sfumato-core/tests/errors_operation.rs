@@ -1,18 +1,15 @@
-#[path = "../src/errors.rs"]
-mod errors;
-#[path = "../src/operation.rs"]
-mod operation;
-
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use errors::{ErrorClass, ErrorCode, OperationStage, SfumatoError};
-use operation::{
-    CancellationHandle, DiscardEvents, EventDelivery, EventSink, EventSinkError, OperationContext,
-    OperationEvent, OperationEventKind,
+use sfumato_core::{
+    errors::{ErrorClass, ErrorCode, OperationStage, SfumatoError},
+    operation::{
+        CancellationHandle, DiscardEvents, EventDelivery, EventSink, EventSinkError,
+        OperationContext, OperationEvent, OperationEventKind,
+    },
 };
 use sfumato_domain::JobId;
 

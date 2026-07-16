@@ -6,7 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Serialize;
 
-use crate::generation::SlideLayoutIssue;
+use crate::{errors::OperationStage, generation::SlideLayoutIssue, operation::OperationContext};
 
 /// Semantic Mermaid styling derived from a Sfumato theme.
 #[derive(Clone, Debug, Serialize)]
@@ -35,6 +35,8 @@ pub trait DiagramRenderer: Send + Sync {
         input_path: &Path,
         output_path: &Path,
         theme: &MermaidThemeConfig,
+        operation: &OperationContext,
+        stage: OperationStage,
     ) -> Result<String>;
 }
 
@@ -48,6 +50,7 @@ pub trait SlideRenderer: Send + Sync {
         theme_css_path: &Path,
         pdf_path: &Path,
         browser_path: Option<&Path>,
+        operation: &OperationContext,
     ) -> Result<()>;
 
     /// Measures horizontal and vertical overflow in a themed Marp deck.
@@ -57,5 +60,6 @@ pub trait SlideRenderer: Send + Sync {
         theme_css_path: &Path,
         html_path: &Path,
         browser_path: Option<&Path>,
+        operation: &OperationContext,
     ) -> Result<Vec<SlideLayoutIssue>>;
 }

@@ -11,6 +11,7 @@ use sfumato_core::providers::{
     TextModel, TextModelRequest, TextModelResponse, ToolCall, ToolCallFunction,
     ToolExecutionRequest, ToolExecutor,
 };
+use sfumato_core::{errors::OperationStage, operation::OperationContext};
 
 struct ScriptedModel {
     responses: Mutex<VecDeque<TextModelResponse>>,
@@ -19,7 +20,12 @@ struct ScriptedModel {
 
 #[async_trait]
 impl TextModel for ScriptedModel {
-    async fn complete(&self, request: TextModelRequest) -> Result<TextModelResponse> {
+    async fn complete(
+        &self,
+        request: TextModelRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
+    ) -> Result<TextModelResponse> {
         self.requests.lock().unwrap().push(request);
         Ok(self.responses.lock().unwrap().pop_front().unwrap())
     }
@@ -29,7 +35,12 @@ struct EchoTool;
 
 #[async_trait]
 impl ToolExecutor for EchoTool {
-    async fn execute(&self, request: ToolExecutionRequest) -> Result<String> {
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
+    ) -> Result<String> {
         Ok(json!({"tool": request.name, "arguments": request.arguments}).to_string())
     }
 }
@@ -68,7 +79,14 @@ async fn agent_runner_owns_tool_rounds_and_transcript() {
     request.tool_executor = Some(Arc::new(EchoTool));
     request.event_sink = Some(Arc::new(move |event| event_log.lock().unwrap().push(event)));
 
-    let response = runner.generate_text(request).await.unwrap();
+    let response = runner
+        .generate_text(
+            request,
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(response.text, "Complete deck");
     let requests = model.requests.lock().unwrap();
@@ -106,7 +124,14 @@ async fn tool_exhaustion_disables_tools_for_the_contract_turn() {
     request.tool_executor = Some(Arc::new(EchoTool));
     request.tool_exhausted_prompt = Some("Return the final output now.".to_string());
 
-    let response = runner.generate_text(request).await.unwrap();
+    let response = runner
+        .generate_text(
+            request,
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(response.text, "Final answer");
     let requests = model.requests.lock().unwrap();
