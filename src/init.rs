@@ -1,31 +1,29 @@
-use std::{collections::BTreeMap, env};
+use std::{collections::BTreeMap, env, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::{Confirm, Select, Text};
 
-use sfumato_core::config::{Capability, GlobalConfig, ModelDefaults, ModelProfile};
-use sfumato_core::setup::{SetupService, UserSetupRequest};
+use sfumato_core::application::SfumatoApplication;
+use sfumato_core::config::{Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile};
 use sfumato_domain::SecretRef;
 
 pub struct InitService {
-    setup: SetupService,
+    application: Arc<SfumatoApplication>,
 }
 
 impl InitService {
-    pub fn new() -> Result<Self> {
-        Ok(Self {
-            setup: SetupService::load()?,
-        })
+    pub fn new(application: Arc<SfumatoApplication>) -> Self {
+        Self { application }
     }
 
     pub fn write_user_config(&self, yes: bool, force: bool) -> Result<()> {
-        if self.setup.user_config_exists()
+        if self.application.user_config_exists()
             && !force
             && (yes
                 || !Confirm::new(&format!(
                     "{} already exists. Overwrite it?",
-                    self.setup.user_config_path().display()
+                    self.application.user_config_path().display()
                 ))
                 .with_default(false)
                 .prompt()?)
@@ -47,7 +45,7 @@ impl InitService {
         );
         spinner.set_message("Writing user config");
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-        let result = self.setup.setup_user(UserSetupRequest { config })?;
+        let result = self.application.setup_user(config)?;
         spinner.finish_with_message(format!("Wrote {}", result.path.display()));
         Ok(())
     }
@@ -85,10 +83,11 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
             connector,
             model,
             capabilities: vec![Capability::Text, Capability::Code],
-            options: BTreeMap::from([
-                ("temperature".to_string(), toml::Value::Float(0.4)),
-                ("max_tokens".to_string(), toml::Value::Integer(4000)),
-            ]),
+            options: ModelOptions {
+                temperature: Some(0.4),
+                max_tokens: Some(4000),
+                ..Default::default()
+            },
         },
     );
     config.defaults = ModelDefaults(BTreeMap::from([(

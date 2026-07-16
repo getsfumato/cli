@@ -1,7 +1,5 @@
 use std::{
     collections::BTreeMap,
-    fs,
-    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -11,43 +9,35 @@ use serde::Serialize;
 use sfumato_domain::ArtifactKind;
 use sha2::{Digest, Sha256};
 use slug::slugify;
-use walkdir::WalkDir;
 
 use crate::{
     artifacts::{
         ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
     },
     config::{Capability, EffectiveConfig, ModelRole},
+    filesystem::WorkspaceFileSystem,
     generation::{
         GenerationOutput, GenerationRequest, GenerationToolSummary, ReviewStatus, SlideLayoutIssue,
         SlideReviewSummary,
     },
-    instructions::ProjectInstructions,
     prompts::{PromptCatalog, PromptId, PromptPair, PromptRenderRequest, PromptVariables},
     providers::{
         GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationLimitError,
         TextGenerationProvider, TextGenerationRequest, TextGenerationResponse, ToolDefinition,
     },
-    renderers::{
-        diagrams::{MermaidDiagramRenderer, MermaidThemeConfig},
-        marp,
-    },
+    renderers::{DiagramRenderer, MermaidThemeConfig, SlideRenderer},
+    repositories::ThemeRepository,
     review::{ReviewSnapshot, decks::SlideDeckDocument, parse_json_patch},
-    themes::{ThemePackage, ThemeService, ThemeTokens},
-    tools::{ImageToolConfig, generation_tools},
+    sources::{SourceDocument, SourceReader},
+    themes::{ThemePackage, ThemeTokens},
+    tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
 
 mod edit;
 
 pub use edit::{EditSlidesOptions, EditSlidesRequest, EditSlidesResult, edit_slides};
 
-const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "md", "txt", "rs", "py", "js", "ts", "html", "css", "json", "toml", "yaml", "yml",
-];
 const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
-const MAX_SOURCE_FILES: usize = 256;
-const MAX_SOURCE_BYTES_PER_FILE: u64 = 1_048_576;
-const MAX_SOURCE_TOTAL_BYTES: u64 = 16_777_216;
 const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
 
 pub struct GenerateSlidesOptions {
@@ -58,6 +48,12 @@ pub struct GenerateSlidesOptions {
     pub prompt_catalog: Arc<dyn PromptCatalog>,
     pub artifact_store: Arc<dyn ArtifactStore>,
     pub provider_factory: Arc<dyn ProviderFactory>,
+    pub diagram_renderer: Arc<dyn DiagramRenderer>,
+    pub slide_renderer: Arc<dyn SlideRenderer>,
+    pub source_reader: Arc<dyn SourceReader>,
+    pub tool_factory: Arc<dyn GenerationToolFactory>,
+    pub theme_repository: Arc<dyn ThemeRepository>,
+    pub workspace: Arc<dyn WorkspaceFileSystem>,
 }
 
 #[derive(Debug)]
@@ -69,12 +65,6 @@ pub struct GenerateSlidesResult {
     pub prompt_preview: Option<String>,
     pub tool_summaries: Vec<GenerationToolSummary>,
     pub warnings: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-struct SourceDocument {
-    path: PathBuf,
-    content: String,
 }
 
 pub async fn generate_slides(
@@ -90,6 +80,12 @@ pub async fn generate_slides(
         prompt_catalog,
         artifact_store,
         provider_factory,
+        diagram_renderer,
+        slide_renderer,
+        source_reader,
+        tool_factory,
+        theme_repository,
+        workspace,
     } = options;
     let publish_root = config.publish_root()?;
     let mut artifact_transaction = if dry_run {
@@ -122,16 +118,16 @@ pub async fn generate_slides(
     ensure_inside(&artifact_root, &diagrams_dir)?;
     ensure_inside(&artifact_root, &images_dir)?;
 
-    let project_instructions = ProjectInstructions::load(&config.project_root)?;
+    let project_instructions = source_reader.project_instructions(&config.project_root)?;
     let project_instructions_prompt = project_instructions
         .as_ref()
-        .map(ProjectInstructions::prompt_section)
-        .unwrap_or_else(|| "Project instructions: no SFUMATO.md was found.".to_string());
+        .map(|instructions| instructions.content.clone())
+        .unwrap_or_default();
     let project_instructions_path = project_instructions
         .as_ref()
         .map(|instructions| instructions.path.clone());
-    let theme = ThemeService::load()?.resolve(&config.theme)?;
-    let documents = collect_sources(&request.sources)?;
+    let theme = theme_repository.load(&config.theme)?;
+    let documents = source_reader.collect(&request.sources)?;
     let image_selection = config
         .model_defaults
         .contains_key(&Capability::Image)
@@ -152,12 +148,12 @@ pub async fn generate_slides(
             })
         })
         .transpose()?;
-    let tool_set = generation_tools(
-        &config.project_root,
-        &request.sources,
-        image_tool,
-        prompt_catalog.clone(),
-    )?;
+    let tool_set = tool_factory.create(GenerationToolsRequest {
+        project_root: config.project_root.clone(),
+        sources: request.sources.clone(),
+        image: image_tool,
+        prompt_catalog: prompt_catalog.clone(),
+    })?;
     let review_tool_definitions = tool_set
         .definitions
         .iter()
@@ -396,7 +392,13 @@ pub async fn generate_slides(
                             Ok(reviewed)
                         })();
                         let candidate = match candidate {
-                            Ok(reviewed) => validate_mermaid_candidate(&reviewed, &theme, &slug)
+                            Ok(reviewed) => validate_mermaid_candidate(
+                                &reviewed,
+                                &theme,
+                                &slug,
+                                diagram_renderer.as_ref(),
+                                workspace.as_ref(),
+                            )
                                 .await
                                 .map(|()| reviewed),
                             Err(error) => Err(error),
@@ -464,6 +466,9 @@ pub async fn generate_slides(
             &theme,
             &slug,
             config.marp.browser_path.as_deref(),
+            diagram_renderer.as_ref(),
+            slide_renderer.as_ref(),
+            workspace.as_ref(),
         )
         .await
         {
@@ -597,9 +602,15 @@ pub async fn generate_slides(
                                             markdown: replacement.clone(),
                                         }],
                                     );
-                                    validate_mermaid_candidate(&candidate, &theme, &slug)
-                                        .await
-                                        .map(|()| replacement)
+                                    validate_mermaid_candidate(
+                                        &candidate,
+                                        &theme,
+                                        &slug,
+                                        diagram_renderer.as_ref(),
+                                        workspace.as_ref(),
+                                    )
+                                    .await
+                                    .map(|()| replacement)
                                 }
                                 Err(error) => Err(error),
                             };
@@ -652,6 +663,9 @@ pub async fn generate_slides(
                             &theme,
                             &slug,
                             config.marp.browser_path.as_deref(),
+                            diagram_renderer.as_ref(),
+                            slide_renderer.as_ref(),
+                            workspace.as_ref(),
                         )
                         .await
                         {
@@ -703,22 +717,28 @@ pub async fn generate_slides(
         }
     }
 
-    fs::create_dir_all(&slides_dir)
-        .with_context(|| format!("Could not create {}", slides_dir.display()))?;
-    let (markdown, diagram_artifacts) =
-        render_mermaid_diagrams(&markdown, &diagrams_dir, &slug, &theme).await?;
-    copy_theme_css(&theme, &theme_css_path)?;
-    fs::write(&markdown_path, markdown)
-        .with_context(|| format!("Could not write {}", markdown_path.display()))?;
+    workspace.create_dir_all(&slides_dir)?;
+    let (markdown, diagram_artifacts) = render_mermaid_diagrams(
+        &markdown,
+        &diagrams_dir,
+        &slug,
+        &theme,
+        diagram_renderer.as_ref(),
+        workspace.as_ref(),
+    )
+    .await?;
+    copy_theme_css(&theme, &theme_css_path, workspace.as_ref())?;
+    workspace.write(&markdown_path, markdown.as_bytes())?;
 
     emit_stage(&event_sink, GenerationStage::Rendering, None);
-    let rendered_pdf = match marp::render_pdf(
-        &markdown_path,
-        &theme_css_path,
-        &pdf_path,
-        config.marp.browser_path.as_deref(),
-    )
-    .await
+    let rendered_pdf = match slide_renderer
+        .render_pdf(
+            &markdown_path,
+            &theme_css_path,
+            &pdf_path,
+            config.marp.browser_path.as_deref(),
+        )
+        .await
     {
         Ok(()) => Some(pdf_path),
         Err(error) => {
@@ -779,7 +799,7 @@ pub async fn generate_slides(
         .collect::<Result<Vec<_>>>()?;
     artifacts.push(committed.manifest_path.clone());
     let published_pdf_path = match (&committed_pdf, publish_root) {
-        (Some(pdf), Some(destination)) => Some(publish_artifact(pdf, &destination)?),
+        (Some(pdf), Some(destination)) => Some(workspace.publish_atomic(pdf, &destination)?),
         _ => None,
     };
     let published_artifacts = published_pdf_path.iter().cloned().collect();
@@ -802,39 +822,6 @@ pub async fn generate_slides(
         tool_summaries,
         warnings,
     })
-}
-
-fn publish_artifact(artifact: &Path, destination_dir: &Path) -> Result<PathBuf> {
-    let filename = artifact
-        .file_name()
-        .context("Published artifact must have a filename")?;
-    fs::create_dir_all(destination_dir)
-        .with_context(|| format!("Could not create {}", destination_dir.display()))?;
-    let destination = destination_dir.join(filename);
-    if artifact != destination {
-        let mut source = fs::File::open(artifact)
-            .with_context(|| format!("Could not open {} for publishing", artifact.display()))?;
-        let mut temporary =
-            tempfile::NamedTempFile::new_in(destination_dir).with_context(|| {
-                format!(
-                    "Could not create a temporary published artifact in {}",
-                    destination_dir.display()
-                )
-            })?;
-        io::copy(&mut source, &mut temporary).with_context(|| {
-            format!(
-                "Could not stage {} for publishing to {}",
-                artifact.display(),
-                destination.display()
-            )
-        })?;
-        temporary.as_file().sync_all()?;
-        temporary
-            .persist(&destination)
-            .map_err(|error| error.error)
-            .with_context(|| format!("Could not atomically publish {}", destination.display()))?;
-    }
-    Ok(destination)
 }
 
 fn resource_artifact_file(root: &Path, path: &Path) -> Result<ResourceArtifactFile> {
@@ -1023,15 +1010,12 @@ fn summarize_tools(tools: &[ToolDefinition]) -> Vec<GenerationToolSummary> {
         .collect()
 }
 
-fn copy_theme_css(theme: &ThemePackage, destination: &Path) -> Result<()> {
-    fs::create_dir_all(
-        destination
-            .parent()
-            .context("Theme CSS output path must have a parent")?,
-    )?;
-    fs::copy(theme.marp_css_path(), destination)
-        .with_context(|| format!("Could not copy theme CSS to {}", destination.display()))?;
-    Ok(())
+fn copy_theme_css(
+    theme: &ThemePackage,
+    destination: &Path,
+    workspace: &dyn WorkspaceFileSystem,
+) -> Result<()> {
+    workspace.copy_file(&theme.marp_css_path(), destination)
 }
 
 async fn render_mermaid_diagrams(
@@ -1039,15 +1023,15 @@ async fn render_mermaid_diagrams(
     diagrams_dir: &Path,
     _slug: &str,
     theme: &ThemePackage,
+    renderer: &dyn DiagramRenderer,
+    workspace: &dyn WorkspaceFileSystem,
 ) -> Result<(String, Vec<PathBuf>)> {
     let blocks = extract_mermaid_blocks(markdown)?;
     if blocks.is_empty() {
         return Ok((markdown.to_string(), Vec::new()));
     }
 
-    fs::create_dir_all(diagrams_dir)
-        .with_context(|| format!("Could not create {}", diagrams_dir.display()))?;
-    let renderer = MermaidDiagramRenderer;
+    workspace.create_dir_all(diagrams_dir)?;
     let mermaid_theme = mermaid_theme_config(&theme.manifest.tokens);
     let mut rendered = String::new();
     let mut cursor = 0;
@@ -1061,12 +1045,11 @@ async fn render_mermaid_diagrams(
         let name = format!("diagram-{}", &content_hash[..16]);
         let source_path = diagrams_dir.join(format!("{name}.mmd"));
         let artifact_path = diagrams_dir.join(format!("{name}.svg"));
-        fs::write(&source_path, &source)
-            .with_context(|| format!("Could not write {}", source_path.display()))?;
+        workspace.write(&source_path, source.as_bytes())?;
         let _svg = renderer
             .render_svg(&source_path, &artifact_path, &mermaid_theme)
             .await?;
-        if !artifact_path.exists() {
+        if !workspace.is_file(&artifact_path) {
             bail!(
                 "Mermaid CLI did not write the expected SVG artifact {}",
                 artifact_path.display()
@@ -1081,33 +1064,33 @@ async fn render_mermaid_diagrams(
     }
 
     rendered.push_str(&markdown[cursor..]);
-    prune_unreferenced_diagrams(&rendered, diagrams_dir)?;
+    prune_unreferenced_diagrams(&rendered, diagrams_dir, workspace)?;
     Ok((rendered, artifacts))
 }
 
-fn prune_unreferenced_diagrams(markdown: &str, diagrams_dir: &Path) -> Result<()> {
-    for entry in fs::read_dir(diagrams_dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_symlink() {
-            bail!(
-                "Diagram directory contains an unsafe symlink: {}",
-                entry.path().display()
-            );
+fn prune_unreferenced_diagrams(
+    markdown: &str,
+    diagrams_dir: &Path,
+    workspace: &dyn WorkspaceFileSystem,
+) -> Result<()> {
+    for entry in workspace.read_dir(diagrams_dir)? {
+        let path = entry.path;
+        if !entry.is_file {
+            continue;
         }
-        let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("svg") {
             continue;
         }
-        let filename = entry.file_name();
-        let filename = filename.to_string_lossy();
+        let filename = path
+            .file_name()
+            .context("Diagram artifact must have a filename")?
+            .to_string_lossy();
         if markdown.contains(&format!("diagrams/{filename}")) {
             continue;
         }
-        fs::remove_file(&path)?;
+        workspace.remove_file(&path)?;
         let source = path.with_extension("mmd");
-        if source.exists() {
-            fs::remove_file(source)?;
-        }
+        workspace.remove_file(&source)?;
     }
     Ok(())
 }
@@ -1721,12 +1704,21 @@ async fn validate_mermaid_candidate(
     markdown: &str,
     theme: &ThemePackage,
     slug: &str,
+    diagram_renderer: &dyn DiagramRenderer,
+    workspace: &dyn WorkspaceFileSystem,
 ) -> Result<()> {
-    let temp = tempfile::tempdir().context("Could not create Mermaid validation workspace")?;
+    let temp = workspace.temporary_directory("sfumato-mermaid-review-")?;
     let diagrams_dir = temp.path().join("diagrams");
-    render_mermaid_diagrams(markdown, &diagrams_dir, slug, theme)
-        .await
-        .map(|_| ())
+    render_mermaid_diagrams(
+        markdown,
+        &diagrams_dir,
+        slug,
+        theme,
+        diagram_renderer,
+        workspace,
+    )
+    .await
+    .map(|_| ())
 }
 
 fn should_retry_model_output(error: &anyhow::Error) -> bool {
@@ -1740,17 +1732,29 @@ async fn inspect_candidate_layout(
     theme: &ThemePackage,
     slug: &str,
     browser_path: Option<&Path>,
+    diagram_renderer: &dyn DiagramRenderer,
+    slide_renderer: &dyn SlideRenderer,
+    workspace: &dyn WorkspaceFileSystem,
 ) -> Result<Vec<SlideLayoutIssue>> {
-    let temp = tempfile::tempdir().context("Could not create slide review workspace")?;
+    let temp = workspace.temporary_directory("sfumato-layout-review-")?;
     let markdown_path = temp.path().join("review.md");
     let theme_path = temp.path().join("theme.css");
     let diagrams_dir = temp.path().join("diagrams");
     let html_path = temp.path().join("review.html");
-    let (rendered, _) = render_mermaid_diagrams(markdown, &diagrams_dir, slug, theme).await?;
-    copy_theme_css(theme, &theme_path)?;
-    fs::write(&markdown_path, rendered)
-        .with_context(|| format!("Could not write {}", markdown_path.display()))?;
-    marp::inspect_layout(&markdown_path, &theme_path, &html_path, browser_path).await
+    let (rendered, _) = render_mermaid_diagrams(
+        markdown,
+        &diagrams_dir,
+        slug,
+        theme,
+        diagram_renderer,
+        workspace,
+    )
+    .await?;
+    copy_theme_css(theme, &theme_path, workspace)?;
+    workspace.write(&markdown_path, rendered.as_bytes())?;
+    slide_renderer
+        .inspect_layout(&markdown_path, &theme_path, &html_path, browser_path)
+        .await
 }
 
 fn layout_score(issues: &[SlideLayoutIssue]) -> (usize, u64) {
@@ -1764,13 +1768,7 @@ fn layout_score(issues: &[SlideLayoutIssue]) -> (usize, u64) {
 }
 
 fn model_tool_rounds(profile: &crate::config::ModelProfile) -> usize {
-    profile
-        .options
-        .get("max_tool_rounds")
-        .and_then(toml::Value::as_integer)
-        .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(8)
+    profile.options.tool_rounds()
 }
 
 fn format_tokens(tokens: &std::collections::BTreeMap<String, String>) -> String {
@@ -1779,32 +1777,6 @@ fn format_tokens(tokens: &std::collections::BTreeMap<String, String>) -> String 
         .map(|(name, value)| format!("{name}={value}"))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn collect_sources(inputs: &[PathBuf]) -> Result<Vec<SourceDocument>> {
-    let mut documents = Vec::new();
-    let mut total_bytes = 0_u64;
-    let mut seen = std::collections::BTreeSet::new();
-
-    for input in inputs {
-        if input.is_file() {
-            push_source_file(input, &mut documents, &mut total_bytes, &mut seen)?;
-        } else if input.is_dir() {
-            for entry in WalkDir::new(input) {
-                let entry = entry.with_context(|| {
-                    format!("Could not traverse source directory {}", input.display())
-                })?;
-                if entry.file_type().is_file() {
-                    push_source_file(entry.path(), &mut documents, &mut total_bytes, &mut seen)?;
-                }
-            }
-        } else {
-            bail!("Input path does not exist: {}", input.display());
-        }
-    }
-
-    documents.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(documents)
 }
 
 fn validate_title(title: &str) -> Result<String> {
@@ -1953,70 +1925,6 @@ fn titles_are_equivalent(title: &str, instruction: &str) -> bool {
             .collect::<String>()
     };
     normalize(title) == normalize(instruction)
-}
-
-fn push_source_file(
-    path: &Path,
-    documents: &mut Vec<SourceDocument>,
-    total_bytes: &mut u64,
-    seen: &mut std::collections::BTreeSet<PathBuf>,
-) -> Result<()> {
-    if !is_supported(path) {
-        return Ok(());
-    }
-
-    let canonical = fs::canonicalize(path)
-        .with_context(|| format!("Could not resolve source {}", path.display()))?;
-    if !seen.insert(canonical.clone()) {
-        return Ok(());
-    }
-    if documents.len() >= MAX_SOURCE_FILES {
-        bail!(
-            "Source selection exceeds the maximum of {MAX_SOURCE_FILES} supported files; select a narrower directory or explicit files"
-        );
-    }
-    let bytes = fs::metadata(&canonical)
-        .with_context(|| format!("Could not inspect {}", canonical.display()))?
-        .len();
-    *total_bytes = total_bytes.saturating_add(bytes.min(MAX_SOURCE_BYTES_PER_FILE));
-    if *total_bytes > MAX_SOURCE_TOTAL_BYTES {
-        bail!(
-            "Source selection exceeds Sfumato's {} MiB preflight budget",
-            MAX_SOURCE_TOTAL_BYTES / 1_048_576
-        );
-    }
-    let mut raw = Vec::new();
-    fs::File::open(&canonical)
-        .with_context(|| format!("Could not open {}", canonical.display()))?
-        .take(MAX_SOURCE_BYTES_PER_FILE + 1)
-        .read_to_end(&mut raw)
-        .with_context(|| format!("Could not read {}", canonical.display()))?;
-    let truncated = raw.len() as u64 > MAX_SOURCE_BYTES_PER_FILE;
-    raw.truncate(MAX_SOURCE_BYTES_PER_FILE as usize);
-    while std::str::from_utf8(&raw).is_err() && !raw.is_empty() {
-        raw.pop();
-    }
-    let mut content = String::from_utf8(raw)
-        .with_context(|| format!("Source {} is not valid UTF-8", canonical.display()))?;
-    if truncated {
-        content.push_str("\n[...source file truncated by sfumato preflight...]");
-    }
-    documents.push(SourceDocument {
-        path: canonical,
-        content,
-    });
-    Ok(())
-}
-
-fn is_supported(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            SUPPORTED_EXTENSIONS
-                .iter()
-                .any(|supported| extension.eq_ignore_ascii_case(supported))
-        })
-        .unwrap_or(false)
 }
 
 fn build_source_bundle(documents: &[SourceDocument]) -> String {

@@ -1,11 +1,14 @@
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use sfumato_domain::SecretRef;
 
 use crate::{
     config::{GlobalConfig, OpenAiCompatibleConnectorConfig},
-    repositories::{FilesystemGlobalConfigRepository, GlobalConfigRepository},
+    repositories::GlobalConfigRepository,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -16,7 +19,7 @@ pub enum ConnectorPreset {
 
 pub struct ConnectorService {
     config: GlobalConfig,
-    repository: Box<dyn GlobalConfigRepository>,
+    repository: Arc<dyn GlobalConfigRepository>,
 }
 
 #[derive(Clone, Debug)]
@@ -26,11 +29,7 @@ pub struct ConnectorSummary {
 }
 
 impl ConnectorService {
-    pub fn load() -> Result<Self> {
-        Self::new(Box::new(FilesystemGlobalConfigRepository::default_path()?))
-    }
-
-    pub fn new(repository: Box<dyn GlobalConfigRepository>) -> Result<Self> {
+    pub fn new(repository: Arc<dyn GlobalConfigRepository>) -> Result<Self> {
         Ok(Self {
             config: repository.load()?,
             repository,
@@ -48,13 +47,12 @@ impl ConnectorService {
             .collect()
     }
 
-    pub fn show(&self, name: &str) -> Result<String> {
-        let connector = self
-            .config
+    pub fn show(&self, name: &str) -> Result<OpenAiCompatibleConnectorConfig> {
+        self.config
             .connectors
             .get(name)
-            .with_context(|| format!("Connector '{name}' was not found"))?;
-        toml::to_string_pretty(connector).context("Could not render connector config")
+            .cloned()
+            .with_context(|| format!("Connector '{name}' was not found"))
     }
 
     pub fn setup(

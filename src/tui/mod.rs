@@ -17,18 +17,15 @@ use ratatui_image::{Resize, StatefulImage, picker::Picker, protocol::StatefulPro
 use serde_json::Value;
 use sfumato_adapters::prompts::{LayeredPromptCatalog, PromptOverrideScope};
 use sfumato_core::{
+    application::SfumatoApplication,
     config::{
-        Capability, ConfigOverrides, EffectiveConfig, GlobalConfig, ModelDefaults, ModelProfile,
+        Capability, ConfigOverrides, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile,
     },
-    config_editor::{ConfigService, ConfigTarget},
-    connectors::{ConnectorPreset, ConnectorService},
-    models::ModelService,
-    projects::ProjectService,
+    config_editor::ConfigTarget,
+    connectors::ConnectorPreset,
     prompts::{PromptCatalog, PromptId, PromptOrigin},
     providers::{GenerationStage, TextGenerationEvent},
     resources::slides::{EditSlidesResult, GenerateSlidesResult},
-    setup::{SetupService, UserSetupRequest},
-    themes::ThemeService,
 };
 use sfumato_domain::SecretRef;
 use tachyonfx::{EffectManager, fx};
@@ -67,11 +64,11 @@ const CYAN: Color = Color::Rgb(131, 165, 152);
 const RED: Color = Color::Rgb(251, 73, 52);
 const MAGENTA: Color = Color::Rgb(211, 134, 155);
 
-pub async fn run() -> Result<()> {
+pub async fn run(application: Arc<SfumatoApplication>) -> Result<()> {
     let mut terminal = ratatui::init();
     let _guard = TerminalGuard;
     let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    let mut app = App::new(picker);
+    let mut app = App::new(picker, application);
     let result = run_loop(&mut terminal, &mut app).await;
     app.shutdown().await;
     result
@@ -691,6 +688,7 @@ impl ResourceResult {
 }
 
 struct App {
+    application: Arc<SfumatoApplication>,
     screen: Screen,
     nav_index: usize,
     browse_rows: Vec<BrowseRow>,
@@ -723,9 +721,10 @@ struct App {
 }
 
 impl App {
-    fn new(picker: Picker) -> Self {
+    fn new(picker: Picker, application: Arc<SfumatoApplication>) -> Self {
         let (sender, messages) = channel(256);
         Self {
+            application,
             screen: Screen::Home,
             nav_index: 0,
             browse_rows: Vec::new(),
@@ -815,7 +814,7 @@ impl App {
     }
 
     fn open_section(&mut self, section: Section) {
-        match load_section(section) {
+        match load_section(section, &self.application) {
             Ok(rows) => {
                 self.browse_rows = rows;
                 self.browse_index = 0;
@@ -928,19 +927,14 @@ impl App {
             },
             BrowseAction::ModelEdit => {
                 let row = selected.context("Select a model profile to edit")?;
-                let profile = ModelService::load()?.profile(&row.title)?;
+                let profile = self.application.show_model(&row.title)?;
                 let capabilities = profile
                     .capabilities
                     .iter()
                     .map(|capability| capability.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                let options = profile
-                    .options
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let options = profile.options.cli_pairs().join(", ");
                 OperationForm {
                     title: "Edit model profile",
                     kind: OperationKind::ModelEdit,
@@ -1122,7 +1116,7 @@ impl App {
         let Some(row) = self.browse_rows.get(self.browse_index) else {
             return;
         };
-        match ProjectService::load().and_then(|service| service.use_project(&row.title)) {
+        match self.application.use_project(&row.title) {
             Ok(name) => {
                 self.open_section(Section::Projects);
                 self.status = Some((format!("Active project: {name}"), false));
@@ -1198,7 +1192,7 @@ impl App {
             Screen::Browse(section) => section,
             _ => return,
         };
-        match execute_operation(&operation) {
+        match execute_operation(&operation, &self.application) {
             Ok(message) => {
                 self.operation = None;
                 self.open_section(section);
@@ -1336,6 +1330,7 @@ impl App {
             .expect("a started job has a cancellation token")
             .clone();
         let sender = self.sender.clone();
+        let application = Arc::clone(&self.application);
         let sink_sender = sender.clone();
         let sink = Arc::new(move |event| {
             let _ = sink_sender.try_send(UiMessage::GenerationEvent { job_id, event });
@@ -1345,7 +1340,7 @@ impl App {
                 () = cancellation.cancelled() => {
                     let _ = sender.send(UiMessage::ResourceCancelled { job_id }).await;
                 }
-                result = execute_slides(args, Some(sink)) => {
+                result = execute_slides(&application, args, Some(sink)) => {
                     let result = result
                         .map(ResourceResult::Generated)
                         .map_err(|error| format!("{error:#}"));
@@ -1383,6 +1378,7 @@ impl App {
             .expect("a started job has a cancellation token")
             .clone();
         let sender = self.sender.clone();
+        let application = Arc::clone(&self.application);
         let sink_sender = sender.clone();
         let sink = Arc::new(move |event| {
             let _ = sink_sender.try_send(UiMessage::GenerationEvent { job_id, event });
@@ -1392,7 +1388,7 @@ impl App {
                 () = cancellation.cancelled() => {
                     let _ = sender.send(UiMessage::ResourceCancelled { job_id }).await;
                 }
-                result = execute_edit_slides(args, Some(sink)) => {
+                result = execute_edit_slides(&application, args, Some(sink)) => {
                     let result = result
                         .map(ResourceResult::Edited)
                         .map_err(|error| format!("{error:#}"));
@@ -1668,8 +1664,9 @@ impl App {
             &mut state,
         );
 
-        let project = ProjectService::load()
-            .and_then(|service| service.list())
+        let project = self
+            .application
+            .list_projects()
             .ok()
             .and_then(|projects| projects.into_iter().find(|project| project.active));
         let project_name = project
@@ -1680,14 +1677,19 @@ impl App {
             .as_ref()
             .map(|project| project.path.display().to_string())
             .unwrap_or_else(|| "Create or activate a project".to_string());
-        let models = ModelService::load()
-            .map(|service| service.list().len())
+        let models = self
+            .application
+            .list_models()
+            .map(|models| models.len())
             .unwrap_or(0);
-        let connectors = ConnectorService::load()
-            .map(|service| service.list().len())
+        let connectors = self
+            .application
+            .list_connectors()
+            .map(|connectors| connectors.len())
             .unwrap_or(0);
-        let themes = ThemeService::load()
-            .and_then(|service| service.list())
+        let themes = self
+            .application
+            .list_themes()
             .map(|themes| themes.len())
             .unwrap_or(0);
         frame.render_widget(
@@ -2192,12 +2194,12 @@ fn config_target(value: &str) -> Result<ConfigTarget> {
     }
 }
 
-fn execute_operation(form: &OperationForm) -> Result<String> {
+fn execute_operation(form: &OperationForm, application: &SfumatoApplication) -> Result<String> {
     match form.kind {
         OperationKind::ProjectCreate => {
             let name = required_field(form, "Name")?;
             let path = PathBuf::from(required_field(form, "Path")?);
-            let project = ProjectService::load()?.init(name, path, form.toggle("Make active"))?;
+            let project = application.init_project(name, path, form.toggle("Make active"))?;
             Ok(format!("Created project '{}'", project.name))
         }
         OperationKind::ProjectRemove => {
@@ -2205,7 +2207,7 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
                 anyhow::bail!("Confirm removal before continuing");
             }
             let name = form.target.as_deref().context("Project name is missing")?;
-            let removed = ProjectService::load()?.remove(name)?;
+            let removed = application.remove_project(name)?;
             Ok(format!(
                 "Removed project '{}' from the registry",
                 removed.name
@@ -2213,7 +2215,7 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
         }
         OperationKind::ModelAdd => {
             let name = required_field(form, "Name")?;
-            ModelService::load()?.add(
+            application.add_model(
                 name.clone(),
                 required_field(form, "Connector")?,
                 required_field(form, "Model ID")?,
@@ -2227,7 +2229,7 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
                 .target
                 .as_deref()
                 .context("Model profile name is missing")?;
-            ModelService::load()?.edit(
+            application.edit_model(
                 name,
                 Some(required_field(form, "Connector")?),
                 Some(required_field(form, "Model ID")?),
@@ -2237,7 +2239,7 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
             Ok(format!("Updated model profile '{name}'"))
         }
         OperationKind::ModelUse => {
-            let changed = ModelService::load()?.use_default(
+            let changed = application.use_model(
                 &required_field(form, "Capability or role")?,
                 &required_field(form, "Profile")?,
                 optional_field(form, "Project").as_deref(),
@@ -2256,11 +2258,11 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
                 .target
                 .as_deref()
                 .context("Model profile name is missing")?;
-            ModelService::load()?.remove(name)?;
+            application.remove_model(name)?;
             Ok(format!("Removed model profile '{name}'"))
         }
         OperationKind::ConnectorSetup(preset) => {
-            let connector = ConnectorService::load()?.setup(
+            let connector = application.setup_connector(
                 preset,
                 optional_field(form, "Name"),
                 required_field(form, "API key environment")?,
@@ -2269,13 +2271,13 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
         }
         OperationKind::ThemeCreate => {
             let name = required_field(form, "Name")?;
-            ThemeService::load()?.create(&name)?;
+            application.create_theme(&name)?;
             Ok(format!("Created theme '{name}'"))
         }
         OperationKind::ThemeUse => {
             let name = form.target.as_deref().context("Theme name is missing")?;
             let project = optional_field(form, "Project");
-            let updated = ThemeService::load()?.use_for_project(name, project.as_deref())?;
+            let updated = application.use_theme(name, project.as_deref())?;
             Ok(format!(
                 "Project '{}' now uses theme '{}'",
                 updated.name, updated.theme
@@ -2290,17 +2292,16 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
                     .as_deref()
                     .context("Prompt identifier is missing")?,
             )?;
-            let path = tui_prompt_catalog()?.customize(id, scope)?;
+            let path = tui_prompt_catalog(application)?.customize(id, scope)?;
             Ok(format!("Created prompt override at {}", path.display()))
         }
         OperationKind::PromptValidate => {
-            let prompts = tui_prompt_catalog()?.validate()?;
+            let prompts = tui_prompt_catalog(application)?.validate()?;
             Ok(format!("Validated {} prompt templates", prompts.len()))
         }
         OperationKind::ConfigSet => {
-            let service = ConfigService::new()?;
             let key = required_field(form, "Key")?;
-            let path = service.set(
+            let path = application.set_config(
                 config_target(&required_field(form, "Scope")?)?,
                 optional_field(form, "Project"),
                 &key,
@@ -2312,9 +2313,8 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
             if !form.toggle("Confirm deletion") {
                 anyhow::bail!("Confirm deletion before continuing");
             }
-            let service = ConfigService::new()?;
             let key = required_field(form, "Key")?;
-            let path = service.delete(
+            let path = application.delete_config(
                 config_target(&required_field(form, "Scope")?)?,
                 optional_field(form, "Project"),
                 &key,
@@ -2322,8 +2322,7 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
             Ok(format!("Deleted {key} from {}", path.display()))
         }
         OperationKind::SetupUser => {
-            let setup = SetupService::load()?;
-            if setup.user_config_exists() && !form.toggle("Overwrite existing config") {
+            if application.user_config_exists() && !form.toggle("Overwrite existing config") {
                 anyhow::bail!("User config already exists; confirm overwrite before continuing");
             }
             let connector = required_field(form, "Connector")?;
@@ -2344,10 +2343,11 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
                     connector,
                     model: required_field(form, "Model ID")?,
                     capabilities: vec![Capability::Text, Capability::Code],
-                    options: BTreeMap::from([
-                        ("temperature".to_string(), toml::Value::Float(0.4)),
-                        ("max_tokens".to_string(), toml::Value::Integer(4000)),
-                    ]),
+                    options: ModelOptions {
+                        temperature: Some(0.4),
+                        max_tokens: Some(4000),
+                        ..Default::default()
+                    },
                 },
             );
             config.defaults = ModelDefaults(BTreeMap::from([(Capability::Text, profile_name)]));
@@ -2359,7 +2359,7 @@ fn execute_operation(form: &OperationForm) -> Result<String> {
                 form,
                 "API key environment",
             )?)?);
-            let result = setup.setup_user(UserSetupRequest { config })?;
+            let result = application.setup_user(config)?;
             Ok(format!(
                 "Initialized user config at {}",
                 result.path.display()
@@ -2417,13 +2417,14 @@ fn visible_field_range(
     start..end
 }
 
-fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
+fn load_section(section: Section, application: &SfumatoApplication) -> Result<Vec<BrowseRow>> {
     match section {
-        Section::Projects => ProjectService::load()?
-            .list()?
+        Section::Projects => application
+            .list_projects()?
             .into_iter()
             .map(|project| {
-                let detail = ProjectService::load()?.show(Some(&project.name))?;
+                let detail =
+                    toml::to_string_pretty(&application.show_project(Some(&project.name))?)?;
                 Ok(BrowseRow {
                     title: project.name,
                     subtitle: project.path.display().to_string(),
@@ -2432,11 +2433,11 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
                 })
             })
             .collect(),
-        Section::Models => ModelService::load()?
-            .list()
+        Section::Models => application
+            .list_models()?
             .into_iter()
             .map(|model| {
-                let detail = ModelService::load()?.show(&model.name)?;
+                let detail = toml::to_string_pretty(&application.show_model(&model.name)?)?;
                 Ok(BrowseRow {
                     title: model.name,
                     subtitle: format!("{} / {}", model.connector, model.model),
@@ -2445,11 +2446,11 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
                 })
             })
             .collect(),
-        Section::Connectors => ConnectorService::load()?
-            .list()
+        Section::Connectors => application
+            .list_connectors()?
             .into_iter()
             .map(|connector| {
-                let detail = ConnectorService::load()?.show(&connector.name)?;
+                let detail = toml::to_string_pretty(&application.show_connector(&connector.name)?)?;
                 Ok(BrowseRow {
                     title: connector.name,
                     subtitle: connector.base_url,
@@ -2458,11 +2459,12 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
                 })
             })
             .collect(),
-        Section::Themes => ThemeService::load()?
-            .list()?
+        Section::Themes => application
+            .list_themes()?
             .into_iter()
             .map(|theme| {
-                let detail = ThemeService::load()?.show(&theme.name)?;
+                let package = application.show_theme(&theme.name)?;
+                let detail = toml::to_string_pretty(&package.manifest)?;
                 Ok(BrowseRow {
                     title: theme.name,
                     subtitle: "Reusable theme package".to_string(),
@@ -2472,7 +2474,7 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
             })
             .collect(),
         Section::Prompts => {
-            let catalog = tui_prompt_catalog()?;
+            let catalog = tui_prompt_catalog(application)?;
             catalog
                 .list()?
                 .into_iter()
@@ -2497,7 +2499,6 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
                 .collect()
         }
         Section::Configuration => {
-            let service = ConfigService::new()?;
             let rows = [
                 ("Effective", ConfigTarget::Effective),
                 ("User", ConfigTarget::User),
@@ -2505,8 +2506,8 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
             ];
             rows.into_iter()
                 .map(|(name, target)| {
-                    let detail = service
-                        .show(target, None, None)
+                    let detail = application
+                        .show_config(target, None, None)
                         .unwrap_or_else(|error| format!("{error:#}"));
                     Ok(BrowseRow {
                         title: name.to_string(),
@@ -2518,8 +2519,7 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
                 .collect()
         }
         Section::Setup => {
-            let setup = SetupService::load()?;
-            let state = if setup.user_config_exists() {
+            let state = if application.user_config_exists() {
                 "Configured"
             } else {
                 "Not configured"
@@ -2529,16 +2529,16 @@ fn load_section(section: Section) -> Result<Vec<BrowseRow>> {
                 subtitle: state.to_string(),
                 detail: format!(
                     "Status: {state}\nPath: {}\n\nThe user profile owns learning preferences, connectors, model profiles, and user defaults.",
-                    setup.user_config_path().display()
+                    application.user_config_path().display()
                 ),
-                active: setup.user_config_exists(),
+                active: application.user_config_exists(),
             }])
         }
     }
 }
 
-fn tui_prompt_catalog() -> Result<LayeredPromptCatalog> {
-    let config = EffectiveConfig::load(ConfigOverrides::default())?;
+fn tui_prompt_catalog(application: &SfumatoApplication) -> Result<LayeredPromptCatalog> {
+    let config = application.resolve_config(ConfigOverrides::default())?;
     Ok(LayeredPromptCatalog::for_project(config.project_root)?)
 }
 

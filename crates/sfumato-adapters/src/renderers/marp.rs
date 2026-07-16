@@ -4,78 +4,82 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
+use sfumato_core::{generation::SlideLayoutIssue, renderers::SlideRenderer};
 use tokio::process::Command;
 
-use crate::generation::SlideLayoutIssue;
+/// Marp CLI and headless-browser renderer adapter.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MarpCliRenderer;
 
 #[derive(Debug, thiserror::Error)]
-pub enum MarpError {
+enum MarpError {
     #[error("Marp CLI is not installed. Install @marp-team/marp-cli to export PDFs.")]
     Missing,
 }
 
-pub async fn render_pdf(
-    markdown_path: &Path,
-    theme_css_path: &Path,
-    pdf_path: &Path,
-    browser_path: Option<&Path>,
-) -> Result<()> {
-    let args = command_args(markdown_path, theme_css_path, pdf_path, browser_path)?;
-    let output = Command::new("marp").args(args).output().await;
-
-    let output = match output {
-        Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(MarpError::Missing.into());
+#[async_trait]
+impl SlideRenderer for MarpCliRenderer {
+    async fn render_pdf(
+        &self,
+        markdown_path: &Path,
+        theme_css_path: &Path,
+        pdf_path: &Path,
+        browser_path: Option<&Path>,
+    ) -> Result<()> {
+        let args = command_args(markdown_path, theme_css_path, pdf_path, browser_path)?;
+        let output = Command::new("marp").args(args).output().await;
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(MarpError::Missing.into());
+            }
+            Err(error) => return Err(error).context("Could not start Marp CLI"),
+        };
+        if !output.status.success() {
+            bail!(
+                "Marp CLI exited with status {}{}{}",
+                output.status,
+                format_stream("stdout", String::from_utf8_lossy(&output.stdout).trim()),
+                format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
+            );
         }
-        Err(error) => return Err(error).context("Could not start Marp CLI"),
-    };
-
-    if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "Marp CLI exited with status {}{}{}",
-            output.status,
-            format_stream("stdout", stdout.trim()),
-            format_stream("stderr", stderr.trim())
-        );
+        Ok(())
     }
 
-    Ok(())
-}
-
-pub async fn inspect_layout(
-    markdown_path: &Path,
-    theme_css_path: &Path,
-    html_path: &Path,
-    browser_path: Option<&Path>,
-) -> Result<Vec<SlideLayoutIssue>> {
-    render_html(markdown_path, theme_css_path, html_path).await?;
-    inject_layout_inspector(html_path)?;
-    let browser = resolved_browser_path(browser_path)?
-        .context("Could not find Chrome, Chromium, or Edge for Marp layout inspection")?;
-    let url = format!("file://{}", html_path.canonicalize()?.display());
-    let output = Command::new(browser)
-        .args([
-            "--headless",
-            "--disable-gpu",
-            "--allow-file-access-from-files",
-            "--dump-dom",
-            "--virtual-time-budget=3000",
-            &url,
-        ])
-        .output()
-        .await
-        .context("Could not start the browser for Marp layout inspection")?;
-    if !output.status.success() {
-        bail!(
-            "Browser layout inspection exited with status {}{}",
-            output.status,
-            format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
-        );
+    async fn inspect_layout(
+        &self,
+        markdown_path: &Path,
+        theme_css_path: &Path,
+        html_path: &Path,
+        browser_path: Option<&Path>,
+    ) -> Result<Vec<SlideLayoutIssue>> {
+        render_html(markdown_path, theme_css_path, html_path).await?;
+        inject_layout_inspector(html_path)?;
+        let browser = resolved_browser_path(browser_path)?
+            .context("Could not find Chrome, Chromium, or Edge for Marp layout inspection")?;
+        let url = format!("file://{}", html_path.canonicalize()?.display());
+        let output = Command::new(browser)
+            .args([
+                "--headless",
+                "--disable-gpu",
+                "--allow-file-access-from-files",
+                "--dump-dom",
+                "--virtual-time-budget=3000",
+                &url,
+            ])
+            .output()
+            .await
+            .context("Could not start the browser for Marp layout inspection")?;
+        if !output.status.success() {
+            bail!(
+                "Browser layout inspection exited with status {}{}",
+                output.status,
+                format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
+            );
+        }
+        parse_layout_report(&String::from_utf8_lossy(&output.stdout))
     }
-    parse_layout_report(&String::from_utf8_lossy(&output.stdout))
 }
 
 async fn render_html(markdown_path: &Path, theme_css_path: &Path, html_path: &Path) -> Result<()> {
@@ -161,8 +165,8 @@ fn parse_layout_report(html: &str) -> Result<Vec<SlideLayoutIssue>> {
         .find('"')
         .map(|index| start + index)
         .context("Browser returned an incomplete Marp layout report")?;
-    let decoded = percent_decode(&html[start..end])?;
-    serde_json::from_str(&decoded).context("Could not parse Marp layout report")
+    serde_json::from_str(&percent_decode(&html[start..end])?)
+        .context("Could not parse Marp layout report")
 }
 
 fn percent_decode(value: &str) -> Result<String> {
@@ -213,12 +217,17 @@ fn command_args(
     Ok(args)
 }
 
-fn format_stream(label: &str, value: &str) -> String {
-    if value.is_empty() {
-        String::new()
-    } else {
-        format!("\n\n{label}:\n{value}")
+fn resolved_browser_path(configured: Option<&Path>) -> Result<Option<PathBuf>> {
+    if let Some(path) = configured {
+        if !path.is_file() {
+            bail!(
+                "Configured Marp browser path does not exist or is not a file: {}",
+                path.display()
+            );
+        }
+        return Ok(Some(path.to_path_buf()));
     }
+    Ok(detected_browser_path())
 }
 
 fn detected_browser_path() -> Option<PathBuf> {
@@ -232,24 +241,14 @@ fn detected_browser_path() -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
-pub(crate) fn resolved_browser_path(
-    configured_browser_path: Option<&Path>,
-) -> Result<Option<PathBuf>> {
-    if let Some(path) = configured_browser_path {
-        if !path.is_file() {
-            bail!(
-                "Configured Marp browser path does not exist or is not a file: {}",
-                path.display()
-            );
-        }
-        return Ok(Some(path.to_path_buf()));
+fn format_stream(label: &str, value: &str) -> String {
+    if value.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{label}:\n{value}")
     }
-
-    Ok(detected_browser_path())
 }
 
 #[cfg(test)]
-// Test bodies live under tests/unit so implementation files stay focused, while
-// this module hook still lets those tests exercise private helpers.
 #[path = "../../tests/unit/renderers_marp.rs"]
 mod tests;

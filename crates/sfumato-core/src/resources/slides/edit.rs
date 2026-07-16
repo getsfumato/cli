@@ -1,11 +1,9 @@
 use std::{
-    fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use json_patch::Patch;
 use serde::Serialize;
 use serde_json::Value;
@@ -22,18 +20,20 @@ use super::{
 use crate::{
     artifacts::{ArtifactResourceKind, ArtifactStore, ResourceArtifactManifest},
     config::{Capability, EffectiveConfig},
+    filesystem::WorkspaceFileSystem,
     generation::SlideLayoutIssue,
-    instructions::ProjectInstructions,
     prompts::{PromptCatalog, PromptId, PromptPair, PromptProvenance},
     providers::{
         GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationProvider,
         TextGenerationRequest,
     },
-    renderers::marp,
+    renderers::{DiagramRenderer, SlideRenderer},
+    repositories::ThemeRepository,
     review::{
         PatchReport, ReviewConstraint, ReviewSnapshot, decks::SlideDeckDocument, parse_json_patch,
     },
-    themes::{ThemePackage, ThemeService},
+    sources::SourceReader,
+    themes::ThemePackage,
 };
 
 pub struct EditSlidesRequest {
@@ -46,6 +46,11 @@ pub struct EditSlidesOptions {
     pub prompt_catalog: Arc<dyn PromptCatalog>,
     pub artifact_store: Arc<dyn ArtifactStore>,
     pub provider_factory: Arc<dyn ProviderFactory>,
+    pub diagram_renderer: Arc<dyn DiagramRenderer>,
+    pub slide_renderer: Arc<dyn SlideRenderer>,
+    pub source_reader: Arc<dyn SourceReader>,
+    pub theme_repository: Arc<dyn ThemeRepository>,
+    pub workspace: Arc<dyn WorkspaceFileSystem>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,12 +79,7 @@ pub async fn edit_slides(
         bail!("Instruction cannot be empty");
     }
 
-    let source_markdown_path = fs::canonicalize(&request.markdown_path).with_context(|| {
-        format!(
-            "Could not resolve slide deck {}",
-            request.markdown_path.display()
-        )
-    })?;
+    let source_markdown_path = options.workspace.canonicalize(&request.markdown_path)?;
     if source_markdown_path
         .extension()
         .and_then(|value| value.to_str())
@@ -87,15 +87,9 @@ pub async fn edit_slides(
     {
         bail!("Slide edits require a generated `.md` deck");
     }
-    let artifact_root = fs::canonicalize(
-        options.artifact_store.project_root(&config.project_name)?,
-    )
-    .with_context(|| {
-        format!(
-            "Could not resolve the artifact workspace for project '{}'",
-            config.project_name
-        )
-    })?;
+    let artifact_root = options
+        .workspace
+        .canonicalize(&options.artifact_store.project_root(&config.project_name)?)?;
     ensure_inside(&artifact_root, &source_markdown_path).with_context(|| {
         format!(
             "{} is not a generated artifact for project '{}'; select the correct project with --project",
@@ -104,20 +98,21 @@ pub async fn edit_slides(
         )
     })?;
 
-    let original = fs::read_to_string(&source_markdown_path)
-        .with_context(|| format!("Could not read {}", source_markdown_path.display()))?;
+    let original = options.workspace.read_text(&source_markdown_path)?;
     let title = extract_generated_title(&original)
         .context("Could not find the title slide in the generated Marp deck")?;
     let document = SlideDeckDocument::from_marp(&original, &title)
         .context("Could not parse the generated Marp deck for focused editing")?;
     let snapshot = document.snapshot()?;
     let theme_name = deck_theme_name(&original)?;
-    let theme = ThemeService::load()?.resolve(&theme_name)?;
-    let project_instructions = ProjectInstructions::load(&config.project_root)?;
+    let theme = options.theme_repository.load(&theme_name)?;
+    let project_instructions = options
+        .source_reader
+        .project_instructions(&config.project_root)?;
     let project_instructions_prompt = project_instructions
         .as_ref()
-        .map(ProjectInstructions::prompt_section)
-        .unwrap_or_else(|| "Project instructions: no SFUMATO.md was found.".to_string());
+        .map(|instructions| instructions.content.clone())
+        .unwrap_or_default();
     let (model_name, model_profile) = config.resolve_model(Capability::Text)?;
     let provider = options.provider_factory.text(&config, model_profile)?;
     let model_name = model_name.to_string();
@@ -128,7 +123,11 @@ pub async fn edit_slides(
     let source_revision_root = source_markdown_path
         .parent()
         .context("Generated slide deck must live in a revision directory")?;
-    copy_revision_tree(source_revision_root, transaction.staging_root())?;
+    options.workspace.copy_tree(
+        source_revision_root,
+        transaction.staging_root(),
+        &["manifest.json"],
+    )?;
     let markdown_path = transaction.staging_root().join(
         source_markdown_path
             .file_name()
@@ -181,6 +180,9 @@ pub async fn edit_slides(
         &theme,
         &slug,
         config.marp.browser_path.as_deref(),
+        options.diagram_renderer.as_ref(),
+        options.slide_renderer.as_ref(),
+        options.workspace.as_ref(),
     )
     .await
     {
@@ -204,9 +206,16 @@ pub async fn edit_slides(
         }
     };
 
-    let (rendered_markdown, diagram_artifacts) =
-        render_mermaid_diagrams(&candidate, &diagrams_dir, &slug, &theme).await?;
-    copy_theme_css(&theme, &theme_css_path)?;
+    let (rendered_markdown, diagram_artifacts) = render_mermaid_diagrams(
+        &candidate,
+        &diagrams_dir,
+        &slug,
+        &theme,
+        options.diagram_renderer.as_ref(),
+        options.workspace.as_ref(),
+    )
+    .await?;
+    copy_theme_css(&theme, &theme_css_path, options.workspace.as_ref())?;
     emit_stage(&options.event_sink, GenerationStage::Rendering, None);
     replace_deck_and_pdf(
         &markdown_path,
@@ -214,12 +223,16 @@ pub async fn edit_slides(
         &theme_css_path,
         &rendered_markdown,
         config.marp.browser_path.as_deref(),
+        options.slide_renderer.as_ref(),
+        options.workspace.as_ref(),
     )
     .await?;
 
     let mut artifacts = vec![markdown_path.clone(), pdf_path.clone(), theme_css_path];
     artifacts.extend(diagram_artifacts);
-    let files = collect_revision_files(transaction.staging_root())?
+    let files = options
+        .workspace
+        .list_files(transaction.staging_root(), &["manifest.json"])?
         .iter()
         .map(|path| resource_artifact_file(transaction.staging_root(), path))
         .collect::<Result<Vec<_>>>()?;
@@ -530,103 +543,22 @@ fn deck_theme_name(markdown: &str) -> Result<String> {
         .context("Generated slide deck frontmatter does not select a theme")
 }
 
-fn copy_revision_tree(source: &Path, destination: &Path) -> Result<()> {
-    fs::create_dir_all(destination)
-        .with_context(|| format!("Could not create {}", destination.display()))?;
-    for entry in fs::read_dir(source)
-        .with_context(|| format!("Could not read revision directory {}", source.display()))?
-    {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
-            bail!(
-                "Generated revision contains an unsafe symlink: {}",
-                entry.path().display()
-            );
-        }
-        if entry.file_name() == "manifest.json" {
-            continue;
-        }
-        let target = destination.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_revision_tree(&entry.path(), &target)?;
-        } else if file_type.is_file() {
-            fs::copy(entry.path(), &target).with_context(|| {
-                format!(
-                    "Could not stage existing artifact {}",
-                    entry.path().display()
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn collect_revision_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(root).follow_links(false) {
-        let entry = entry?;
-        if entry.file_type().is_symlink() {
-            bail!(
-                "Revision contains an unsafe symlink: {}",
-                entry.path().display()
-            );
-        }
-        if entry.file_type().is_file() && entry.file_name() != "manifest.json" {
-            files.push(entry.path().to_path_buf());
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
 async fn replace_deck_and_pdf(
     markdown_path: &Path,
     pdf_path: &Path,
     theme_css_path: &Path,
     markdown: &str,
     browser_path: Option<&Path>,
+    slide_renderer: &dyn SlideRenderer,
+    workspace: &dyn WorkspaceFileSystem,
 ) -> Result<()> {
-    let parent = markdown_path
-        .parent()
-        .context("Slide deck path must have a parent directory")?;
-    let mut temporary_markdown = tempfile::Builder::new()
-        .prefix(".sfumato-edit-")
-        .suffix(".md")
-        .tempfile_in(parent)
-        .context("Could not create a temporary edited deck")?;
-    temporary_markdown
-        .write_all(markdown.as_bytes())
-        .context("Could not write the temporary edited deck")?;
-    temporary_markdown
-        .flush()
-        .context("Could not flush the temporary edited deck")?;
-    let temporary_pdf = tempfile::Builder::new()
-        .prefix(".sfumato-edit-")
-        .suffix(".pdf")
-        .tempfile_in(parent)
-        .context("Could not create a temporary edited PDF")?;
-
-    marp::render_pdf(
-        temporary_markdown.path(),
-        theme_css_path,
-        temporary_pdf.path(),
-        browser_path,
-    )
-    .await
-    .context("Could not render the edited slide deck to PDF; the original deck was preserved")?;
-
-    if let Ok(metadata) = fs::metadata(markdown_path) {
-        fs::set_permissions(temporary_markdown.path(), metadata.permissions())?;
-    }
-    temporary_markdown
-        .persist(markdown_path)
-        .map_err(|error| anyhow!(error.error))
-        .with_context(|| format!("Could not replace {}", markdown_path.display()))?;
-    temporary_pdf
-        .persist(pdf_path)
-        .map_err(|error| anyhow!(error.error))
-        .with_context(|| format!("Could not replace {}", pdf_path.display()))?;
+    workspace.write(markdown_path, markdown.as_bytes())?;
+    slide_renderer
+        .render_pdf(markdown_path, theme_css_path, pdf_path, browser_path)
+        .await
+        .context(
+            "Could not render the edited slide deck to PDF; the original deck was preserved",
+        )?;
     Ok(())
 }
 

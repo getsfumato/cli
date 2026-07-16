@@ -7,7 +7,7 @@ Theme colors: {{ theme_colors }}
 Theme fonts: {{ theme_fonts }}
 Instruction: {{ instruction }}
 
-{{ project_instructions }}
+{% include "shared/project-instructions.md.j2" %}
 
 Requirements:
 {% if title_provided %}

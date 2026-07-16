@@ -1,11 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::{
-    config::{GlobalConfig, user_config_path},
-    repositories::{FilesystemGlobalConfigRepository, GlobalConfigRepository, ThemeRepository},
-    themes::FilesystemThemeRepository,
+    config::GlobalConfig,
+    repositories::{GlobalConfigRepository, ThemeRepository},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 #[derive(Clone, Debug)]
 pub struct UserSetupRequest {
@@ -19,25 +21,15 @@ pub struct UserSetupResult {
 
 pub struct SetupService {
     user_config_path: PathBuf,
-    global_repository: Box<dyn GlobalConfigRepository>,
-    theme_repository: Box<dyn ThemeRepository>,
+    global_repository: Arc<dyn GlobalConfigRepository>,
+    theme_repository: Arc<dyn ThemeRepository>,
 }
 
 impl SetupService {
-    pub fn load() -> Result<Self> {
-        let user_config_path =
-            user_config_path().context("Could not find user configuration directory")?;
-        Ok(Self::new(
-            user_config_path.clone(),
-            Box::new(FilesystemGlobalConfigRepository::new(user_config_path)),
-            Box::new(FilesystemThemeRepository::load()?),
-        ))
-    }
-
     pub fn new(
         user_config_path: PathBuf,
-        global_repository: Box<dyn GlobalConfigRepository>,
-        theme_repository: Box<dyn ThemeRepository>,
+        global_repository: Arc<dyn GlobalConfigRepository>,
+        theme_repository: Arc<dyn ThemeRepository>,
     ) -> Self {
         Self {
             user_config_path,

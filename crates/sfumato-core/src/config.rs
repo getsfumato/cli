@@ -1,7 +1,5 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
-    io::Write,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -87,7 +85,91 @@ pub struct ModelProfile {
     pub model: String,
     pub capabilities: Vec<Capability>,
     #[serde(default)]
-    pub options: BTreeMap<String, toml::Value>,
+    pub options: ModelOptions,
+}
+
+/// Typed inference options shared by currently implemented capabilities.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_rounds: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+}
+
+impl ModelOptions {
+    pub fn text_temperature(&self) -> f32 {
+        self.temperature.unwrap_or(0.4)
+    }
+
+    pub fn text_max_tokens(&self) -> u32 {
+        self.max_tokens.unwrap_or(4000)
+    }
+
+    pub fn tool_rounds(&self) -> usize {
+        self.max_tool_rounds
+            .filter(|rounds| *rounds > 0)
+            .unwrap_or(8)
+    }
+
+    pub fn merge(&mut self, changes: Self) {
+        macro_rules! replace_some {
+            ($($field:ident),+ $(,)?) => {
+                $(if changes.$field.is_some() { self.$field = changes.$field; })+
+            };
+        }
+        replace_some!(
+            temperature,
+            max_tokens,
+            max_tool_rounds,
+            top_p,
+            seed,
+            quality,
+            background,
+            size,
+            aspect_ratio,
+            output_format,
+        );
+    }
+
+    pub fn cli_pairs(&self) -> Vec<String> {
+        let mut pairs = Vec::new();
+        macro_rules! push_option {
+            ($field:ident) => {
+                if let Some(value) = &self.$field {
+                    pairs.push(format!("{}={value}", stringify!($field)));
+                }
+            };
+        }
+        push_option!(temperature);
+        push_option!(max_tokens);
+        push_option!(max_tool_rounds);
+        push_option!(top_p);
+        push_option!(seed);
+        push_option!(quality);
+        push_option!(background);
+        push_option!(size);
+        push_option!(aspect_ratio);
+        push_option!(output_format);
+        pairs
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -200,29 +282,6 @@ pub struct EffectiveConfig {
 }
 
 impl GlobalConfig {
-    pub fn load() -> Result<Self> {
-        let path = user_config_path().context("Could not find a user configuration directory")?;
-        Self::load_from(&path)
-    }
-
-    pub fn load_from(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default_config());
-        }
-
-        ensure_config_version(path, "global")?;
-        read_toml(path).with_context(|| {
-            format!(
-                "Could not load {}. Run `sfumato init user --force` to create a v0.2 configuration.",
-                path.display()
-            )
-        })
-    }
-
-    pub fn save_to(&self, path: &Path) -> Result<()> {
-        write_toml(path, self)
-    }
-
     pub fn default_config() -> Self {
         let mut models = BTreeMap::new();
         models.insert(
@@ -231,10 +290,11 @@ impl GlobalConfig {
                 connector: "ollama".to_string(),
                 model: "llama3.2".to_string(),
                 capabilities: vec![Capability::Text, Capability::Code],
-                options: BTreeMap::from([
-                    ("temperature".to_string(), toml::Value::Float(0.4)),
-                    ("max_tokens".to_string(), toml::Value::Integer(4000)),
-                ]),
+                options: ModelOptions {
+                    temperature: Some(0.4),
+                    max_tokens: Some(4000),
+                    ..Default::default()
+                },
             },
         );
         models.insert(
@@ -243,10 +303,11 @@ impl GlobalConfig {
                 connector: "openrouter".to_string(),
                 model: "openai/gpt-4o-mini".to_string(),
                 capabilities: vec![Capability::Text, Capability::Code],
-                options: BTreeMap::from([
-                    ("temperature".to_string(), toml::Value::Float(0.4)),
-                    ("max_tokens".to_string(), toml::Value::Integer(4000)),
-                ]),
+                options: ModelOptions {
+                    temperature: Some(0.4),
+                    max_tokens: Some(4000),
+                    ..Default::default()
+                },
             },
         );
 
@@ -292,24 +353,6 @@ impl GlobalConfig {
 }
 
 impl ProjectRegistry {
-    pub fn load() -> Result<Self> {
-        let path = projects_registry_path()
-            .context("Could not find a user configuration directory for projects")?;
-        Self::load_from(&path)
-    }
-
-    pub fn load_from(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        ensure_config_version(path, "project registry")?;
-        read_toml(path)
-    }
-
-    pub fn save_to(&self, path: &Path) -> Result<()> {
-        write_toml(path, self)
-    }
-
     pub fn selected(&self, requested: Option<&str>) -> Result<(String, PathBuf)> {
         let name = requested
             .map(ToOwned::to_owned)
@@ -324,16 +367,13 @@ impl ProjectRegistry {
 }
 
 impl EffectiveConfig {
-    pub fn load(overrides: ConfigOverrides) -> Result<Self> {
-        let global = GlobalConfig::load()?;
-        let registry = ProjectRegistry::load()?;
-        let (selected_name, project_root) = registry.selected(overrides.project.as_deref())?;
-        let project_path = project_config_path(&project_root);
-        let project: ProjectConfig =
-            load_project_config(&project_path, crate::themes::DEFAULT_THEME).with_context(
-                || format!("Could not load project config {}", project_path.display()),
-            )?;
-
+    pub fn from_parts(
+        global: GlobalConfig,
+        selected_name: String,
+        project_root: PathBuf,
+        project: ProjectConfig,
+        overrides: ConfigOverrides,
+    ) -> Result<Self> {
         if project.name != selected_name {
             bail!(
                 "Registered project name '{selected_name}' does not match project config name '{}'",
@@ -424,10 +464,6 @@ impl EffectiveConfig {
         Ok((profile_name, profile))
     }
 
-    pub fn artifact_root(&self) -> Result<PathBuf> {
-        project_artifact_root(&self.project_name)
-    }
-
     pub fn publish_root(&self) -> Result<Option<PathBuf>> {
         self.publish_dir
             .as_ref()
@@ -435,34 +471,11 @@ impl EffectiveConfig {
                 if publish_dir.is_absolute() {
                     Ok(publish_dir.clone())
                 } else {
-                    Ok(absolutize(&self.project_root)?.join(publish_dir))
+                    Ok(self.project_root.join(publish_dir))
                 }
             })
             .transpose()
     }
-}
-
-pub fn user_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("sfumato/config.toml"))
-}
-
-pub fn projects_registry_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("sfumato/projects.toml"))
-}
-
-pub fn themes_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("sfumato/themes"))
-}
-
-pub fn projects_artifact_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|dir| dir.join(".sfumato/Projects"))
-}
-
-pub fn project_artifact_root(project_name: &str) -> Result<PathBuf> {
-    validate_project_name(project_name)?;
-    Ok(projects_artifact_dir()
-        .context("Could not find the user home directory for Sfumato artifacts")?
-        .join(project_name))
 }
 
 pub fn validate_project_name(name: &str) -> Result<()> {
@@ -479,60 +492,6 @@ pub fn validate_project_name(name: &str) -> Result<()> {
         bail!("Project name '{name}' cannot contain path separators or traversal");
     }
     Ok(())
-}
-
-pub fn project_config_path(project_root: &Path) -> PathBuf {
-    project_root.join(".sfumato/project.toml")
-}
-
-pub fn read_toml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("Could not read {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("Could not parse {}", path.display()))
-}
-
-pub fn write_toml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Could not create {}", parent.display()))?;
-    }
-    let rendered = toml::to_string_pretty(value).context("Could not render config as TOML")?;
-    let parent = path
-        .parent()
-        .context("Config path must have a parent directory")?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
-        format!(
-            "Could not create a temporary config in {}",
-            parent.display()
-        )
-    })?;
-    temporary
-        .write_all(rendered.as_bytes())
-        .with_context(|| format!("Could not write temporary config for {}", path.display()))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .with_context(|| format!("Could not sync temporary config for {}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("Could not atomically replace {}", path.display()))?;
-    Ok(())
-}
-
-pub fn load_project_config(path: &Path, _fallback_theme: &str) -> Result<ProjectConfig> {
-    ensure_config_version(path, "project")?;
-    read_toml(path)
-}
-
-fn absolutize(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(env::current_dir()
-            .context("Could not read current directory")?
-            .join(path))
-    }
 }
 
 fn merge_model_defaults(
@@ -562,29 +521,6 @@ fn resolve_theme_name(project_theme: &str, command_theme: Option<String>) -> Str
 }
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 4;
-
-fn read_toml_value(path: &Path) -> Result<toml::Value> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("Could not read config file {}", path.display()))?;
-    toml::from_str::<toml::Value>(&text)
-        .with_context(|| format!("Could not parse config file {}", path.display()))
-}
-
-fn ensure_config_version(path: &Path, kind: &str) -> Result<()> {
-    let value = read_toml_value(path)?;
-    let version = value
-        .get("schema_version")
-        .and_then(toml::Value::as_integer)
-        .with_context(|| format!("{kind} config {} is missing schema_version", path.display()))?;
-    if version != i64::from(CONFIG_SCHEMA_VERSION) {
-        bail!(
-            "Unsupported {kind} config schema {version} at {}; Sfumato v0.2 requires schema {}. Reinitialize the configuration instead of migrating it in place.",
-            path.display(),
-            CONFIG_SCHEMA_VERSION
-        );
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 // Test bodies live under tests/unit so implementation files stay focused, while

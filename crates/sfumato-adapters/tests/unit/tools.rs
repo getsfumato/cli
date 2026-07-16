@@ -1,16 +1,10 @@
 use super::*;
-use crate::{
-    prompts::{
-        PromptCatalog, PromptError, PromptId, PromptOrigin, PromptProvenance, PromptRenderRequest,
-        RenderedPrompt,
-    },
-    providers::{
-        ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
-        ToolExecutionRequest,
-    },
-    themes::{THEME_SCHEMA_VERSION, ThemeAdapters, ThemeManifest, ThemeTokens},
-};
 use async_trait::async_trait;
+use sfumato_core::{
+    prompts::{PromptError, PromptOrigin, PromptProvenance, RenderedPrompt},
+    providers::{ImageGenerationProvider, ImageGenerationResponse},
+    themes::{THEME_SCHEMA_VERSION, ThemeAdapters, ThemeManifest, ThemePackage, ThemeTokens},
+};
 use std::{collections::BTreeMap, sync::Mutex};
 
 struct MockImageProvider {
@@ -23,7 +17,7 @@ impl PromptCatalog for TestPromptCatalog {
     fn render(
         &self,
         request: PromptRenderRequest,
-    ) -> std::result::Result<RenderedPrompt, PromptError> {
+    ) -> std::result::Result<sfumato_core::prompts::RenderedPrompt, PromptError> {
         if request.id == PromptId::ToolsGenerationDescriptions {
             return Ok(RenderedPrompt {
                 text: serde_json::json!({
@@ -172,21 +166,22 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
             },
         },
     };
-    let tools = generation_tools(
-        temp.path(),
-        &[],
-        Some(ImageToolConfig {
-            provider: Arc::new(MockImageProvider {
-                prompts: prompts.clone(),
+    let tools = FilesystemGenerationToolFactory
+        .create(GenerationToolsRequest {
+            project_root: temp.path().to_path_buf(),
+            sources: Vec::new(),
+            image: Some(ImageToolConfig {
+                provider: Arc::new(MockImageProvider {
+                    prompts: prompts.clone(),
+                }),
+                profile_name: "openrouter-image".to_string(),
+                output_dir: temp.path().join("slides/images"),
+                theme,
+                project_instructions: Some("Use Spanish labels.".to_string()),
             }),
-            profile_name: "openrouter-image".to_string(),
-            output_dir: temp.path().join("slides/images"),
-            theme,
-            project_instructions: Some("Use Spanish labels.".to_string()),
-        }),
-        Arc::new(TestPromptCatalog),
-    )
-    .unwrap();
+            prompt_catalog: Arc::new(TestPromptCatalog),
+        })
+        .unwrap();
 
     assert!(
         tools
@@ -223,7 +218,14 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
 #[test]
 fn filesystem_only_tools_do_not_declare_image_generation() {
     let temp = tempfile::tempdir().unwrap();
-    let tools = generation_tools(temp.path(), &[], None, Arc::new(TestPromptCatalog)).unwrap();
+    let tools = FilesystemGenerationToolFactory
+        .create(GenerationToolsRequest {
+            project_root: temp.path().to_path_buf(),
+            sources: Vec::new(),
+            image: None,
+            prompt_catalog: Arc::new(TestPromptCatalog),
+        })
+        .unwrap();
 
     assert!(
         tools

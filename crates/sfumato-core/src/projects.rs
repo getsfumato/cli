@@ -1,11 +1,8 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 
-use crate::{
-    config::ProjectConfig,
-    repositories::{FilesystemProjectRepository, ProjectRepository},
-};
+use crate::{config::ProjectConfig, repositories::ProjectRepository};
 
 #[derive(Clone, Debug)]
 pub struct ProjectSummary {
@@ -20,17 +17,11 @@ pub struct ProjectRemoved {
 }
 
 pub struct ProjectService {
-    repository: Box<dyn ProjectRepository>,
+    repository: Arc<dyn ProjectRepository>,
 }
 
 impl ProjectService {
-    pub fn load() -> Result<Self> {
-        Ok(Self::new(Box::new(
-            FilesystemProjectRepository::default_path()?,
-        )))
-    }
-
-    pub fn new(repository: Box<dyn ProjectRepository>) -> Self {
+    pub fn new(repository: Arc<dyn ProjectRepository>) -> Self {
         Self { repository }
     }
 
@@ -51,9 +42,8 @@ impl ProjectService {
             .collect())
     }
 
-    pub fn show(&self, requested: Option<&str>) -> Result<String> {
-        let project = self.repository.load(requested)?;
-        toml::to_string_pretty(&project).map_err(Into::into)
+    pub fn show(&self, requested: Option<&str>) -> Result<ProjectConfig> {
+        self.repository.load(requested)
     }
 
     pub fn use_project(&self, name: &str) -> Result<String> {

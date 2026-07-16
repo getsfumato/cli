@@ -1,10 +1,9 @@
+use sfumato_adapters::repositories::{
+    FilesystemGlobalConfigRepository, FilesystemProjectRepository,
+};
 use sfumato_core::{
     config::{CONFIG_SCHEMA_VERSION, GlobalConfig},
-    repositories::{
-        FilesystemGlobalConfigRepository, FilesystemProjectRepository, GlobalConfigRepository,
-        ProjectRepository, ThemeRepository,
-    },
-    themes::{DEFAULT_THEME, FilesystemThemeRepository},
+    repositories::{GlobalConfigRepository, ProjectRepository},
 };
 
 #[test]
@@ -33,25 +32,4 @@ fn filesystem_project_repository_registers_and_preserves_files_on_remove() {
 
     repository.remove("course").unwrap();
     assert!(project_root.join(".sfumato/project.toml").is_file());
-}
-
-#[test]
-fn filesystem_theme_repository_installs_and_creates_packages() {
-    let temp = tempfile::tempdir().unwrap();
-    let repository = FilesystemThemeRepository::new(temp.path().join("themes"));
-
-    let default_theme = repository.install_default().unwrap();
-    let custom_theme = repository.create("gruvbox").unwrap();
-
-    assert_eq!(default_theme.manifest.name, DEFAULT_THEME);
-    assert_eq!(custom_theme.manifest.name, "gruvbox");
-    assert_eq!(
-        repository
-            .list()
-            .unwrap()
-            .into_iter()
-            .map(|theme| theme.name)
-            .collect::<Vec<_>>(),
-        vec!["gruvbox".to_string(), DEFAULT_THEME.to_string()]
-    );
 }

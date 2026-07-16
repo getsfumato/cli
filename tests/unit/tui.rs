@@ -1,5 +1,9 @@
 use super::*;
 
+fn test_application() -> Arc<SfumatoApplication> {
+    Arc::new(sfumato_adapters::application::production_application().unwrap())
+}
+
 #[test]
 fn generation_form_requires_an_instruction() {
     let form = GenerateForm::default();
@@ -96,7 +100,7 @@ fn compact_viewport_keeps_the_selected_form_control_visible() {
 
 #[test]
 fn home_enter_opens_the_selected_resource_form() {
-    let mut app = App::new(Picker::halfblocks());
+    let mut app = App::new(Picker::halfblocks(), test_application());
     app.nav_index = 0;
 
     app.handle_home_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -154,7 +158,7 @@ fn dashboard_renders_at_eighty_by_twenty_four() {
 
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
-    let mut app = App::new(Picker::halfblocks());
+    let mut app = App::new(Picker::halfblocks(), test_application());
 
     terminal.draw(|frame| app.draw(frame)).unwrap();
     let rendered = terminal

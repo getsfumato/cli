@@ -70,27 +70,6 @@ fn command_theme_wins_over_project_theme() {
 }
 
 #[test]
-fn rejects_legacy_project_config_without_rewriting_it() {
-    let temp = tempfile::tempdir().unwrap();
-    let project_path = temp.path().join("project.toml");
-    let legacy = "schema_version = 2\nname = \"demo\"\ntheme = \"gruvbox\"\n";
-    fs::write(&project_path, legacy).unwrap();
-
-    let error = load_project_config(&project_path, "ignored").unwrap_err();
-
-    assert!(!format!("{error:#}").is_empty());
-    assert_eq!(fs::read_to_string(project_path).unwrap(), legacy);
-}
-
-#[test]
-fn artifact_root_is_centralized_outside_the_project_source() {
-    let root = project_artifact_root("University").unwrap();
-
-    assert!(root.ends_with(".sfumato/Projects/University"));
-    assert!(validate_project_name("../University").is_err());
-}
-
-#[test]
 fn publish_root_resolves_relative_to_the_project_without_changing_artifacts() {
     let mut config = effective_config();
     config.project_root = PathBuf::from("/tmp/source-vault");
@@ -100,12 +79,7 @@ fn publish_root_resolves_relative_to_the_project_without_changing_artifacts() {
         config.publish_root().unwrap(),
         Some(PathBuf::from("/tmp/source-vault/Published Slides"))
     );
-    assert!(
-        config
-            .artifact_root()
-            .unwrap()
-            .ends_with(".sfumato/Projects/university")
-    );
+    assert!(validate_project_name("../University").is_err());
 }
 
 #[test]
@@ -186,18 +160,4 @@ fn existing_config_without_model_roles_still_loads() {
     let rendered = rendered.replace("[model_roles]\n", "");
     let parsed: GlobalConfig = toml::from_str(&rendered).unwrap();
     assert!(parsed.model_roles.is_empty());
-}
-
-#[test]
-fn rejects_future_global_config_without_rewriting_it() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("config.toml");
-    let future = "schema_version = 99\n[user]\nlearning_style = []\n";
-    fs::write(&path, future).unwrap();
-
-    let error = read_toml::<GlobalConfig>(&path).unwrap_err();
-
-    let message = format!("{error:#}");
-    assert!(message.contains("version") && message.contains("99"));
-    assert_eq!(fs::read_to_string(path).unwrap(), future);
 }

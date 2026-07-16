@@ -4,7 +4,7 @@ Project: {{ project }}
 Original instruction: {{ instruction }}
 Validation error: {{ validation_error }}
 
-{{ project_instructions }}
+{% include "shared/project-instructions.md.j2" %}
 
 Existing deck headings:
 {{ headings }}

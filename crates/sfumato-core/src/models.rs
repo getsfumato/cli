@@ -1,19 +1,16 @@
-use std::{collections::BTreeMap, str::FromStr};
+use std::{str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    config::{Capability, GlobalConfig, ModelProfile, ModelRole},
-    repositories::{
-        FilesystemGlobalConfigRepository, FilesystemProjectRepository, GlobalConfigRepository,
-        ProjectRepository,
-    },
+    config::{Capability, GlobalConfig, ModelOptions, ModelProfile, ModelRole},
+    repositories::{GlobalConfigRepository, ProjectRepository},
 };
 
 pub struct ModelService {
     config: GlobalConfig,
-    global_repository: Box<dyn GlobalConfigRepository>,
-    project_repository: Box<dyn ProjectRepository>,
+    global_repository: Arc<dyn GlobalConfigRepository>,
+    project_repository: Arc<dyn ProjectRepository>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,37 +66,15 @@ impl FromStr for ModelSelection {
 }
 
 impl ModelService {
-    pub fn load() -> Result<Self> {
-        Self::new(
-            Box::new(FilesystemGlobalConfigRepository::default_path()?),
-            Box::new(FilesystemProjectRepository::default_path()?),
-        )
-    }
-
     pub fn new(
-        global_repository: Box<dyn GlobalConfigRepository>,
-        project_repository: Box<dyn ProjectRepository>,
+        global_repository: Arc<dyn GlobalConfigRepository>,
+        project_repository: Arc<dyn ProjectRepository>,
     ) -> Result<Self> {
         Ok(Self {
             config: global_repository.load()?,
             global_repository,
             project_repository,
         })
-    }
-
-    #[cfg(test)]
-    fn load_from(
-        config: GlobalConfig,
-        config_path: std::path::PathBuf,
-        registry_path: std::path::PathBuf,
-    ) -> Self {
-        let global_repository = FilesystemGlobalConfigRepository::new(config_path);
-        global_repository.save(&config).unwrap();
-        Self::new(
-            Box::new(global_repository),
-            Box::new(FilesystemProjectRepository::new(registry_path)),
-        )
-        .unwrap()
     }
 
     pub fn list(&self) -> Vec<ModelSummary> {
@@ -113,15 +88,6 @@ impl ModelService {
                 capabilities: profile.capabilities.clone(),
             })
             .collect()
-    }
-
-    pub fn show(&self, name: &str) -> Result<String> {
-        let profile = self
-            .config
-            .models
-            .get(name)
-            .with_context(|| format!("Model profile '{name}' was not found"))?;
-        toml::to_string_pretty(profile).context("Could not render model profile")
     }
 
     pub fn profile(&self, name: &str) -> Result<ModelProfile> {
@@ -263,7 +229,7 @@ impl ModelService {
         if let Some(capabilities) = parsed_capabilities {
             profile.capabilities = capabilities;
         }
-        profile.options.extend(parsed_options);
+        profile.options.merge(parsed_options);
         let mut updated_config = self.config.clone();
         updated_config.models.insert(name.to_string(), profile);
         validate_selected_capabilities(&updated_config, name, self.project_repository.as_ref())?;
@@ -419,23 +385,48 @@ fn parse_capabilities(values: &[String]) -> Result<Vec<Capability>> {
     Ok(parsed)
 }
 
-fn parse_options(values: &[String]) -> Result<BTreeMap<String, toml::Value>> {
-    values
-        .iter()
-        .map(|value| {
-            let (key, raw) = value
-                .split_once('=')
-                .with_context(|| format!("Invalid model option '{value}'. Use key=value."))?;
-            if key.trim().is_empty() {
-                bail!("Model option key cannot be empty");
-            }
-            let parsed = raw
-                .trim()
-                .parse::<toml::Value>()
-                .unwrap_or_else(|_| toml::Value::String(raw.trim().to_string()));
-            Ok((key.trim().to_string(), parsed))
-        })
-        .collect()
+fn parse_options(values: &[String]) -> Result<ModelOptions> {
+    let mut options = ModelOptions::default();
+    for value in values {
+        let (key, raw) = value
+            .split_once('=')
+            .with_context(|| format!("Invalid model option '{value}'. Use key=value."))?;
+        let key = key.trim();
+        let raw = raw.trim();
+        match key {
+            "temperature" => options.temperature = Some(parse_option(raw, key)?),
+            "max_tokens" => options.max_tokens = Some(parse_option(raw, key)?),
+            "max_tool_rounds" => options.max_tool_rounds = Some(parse_option(raw, key)?),
+            "top_p" => options.top_p = Some(parse_option(raw, key)?),
+            "seed" => options.seed = Some(parse_option(raw, key)?),
+            "quality" => options.quality = Some(required_option_string(raw, key)?),
+            "background" => options.background = Some(required_option_string(raw, key)?),
+            "size" => options.size = Some(required_option_string(raw, key)?),
+            "aspect_ratio" => options.aspect_ratio = Some(required_option_string(raw, key)?),
+            "output_format" => options.output_format = Some(required_option_string(raw, key)?),
+            "" => bail!("Model option key cannot be empty"),
+            _ => bail!(
+                "Unknown model option '{key}'. Supported options: temperature, max_tokens, max_tool_rounds, top_p, seed, quality, background, size, aspect_ratio, output_format."
+            ),
+        }
+    }
+    Ok(options)
+}
+
+fn parse_option<T>(raw: &str, key: &str) -> Result<T>
+where
+    T: FromStr,
+    T::Err: std::fmt::Display,
+{
+    raw.parse::<T>()
+        .map_err(|error| anyhow::anyhow!("Model option '{key}' has invalid value '{raw}': {error}"))
+}
+
+fn required_option_string(raw: &str, key: &str) -> Result<String> {
+    if raw.is_empty() {
+        bail!("Model option '{key}' cannot be empty");
+    }
+    Ok(raw.to_string())
 }
 
 #[cfg(test)]

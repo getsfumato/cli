@@ -1,18 +1,21 @@
 use std::{
-    collections::BTreeMap,
     ffi::OsString,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use serde::Serialize;
+use sfumato_core::renderers::{DiagramRenderer, MermaidThemeConfig};
 use tokio::process::Command;
 
-#[derive(Clone, Debug, Default)]
-pub struct MermaidDiagramRenderer;
+/// Mermaid CLI adapter producing transparent themed SVG files.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MermaidCliRenderer;
 
-impl MermaidDiagramRenderer {
-    pub async fn render_svg(
+#[async_trait]
+impl DiagramRenderer for MermaidCliRenderer {
+    async fn render_svg(
         &self,
         input_path: &Path,
         output_path: &Path,
@@ -25,12 +28,12 @@ impl MermaidDiagramRenderer {
                 input_path,
                 output_path,
                 puppeteer_config.as_deref(),
-                mermaid_config.as_deref(),
+                Some(&mermaid_config),
             ))
             .output()
             .await;
-        remove_puppeteer_config(puppeteer_config.as_deref());
-        remove_puppeteer_config(mermaid_config.as_deref());
+        remove_config(puppeteer_config.as_deref());
+        remove_config(Some(&mermaid_config));
 
         let output = match output {
             Ok(output) => output,
@@ -41,15 +44,12 @@ impl MermaidDiagramRenderer {
             }
             Err(error) => return Err(error).context("Could not start Mermaid CLI"),
         };
-
         if !output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(
                 "Mermaid CLI exited with status {}{}{}",
                 output.status,
-                format_stream("stdout", stdout.trim()),
-                format_stream("stderr", stderr.trim())
+                format_stream("stdout", String::from_utf8_lossy(&output.stdout).trim()),
+                format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
             );
         }
 
@@ -82,31 +82,13 @@ fn mermaid_cli_args(
         "--backgroundColor".into(),
         "transparent".into(),
     ];
-
     if let Some(config) = puppeteer_config {
         args.extend(["-p".into(), config.as_os_str().to_owned()]);
     }
     if let Some(config) = mermaid_config {
         args.extend(["-c".into(), config.as_os_str().to_owned()]);
     }
-
     args
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct MermaidThemeConfig {
-    theme: &'static str,
-    #[serde(rename = "themeVariables")]
-    theme_variables: BTreeMap<String, String>,
-}
-
-impl MermaidThemeConfig {
-    pub fn new(theme_variables: BTreeMap<String, String>) -> Self {
-        Self {
-            theme: "base",
-            theme_variables,
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -120,30 +102,26 @@ fn write_puppeteer_config(output_path: &Path) -> Result<Option<PathBuf>> {
     let Some(browser_path) = detected_browser_path() else {
         return Ok(None);
     };
-
     let path = output_path.with_extension("puppeteer.json");
-    let config = PuppeteerConfig {
+    let rendered = serde_json::to_string(&PuppeteerConfig {
         executable_path: &browser_path,
         args: ["--no-sandbox"],
-    };
-    let rendered = serde_json::to_string(&config).context("Could not render Puppeteer config")?;
+    })
+    .context("Could not render Puppeteer config")?;
     std::fs::write(&path, rendered)
         .with_context(|| format!("Could not write {}", path.display()))?;
     Ok(Some(path))
 }
 
-fn write_mermaid_config(
-    output_path: &Path,
-    config: &MermaidThemeConfig,
-) -> Result<Option<PathBuf>> {
+fn write_mermaid_config(output_path: &Path, config: &MermaidThemeConfig) -> Result<PathBuf> {
     let path = output_path.with_extension("mermaid.json");
     let rendered = serde_json::to_string(config).context("Could not render Mermaid config")?;
     std::fs::write(&path, rendered)
         .with_context(|| format!("Could not write {}", path.display()))?;
-    Ok(Some(path))
+    Ok(path)
 }
 
-fn remove_puppeteer_config(path: Option<&Path>) {
+fn remove_config(path: Option<&Path>) {
     if let Some(path) = path {
         let _ = std::fs::remove_file(path);
     }
@@ -169,7 +147,5 @@ fn format_stream(label: &str, value: &str) -> String {
 }
 
 #[cfg(test)]
-// Test bodies live under tests/unit so implementation files stay focused, while
-// this module hook still lets those tests exercise private helpers.
 #[path = "../../tests/unit/renderers_diagrams.rs"]
 mod tests;

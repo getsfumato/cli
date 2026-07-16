@@ -5,7 +5,7 @@ Deck title: {{ title }}
 Project: {{ project }}
 Theme: {{ theme_name }}
 
-{{ project_instructions }}
+{% include "shared/project-instructions.md.j2" %}
 
 Measured layout issue:
 {{ issue_report }}

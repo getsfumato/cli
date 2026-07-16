@@ -1,0 +1,100 @@
+//! Production composition for the Sfumato application facade.
+
+use std::{path::Path, sync::Arc};
+
+use anyhow::Result;
+use sfumato_core::{
+    application::{
+        EffectiveConfigResolver, PromptCatalogFactory, SfumatoApplication,
+        SfumatoApplicationDependencies,
+    },
+    config::{ConfigOverrides, EffectiveConfig},
+    prompts::PromptCatalog,
+    repositories::{GlobalConfigRepository, ProjectRepository},
+};
+
+use crate::{
+    artifacts::FilesystemArtifactStore,
+    config_editor::TomlConfigEditor,
+    config_files::ConfigPaths,
+    filesystem::LocalWorkspaceFileSystem,
+    openai_compatible::OpenAiCompatibleProviderFactory,
+    prompts::LayeredPromptCatalog,
+    renderers::{MarpCliRenderer, MermaidCliRenderer},
+    repositories::{FilesystemGlobalConfigRepository, FilesystemProjectRepository},
+    sources::FilesystemSourceReader,
+    themes::FilesystemThemeRepository,
+    tools::FilesystemGenerationToolFactory,
+};
+
+/// Filesystem-backed effective configuration resolver.
+#[derive(Clone)]
+pub struct FilesystemConfigResolver {
+    global: Arc<dyn GlobalConfigRepository>,
+    projects: Arc<dyn ProjectRepository>,
+}
+
+impl FilesystemConfigResolver {
+    pub fn new(
+        global: Arc<dyn GlobalConfigRepository>,
+        projects: Arc<dyn ProjectRepository>,
+    ) -> Self {
+        Self { global, projects }
+    }
+}
+
+impl EffectiveConfigResolver for FilesystemConfigResolver {
+    fn resolve(&self, overrides: ConfigOverrides) -> Result<EffectiveConfig> {
+        let global = self.global.load()?;
+        let registry = self.projects.registry()?;
+        let (selected_name, project_root) = registry.selected(overrides.project.as_deref())?;
+        let project = self.projects.load(Some(&selected_name))?;
+        EffectiveConfig::from_parts(global, selected_name, project_root, project, overrides)
+    }
+}
+
+/// Layered project/user/bundled prompt catalog factory.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LayeredPromptCatalogFactory;
+
+impl PromptCatalogFactory for LayeredPromptCatalogFactory {
+    fn for_project(&self, project_root: &Path) -> Result<Arc<dyn PromptCatalog>> {
+        Ok(Arc::new(LayeredPromptCatalog::for_project(project_root)?))
+    }
+}
+
+/// Builds the production application used by CLI and TUI presentation.
+pub fn production_application() -> Result<SfumatoApplication> {
+    let paths = ConfigPaths::discover()?;
+    let user_config_path = paths.user_config;
+    let themes = Arc::new(FilesystemThemeRepository::default_path()?);
+    let projects = Arc::new(FilesystemProjectRepository::default_path()?);
+    let global_config = Arc::new(FilesystemGlobalConfigRepository::new(
+        user_config_path.clone(),
+    ));
+    let config_resolver: Arc<dyn EffectiveConfigResolver> = Arc::new(
+        FilesystemConfigResolver::new(global_config.clone(), projects.clone()),
+    );
+    let config_editor = Arc::new(TomlConfigEditor::new(
+        user_config_path.clone(),
+        global_config.clone(),
+        projects.clone(),
+        config_resolver.clone(),
+    ));
+    Ok(SfumatoApplication::new(SfumatoApplicationDependencies {
+        config: config_resolver,
+        prompts: Arc::new(LayeredPromptCatalogFactory),
+        artifacts: Arc::new(FilesystemArtifactStore::default_path()?),
+        providers: Arc::new(OpenAiCompatibleProviderFactory),
+        diagrams: Arc::new(MermaidCliRenderer),
+        slides: Arc::new(MarpCliRenderer),
+        sources: Arc::new(FilesystemSourceReader),
+        tools: Arc::new(FilesystemGenerationToolFactory),
+        themes,
+        projects,
+        global_config,
+        user_config_path,
+        workspace: Arc::new(LocalWorkspaceFileSystem),
+        config_editor,
+    }))
+}

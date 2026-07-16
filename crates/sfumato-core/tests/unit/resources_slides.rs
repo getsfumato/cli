@@ -18,17 +18,6 @@ fn effective_config() -> EffectiveConfig {
     }
 }
 
-#[test]
-fn filters_supported_files() {
-    assert!(is_supported(Path::new("note.md")));
-    assert!(!is_supported(Path::new("image.png")));
-}
-
-#[test]
-fn supports_no_source_files() {
-    assert!(collect_sources(&[]).unwrap().is_empty());
-}
-
 struct LimitThenSuccessProvider {
     prompts: std::sync::Mutex<Vec<String>>,
 }
@@ -225,20 +214,6 @@ fn rejects_paths_outside_artifact_root() {
 }
 
 #[test]
-fn publishes_only_the_requested_processed_artifact() {
-    let temp = tempfile::tempdir().unwrap();
-    let artifact = temp.path().join("workspace/deck.pdf");
-    fs::create_dir_all(artifact.parent().unwrap()).unwrap();
-    fs::write(&artifact, b"pdf").unwrap();
-
-    let published = publish_artifact(&artifact, &temp.path().join("published")).unwrap();
-
-    assert_eq!(published, temp.path().join("published/deck.pdf"));
-    assert_eq!(fs::read(published).unwrap(), b"pdf");
-    assert!(artifact.is_file());
-}
-
-#[test]
 fn normalizes_frontmatter() {
     let mut config = effective_config();
     config.theme = "gruvbox".to_string();
@@ -421,32 +396,6 @@ fn maps_theme_tokens_to_mermaid_theme_variables() {
     assert!(rendered.contains("\"primaryBorderColor\":\"#9d0006\""));
     assert!(rendered.contains("\"lineColor\":\"#af3a03\""));
     assert!(rendered.contains("\"fontFamily\":\"Inter, sans-serif\""));
-}
-
-#[test]
-fn copies_theme_css_to_output() {
-    let temp = tempfile::tempdir().unwrap();
-    let source = temp.path().join("theme.css");
-    let destination = temp.path().join("output/themes/demo.css");
-    fs::write(&source, "/* @theme demo */").unwrap();
-    let package = ThemePackage {
-        root: temp.path().to_path_buf(),
-        manifest: crate::themes::ThemeManifest {
-            schema_version: crate::themes::THEME_SCHEMA_VERSION,
-            name: "demo".to_string(),
-            description: "Demo".to_string(),
-            tokens: Default::default(),
-            adapters: crate::themes::ThemeAdapters {
-                marp_css: PathBuf::from("theme.css"),
-                html: None,
-            },
-        },
-    };
-    copy_theme_css(&package, &destination).unwrap();
-    assert_eq!(
-        fs::read_to_string(destination).unwrap(),
-        "/* @theme demo */"
-    );
 }
 
 #[test]
@@ -717,9 +666,7 @@ fn model_tool_rounds_uses_profile_option_or_default() {
 
     assert_eq!(model_tool_rounds(&profile), 8);
 
-    profile
-        .options
-        .insert("max_tool_rounds".to_string(), toml::Value::Integer(12));
+    profile.options.max_tool_rounds = Some(12);
 
     assert_eq!(model_tool_rounds(&profile), 12);
 }

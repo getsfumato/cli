@@ -1,23 +1,133 @@
 use super::*;
-use crate::config::{
-    CONFIG_SCHEMA_VERSION, ProjectConfig, ProjectRegistry, RegisteredProject, project_config_path,
-    read_toml, write_toml,
+use crate::{
+    config::{CONFIG_SCHEMA_VERSION, ProjectConfig, ProjectRegistry, RegisteredProject},
+    repositories::{GlobalConfigRepository, ProjectRepository},
+    themes::DEFAULT_THEME,
 };
-use crate::themes::DEFAULT_THEME;
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
-fn service(temp: &tempfile::TempDir) -> ModelService {
-    ModelService::load_from(
-        GlobalConfig::default_config(),
-        temp.path().join("config.toml"),
-        temp.path().join("projects.toml"),
-    )
+struct MemoryGlobal(Mutex<GlobalConfig>);
+
+impl GlobalConfigRepository for MemoryGlobal {
+    fn load(&self) -> Result<GlobalConfig> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+
+    fn save(&self, config: &GlobalConfig) -> Result<()> {
+        *self.0.lock().unwrap() = config.clone();
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct MemoryProjects {
+    registry: Mutex<ProjectRegistry>,
+    projects: Mutex<BTreeMap<String, ProjectConfig>>,
+}
+
+impl MemoryProjects {
+    fn insert(&self, project: ProjectConfig, active: bool) {
+        let name = project.name.clone();
+        self.projects.lock().unwrap().insert(name.clone(), project);
+        let mut registry = self.registry.lock().unwrap();
+        registry.projects.insert(
+            name.clone(),
+            RegisteredProject {
+                path: PathBuf::from(&name),
+            },
+        );
+        if active {
+            registry.active = Some(name);
+        }
+    }
+}
+
+impl ProjectRepository for MemoryProjects {
+    fn registry(&self) -> Result<ProjectRegistry> {
+        Ok(self.registry.lock().unwrap().clone())
+    }
+
+    fn list(&self) -> Result<Vec<(String, RegisteredProject, bool)>> {
+        let registry = self.registry()?;
+        Ok(registry
+            .projects
+            .into_iter()
+            .map(|(name, project)| {
+                let active = registry.active.as_deref() == Some(&name);
+                (name, project, active)
+            })
+            .collect())
+    }
+
+    fn load(&self, name: Option<&str>) -> Result<ProjectConfig> {
+        let registry = self.registry()?;
+        let selected = name
+            .map(ToOwned::to_owned)
+            .or(registry.active)
+            .context("No project selected")?;
+        self.projects
+            .lock()
+            .unwrap()
+            .get(&selected)
+            .cloned()
+            .context("Project not found")
+    }
+
+    fn save(&self, project: &ProjectConfig) -> Result<()> {
+        self.projects
+            .lock()
+            .unwrap()
+            .insert(project.name.clone(), project.clone());
+        Ok(())
+    }
+
+    fn register(&self, name: String, _path: PathBuf, activate: bool) -> Result<ProjectConfig> {
+        let project = project(&name);
+        self.insert(project.clone(), activate);
+        Ok(project)
+    }
+
+    fn set_active(&self, name: &str) -> Result<String> {
+        self.registry.lock().unwrap().active = Some(name.to_string());
+        Ok(name.to_string())
+    }
+
+    fn remove(&self, name: &str) -> Result<ProjectConfig> {
+        self.registry.lock().unwrap().projects.remove(name);
+        self.projects
+            .lock()
+            .unwrap()
+            .remove(name)
+            .context("Project not found")
+    }
+}
+
+fn project(name: &str) -> ProjectConfig {
+    ProjectConfig {
+        schema_version: CONFIG_SCHEMA_VERSION,
+        name: name.to_string(),
+        theme: DEFAULT_THEME.to_string(),
+        publish_dir: None,
+        model_defaults: Default::default(),
+        model_roles: Default::default(),
+        marp: None,
+    }
+}
+
+fn service() -> (ModelService, Arc<MemoryGlobal>, Arc<MemoryProjects>) {
+    let global = Arc::new(MemoryGlobal(Mutex::new(GlobalConfig::default_config())));
+    let projects = Arc::new(MemoryProjects::default());
+    let service = ModelService::new(global.clone(), projects.clone()).unwrap();
+    (service, global, projects)
 }
 
 #[test]
 fn adds_lists_and_shows_connector_backed_profiles() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut service = service(&temp);
+    let (mut service, _, _) = service();
     service
         .add(
             "local-gemma".to_string(),
@@ -28,23 +138,11 @@ fn adds_lists_and_shows_connector_backed_profiles() {
         )
         .unwrap();
 
-    let profile = service.config.models.get("local-gemma").unwrap();
+    let profile = service.profile("local-gemma").unwrap();
     assert_eq!(profile.connector, "ollama");
     assert_eq!(profile.model, "gemma4:e2b-mlx");
     assert!(profile.capabilities.contains(&Capability::Text));
-    assert_eq!(
-        profile
-            .options
-            .get("max_tokens")
-            .and_then(toml::Value::as_integer),
-        Some(8000)
-    );
-    assert!(
-        service
-            .show("local-gemma")
-            .unwrap()
-            .contains("gemma4:e2b-mlx")
-    );
+    assert_eq!(profile.options.max_tokens, Some(8000));
     assert!(
         service
             .add(
@@ -60,31 +158,8 @@ fn adds_lists_and_shows_connector_backed_profiles() {
 
 #[test]
 fn assigns_user_and_project_defaults_and_protects_used_profiles() {
-    let temp = tempfile::tempdir().unwrap();
-    let project_root = temp.path().join("project");
-    let project_path = project_config_path(&project_root);
-    write_toml(
-        &project_path,
-        &ProjectConfig {
-            schema_version: CONFIG_SCHEMA_VERSION,
-            name: "demo".to_string(),
-            theme: DEFAULT_THEME.to_string(),
-            publish_dir: None,
-            model_defaults: Default::default(),
-            model_roles: Default::default(),
-            marp: None,
-        },
-    )
-    .unwrap();
-    ProjectRegistry {
-        schema_version: CONFIG_SCHEMA_VERSION,
-        active: Some("demo".to_string()),
-        projects: BTreeMap::from([("demo".to_string(), RegisteredProject { path: project_root })]),
-    }
-    .save_to(&temp.path().join("projects.toml"))
-    .unwrap();
-
-    let mut service = service(&temp);
+    let (mut service, global, projects) = service();
+    projects.insert(project("demo"), true);
     service
         .add(
             "local-gemma".to_string(),
@@ -96,8 +171,9 @@ fn assigns_user_and_project_defaults_and_protects_used_profiles() {
         .unwrap();
     service.use_default("text", "local-gemma", None).unwrap();
     assert_eq!(
-        service
-            .config
+        global
+            .load()
+            .unwrap()
             .defaults
             .0
             .get(&Capability::Text)
@@ -109,9 +185,10 @@ fn assigns_user_and_project_defaults_and_protects_used_profiles() {
     service
         .use_default("code", "local-gemma", Some("demo"))
         .unwrap();
-    let project: ProjectConfig = read_toml(&project_path).unwrap();
     assert_eq!(
-        project
+        projects
+            .load(Some("demo"))
+            .unwrap()
             .model_defaults
             .get(&Capability::Code)
             .map(String::as_str),
@@ -121,8 +198,7 @@ fn assigns_user_and_project_defaults_and_protects_used_profiles() {
 
 #[test]
 fn assigns_and_protects_reviewer_profiles() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut service = service(&temp);
+    let (mut service, global, _) = service();
     service
         .add(
             "local-review".to_string(),
@@ -138,7 +214,7 @@ fn assigns_and_protects_reviewer_profiles() {
         .unwrap();
     assert_eq!(changed.selection, ModelSelection::Role(ModelRole::Reviewer));
     assert_eq!(
-        service.config.model_roles.get(&ModelRole::Reviewer),
+        global.load().unwrap().model_roles.get(&ModelRole::Reviewer),
         Some(&"local-review".to_string())
     );
     assert!(service.remove("local-review").is_err());
@@ -157,28 +233,19 @@ fn parses_capabilities_and_typed_options() {
     );
     let options = parse_options(&[
         "temperature=0.3".to_string(),
-        "enabled=true".to_string(),
-        "label=fast".to_string(),
+        "max_tokens=8000".to_string(),
+        "quality=high".to_string(),
     ])
     .unwrap();
-    assert_eq!(
-        options.get("temperature").and_then(toml::Value::as_float),
-        Some(0.3)
-    );
-    assert_eq!(
-        options.get("enabled").and_then(toml::Value::as_bool),
-        Some(true)
-    );
-    assert_eq!(
-        options.get("label").and_then(toml::Value::as_str),
-        Some("fast")
-    );
+    assert_eq!(options.temperature, Some(0.3));
+    assert_eq!(options.max_tokens, Some(8000));
+    assert_eq!(options.quality.as_deref(), Some("high"));
+    assert!(parse_options(&["unknown=value".to_string()]).is_err());
 }
 
 #[test]
 fn edits_only_supplied_profile_fields_and_merges_options() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut service = service(&temp);
+    let (mut service, _, _) = service();
     service
         .add(
             "local-gemma".to_string(),
@@ -202,20 +269,8 @@ fn edits_only_supplied_profile_fields_and_merges_options() {
     let profile = service.profile("local-gemma").unwrap();
     assert_eq!(profile.connector, "ollama");
     assert_eq!(profile.model, "gemma4:latest");
-    assert_eq!(
-        profile
-            .options
-            .get("temperature")
-            .and_then(toml::Value::as_float),
-        Some(0.2)
-    );
-    assert_eq!(
-        profile
-            .options
-            .get("max_tokens")
-            .and_then(toml::Value::as_integer),
-        Some(4000)
-    );
+    assert_eq!(profile.options.temperature, Some(0.2));
+    assert_eq!(profile.options.max_tokens, Some(4000));
     assert!(
         service
             .edit("local-gemma", None, None, vec![], vec![])
@@ -225,8 +280,7 @@ fn edits_only_supplied_profile_fields_and_merges_options() {
 
 #[test]
 fn edit_rejects_removing_a_capability_used_by_a_default() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut service = service(&temp);
+    let (mut service, _, _) = service();
     assert!(
         service
             .edit("local-text", None, None, vec!["code".to_string()], vec![],)

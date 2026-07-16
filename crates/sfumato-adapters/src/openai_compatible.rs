@@ -139,8 +139,10 @@ impl OpenAiCompatibleTextProvider {
             model: self.profile.model.clone(),
             messages,
             tools,
-            temperature: option_float(&self.profile, "temperature", 0.4),
-            max_tokens: option_integer(&self.profile, "max_tokens", 4000) as u32,
+            temperature: self.profile.options.text_temperature(),
+            max_tokens: self.profile.options.text_max_tokens(),
+            top_p: self.profile.options.top_p,
+            seed: self.profile.options.seed,
             stream: false,
         }
     }
@@ -204,16 +206,19 @@ impl OpenAiCompatibleImageProvider {
 
     pub fn request_body(&self, request: &ImageGenerationRequest) -> Result<ImageRequest> {
         let mut options = BTreeMap::new();
-        for (key, value) in &self.profile.options {
-            if matches!(key.as_str(), "model" | "prompt" | "n" | "stream") {
-                bail!("Image model option '{key}' is reserved by Sfumato");
-            }
-            options.insert(
-                key.clone(),
-                serde_json::to_value(value)
-                    .with_context(|| format!("Could not serialize image model option '{key}'"))?,
-            );
-        }
+        insert_image_option(&mut options, "quality", &self.profile.options.quality);
+        insert_image_option(&mut options, "background", &self.profile.options.background);
+        insert_image_option(&mut options, "size", &self.profile.options.size);
+        insert_image_option(
+            &mut options,
+            "aspect_ratio",
+            &self.profile.options.aspect_ratio,
+        );
+        insert_image_option(
+            &mut options,
+            "output_format",
+            &self.profile.options.output_format,
+        );
         Ok(ImageRequest {
             model: self.profile.model.clone(),
             prompt: request.prompt.clone(),
@@ -322,7 +327,7 @@ impl OpenAiCompatibleTextProvider {
             if is_context_limit_response(&text) {
                 return Err(TextGenerationLimitError::context(
                     self.profile.model.clone(),
-                    option_integer(&self.profile, "max_tokens", 4000) as u64,
+                    u64::from(self.profile.options.text_max_tokens()),
                     compact_error_detail(&text),
                 )
                 .into());
@@ -353,21 +358,14 @@ fn resolve_api_key(connector: &OpenAiCompatibleConnectorConfig) -> Result<Option
     }
 }
 
-fn option_float(profile: &ModelProfile, key: &str, default: f32) -> f32 {
-    profile
-        .options
-        .get(key)
-        .and_then(toml::Value::as_float)
-        .map(|value| value as f32)
-        .unwrap_or(default)
-}
-
-fn option_integer(profile: &ModelProfile, key: &str, default: i64) -> i64 {
-    profile
-        .options
-        .get(key)
-        .and_then(toml::Value::as_integer)
-        .unwrap_or(default)
+fn insert_image_option(
+    options: &mut BTreeMap<String, serde_json::Value>,
+    key: &str,
+    value: &Option<String>,
+) {
+    if let Some(value) = value {
+        options.insert(key.to_string(), serde_json::Value::String(value.clone()));
+    }
 }
 
 fn empty_content_error(
@@ -378,7 +376,7 @@ fn empty_content_error(
     if matches!(finish_reason, Some("length" | "max_tokens")) {
         return TextGenerationLimitError::output(
             profile.model.clone(),
-            option_integer(profile, "max_tokens", 4000) as u64,
+            u64::from(profile.options.text_max_tokens()),
             finish_reason.map(ToOwned::to_owned),
             usage.and_then(|usage| usage.completion_tokens),
             reasoning_tokens(usage),
@@ -403,7 +401,7 @@ fn ensure_text_response_complete(
 
     Err(TextGenerationLimitError::output(
         profile.model.clone(),
-        option_integer(profile, "max_tokens", 4000) as u64,
+        u64::from(profile.options.text_max_tokens()),
         finish_reason.map(ToOwned::to_owned),
         usage.and_then(|usage| usage.completion_tokens),
         reasoning_tokens(usage),
@@ -461,6 +459,10 @@ pub struct ChatCompletionsRequest {
     pub tools: Option<Vec<ToolDefinition>>,
     pub temperature: f32,
     pub max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
     pub stream: bool,
 }
 
