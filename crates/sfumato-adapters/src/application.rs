@@ -35,6 +35,7 @@ pub struct FilesystemConfigResolver {
 }
 
 impl FilesystemConfigResolver {
+    /// Creates a resolver from global and project persistence ports.
     pub fn new(
         global: Arc<dyn GlobalConfigRepository>,
         projects: Arc<dyn ProjectRepository>,

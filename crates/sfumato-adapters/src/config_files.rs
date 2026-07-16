@@ -17,8 +17,11 @@ pub use crate::config_dto::CONFIG_SCHEMA_VERSION;
 /// User-global paths owned by the filesystem adapter.
 #[derive(Clone, Debug)]
 pub struct ConfigPaths {
+    /// User-global schema-v4 configuration file.
     pub user_config: PathBuf,
+    /// User-global registered-project index.
     pub project_registry: PathBuf,
+    /// Directory containing reusable theme packages.
     pub themes: PathBuf,
 }
 

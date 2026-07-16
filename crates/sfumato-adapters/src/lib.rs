@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Infrastructure adapters for Sfumato application ports.
 
 pub mod application;
@@ -6,7 +7,7 @@ mod config_dto;
 pub mod config_editor;
 pub mod config_files;
 pub mod filesystem;
-pub mod openai_compatible;
+pub(crate) mod openai_compatible;
 pub mod prompts;
 pub mod renderers;
 pub mod repositories;

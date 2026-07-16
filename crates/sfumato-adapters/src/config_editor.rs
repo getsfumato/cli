@@ -29,6 +29,7 @@ pub struct TomlConfigEditor {
 }
 
 impl TomlConfigEditor {
+    /// Creates an editor over schema-aware repositories and effective resolution.
     pub fn new(
         user_config_path: PathBuf,
         global: Arc<dyn GlobalConfigRepository>,

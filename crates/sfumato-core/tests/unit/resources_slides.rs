@@ -208,6 +208,63 @@ fn normalizes_unclosed_document_wrapper_without_consuming_mermaid_fence() {
 }
 
 #[test]
+fn closes_unclosed_mermaid_fences_at_slide_boundaries() {
+    let normalized = normalize_marp_markdown(
+        "# Fourier\n\n---\n\n## Diagram\n\n```mermaid\ngraph LR\nA --> B\n\n---\n\n## Next\n\nText",
+        &effective_config(),
+        "Fourier",
+    )
+    .unwrap();
+
+    let blocks = extract_mermaid_blocks(&normalized).unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert!(blocks[0].source.ends_with("A --> B"));
+    let document = SlideDeckDocument::from_marp(&normalized, "Fourier").unwrap();
+    assert_eq!(document.slide_count(), 3);
+}
+
+#[test]
+fn applies_focused_mermaid_repair_as_revision_guarded_json_patch() {
+    let markdown = normalize_marp_markdown(
+        "# Fourier\n\n---\n\n## Diagram\n\n```mermaid\ngraph LR\nA -- > B\n```",
+        &effective_config(),
+        "Fourier",
+    )
+    .unwrap();
+    let document = SlideDeckDocument::from_marp(&markdown, "Fourier").unwrap();
+    let snapshot = document.snapshot().unwrap();
+    let deck_revision = snapshot.document["revision"].clone();
+    let slide_id = snapshot.document["order"][1].as_str().unwrap();
+    let slide_revision = snapshot.document["slides"][slide_id]["revision"].clone();
+    let repaired = "## Diagram\n\n```mermaid\ngraph LR\nA --> B\n```";
+    let patch = serde_json::json!([
+        {"op": "test", "path": "/revision", "value": deck_revision},
+        {
+            "op": "test",
+            "path": format!("/slides/{slide_id}/revision"),
+            "value": slide_revision
+        },
+        {
+            "op": "replace",
+            "path": format!("/slides/{slide_id}/markdown"),
+            "value": repaired
+        }
+    ]);
+
+    let candidate = apply_mermaid_repair_response(
+        &markdown,
+        "Fourier",
+        &patch.to_string(),
+        &effective_config(),
+    )
+    .unwrap();
+
+    assert!(candidate.contains("A --> B"));
+    assert!(!candidate.contains("A -- > B"));
+    assert!(candidate.contains("# Fourier"));
+}
+
+#[test]
 fn rejects_invalid_normalized_deck_before_rendering() {
     let markdown = "---\nmarp: true\n---\n\n# Demo\n\n---\n\n```rust\nfn main() {}";
 

@@ -122,6 +122,7 @@ impl OpenAiCompatibleTextProvider {
     }
 
     /// Serializes one provider-neutral model turn as a chat-completions request.
+    #[cfg(test)]
     pub fn request_body(&self, request: &TextModelRequest) -> ChatCompletionsRequest {
         self.request_body_for_messages(
             request

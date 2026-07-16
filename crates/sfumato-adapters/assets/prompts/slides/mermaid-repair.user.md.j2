@@ -1,0 +1,23 @@
+Repair the malformed Mermaid diagram in this slide deck.
+
+Original instruction: {{ instruction }}
+Project: {{ project }}
+Theme: {{ theme_name }}
+
+{% include "shared/project-instructions.md.j2" %}
+
+Renderer error:
+{{ diagram_error }}
+
+Repair contract:
+- Return only an RFC 6902 JSON Patch array without a Markdown fence.
+- The patch target is the object inside `document`; paths start at `/revision`, `/slides`, or `/order`.
+- Start with a `test` operation for `/revision` before any mutation.
+- Test `/slides/<id>/revision` before replacing that slide's Markdown.
+- Replace only `/slides/<id>/markdown` values containing malformed Mermaid.
+- Preserve all non-Mermaid prose, MathJax, images, frontmatter, slide order, titles, IDs, and revisions.
+- Keep the diagram's intended meaning and the selected theme; change only syntax needed for Mermaid CLI to render it.
+- Do not add raw HTML, inline SVG, CSS, data URLs, or a complete regenerated deck.
+
+Structured review snapshot:
+{{ deck_snapshot }}

@@ -29,10 +29,12 @@ pub struct FilesystemGlobalConfigRepository {
 }
 
 impl FilesystemGlobalConfigRepository {
+    /// Creates a repository at an explicit configuration path.
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
 
+    /// Creates a repository at Sfumato's platform-specific user path.
     pub fn default_path() -> Result<Self> {
         Ok(Self::new(ConfigPaths::discover()?.user_config))
     }
@@ -90,10 +92,12 @@ pub struct FilesystemProjectRepository {
 }
 
 impl FilesystemProjectRepository {
+    /// Creates a repository using an explicit project-registry path.
     pub fn new(registry_path: PathBuf) -> Self {
         Self { registry_path }
     }
 
+    /// Creates a repository at Sfumato's platform-specific registry path.
     pub fn default_path() -> Result<Self> {
         Ok(Self::new(ConfigPaths::discover()?.project_registry))
     }

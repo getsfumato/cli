@@ -44,7 +44,7 @@ pub struct EditSlidesRequest {
     pub instruction: String,
 }
 
-pub struct EditSlidesOptions {
+pub(crate) struct EditSlidesOptions {
     pub operation: OperationContext,
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
     pub prompt_catalog: Arc<dyn PromptCatalog>,
@@ -73,7 +73,7 @@ pub struct EditSlidesResult {
     pub prompts: Vec<PromptProvenance>,
 }
 
-pub async fn edit_slides(
+pub(crate) async fn edit_slides(
     config: EffectiveConfig,
     request: EditSlidesRequest,
     options: EditSlidesOptions,

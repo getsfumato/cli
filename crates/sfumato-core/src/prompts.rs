@@ -37,6 +37,10 @@ pub enum PromptId {
     SlidesCompactReviewSystem,
     /// User prompt for compact semantic review.
     SlidesCompactReviewUser,
+    /// System prompt for focused Mermaid syntax repair.
+    SlidesMermaidRepairSystem,
+    /// User prompt for focused Mermaid syntax repair.
+    SlidesMermaidRepairUser,
     /// System prompt for focused layout repair.
     SlidesLayoutRepairSystem,
     /// User prompt for focused layout repair.
@@ -81,6 +85,8 @@ impl PromptId {
             Self::SlidesReviewUser,
             Self::SlidesCompactReviewSystem,
             Self::SlidesCompactReviewUser,
+            Self::SlidesMermaidRepairSystem,
+            Self::SlidesMermaidRepairUser,
             Self::SlidesLayoutRepairSystem,
             Self::SlidesLayoutRepairUser,
             Self::SlidesCompactLayoutRepairSystem,
@@ -111,6 +117,8 @@ impl PromptId {
             Self::SlidesReviewUser => "slides.review.user",
             Self::SlidesCompactReviewSystem => "slides.compact-review.system",
             Self::SlidesCompactReviewUser => "slides.compact-review.user",
+            Self::SlidesMermaidRepairSystem => "slides.mermaid-repair.system",
+            Self::SlidesMermaidRepairUser => "slides.mermaid-repair.user",
             Self::SlidesLayoutRepairSystem => "slides.layout-repair.system",
             Self::SlidesLayoutRepairUser => "slides.layout-repair.user",
             Self::SlidesCompactLayoutRepairSystem => "slides.compact-layout-repair.system",

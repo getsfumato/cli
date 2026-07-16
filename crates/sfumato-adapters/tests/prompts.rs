@@ -30,6 +30,7 @@ fn representative_variables() -> PromptVariables {
             json!("SOURCE: notes.md\nGrounded evidence"),
         ),
         ("validation_error", json!("missing title")),
+        ("diagram_error", json!("Parse error on line 4")),
         ("headings", json!(["Periodic signals", "Spectrum"])),
         ("retry_present", json!(false)),
         ("retry_error", Value::Null),
@@ -90,7 +91,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "9e24398bb8b6b74a320eac16a5fc50396951b556eb41574c3f8641e4b70542a5"
+        "5f452db2486e876551c8c31462c22cc0223bbdd95b8a04e85ed01e0208581d2e"
     );
 }
 

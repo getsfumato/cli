@@ -131,6 +131,23 @@ required = [
 ]
 
 [[prompts]]
+id = "slides.mermaid-repair.system"
+path = "slides/mermaid-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.mermaid-repair.user"
+path = "slides/mermaid-repair.user.md.j2"
+required = [
+  "instruction",
+  "project",
+  "theme_name",
+  "project_instructions",
+  "diagram_error",
+  "deck_snapshot",
+]
+
+[[prompts]]
 id = "slides.layout-repair.system"
 path = "slides/layout-repair.system.md.j2"
 required = []

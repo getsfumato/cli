@@ -1,4 +1,13 @@
 use super::*;
+use clap::Parser;
+
+use crate::cli::SlidesArgs;
+
+#[derive(Parser)]
+struct SlidesCliHarness {
+    #[command(flatten)]
+    args: SlidesArgs,
+}
 
 fn test_application() -> Arc<SfumatoApplication> {
     Arc::new(sfumato_adapters::application::production_application().unwrap())
@@ -42,6 +51,56 @@ fn generation_form_builds_capability_override_and_sources() {
         vec![PathBuf::from("notes"), PathBuf::from("examples")]
     );
     assert_eq!(args.model_overrides, vec!["text=cloud-draft"]);
+}
+
+#[test]
+fn cli_and_tui_build_equivalent_generation_arguments() {
+    let cli_args = SlidesCliHarness::try_parse_from([
+        "slides",
+        "notes",
+        "examples",
+        "--instruction",
+        "Teach transforms",
+        "--project",
+        "university",
+        "--theme",
+        "gruvbox",
+        "--model",
+        "text=cloud-draft",
+        "--review-model",
+        "local-review",
+        "--out",
+        "Presentations",
+    ])
+    .unwrap()
+    .args;
+
+    let mut form = GenerateForm::default();
+    for field in &mut form.fields {
+        if let FormField::Text { label, value, .. } = field {
+            *value = match *label {
+                "Instruction" => "Teach transforms",
+                "Project" => "university",
+                "Sources" => "notes, examples",
+                "Theme" => "gruvbox",
+                "Publish PDF" => "Presentations",
+                "Text model" => "cloud-draft",
+                "Reviewer" => "local-review",
+                _ => continue,
+            }
+            .to_string();
+        }
+    }
+    let tui_args = form.to_args().unwrap();
+
+    assert_eq!(tui_args.inputs, cli_args.inputs);
+    assert_eq!(tui_args.instruction, cli_args.instruction);
+    assert_eq!(tui_args.project, cli_args.project);
+    assert_eq!(tui_args.theme, cli_args.theme);
+    assert_eq!(tui_args.out, cli_args.out);
+    assert_eq!(tui_args.model_overrides, cli_args.model_overrides);
+    assert_eq!(tui_args.review_model, cli_args.review_model);
+    assert_eq!(tui_args.no_review, cli_args.no_review);
 }
 
 #[test]

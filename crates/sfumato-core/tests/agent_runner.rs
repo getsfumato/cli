@@ -140,3 +140,30 @@ async fn tool_exhaustion_disables_tools_for_the_contract_turn() {
         matches!(requests[1].messages.last(), Some(ModelMessage::User(message)) if message == "Return the final output now.")
     );
 }
+
+#[tokio::test]
+async fn cancellation_stops_the_agent_before_a_provider_turn() {
+    let model = Arc::new(ScriptedModel {
+        responses: Mutex::new(VecDeque::new()),
+        requests: Mutex::new(Vec::new()),
+    });
+    let runner = AgentRunner::new(model.clone());
+    let (cancellation, operation) =
+        OperationContext::create(None, Arc::new(sfumato_core::operation::DiscardEvents));
+    cancellation.cancel();
+
+    let error = runner
+        .generate_text(
+            TextGenerationRequest::new("system".into(), "user".into()),
+            &operation,
+            OperationStage::Draft,
+        )
+        .await
+        .unwrap_err();
+
+    let typed = error
+        .downcast_ref::<sfumato_core::errors::SfumatoError>()
+        .unwrap();
+    assert_eq!(typed.class, sfumato_core::errors::ErrorClass::Cancelled);
+    assert!(model.requests.lock().unwrap().is_empty());
+}

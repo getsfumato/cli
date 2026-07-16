@@ -22,7 +22,9 @@ use crate::{
         SlideReviewSummary,
     },
     operation::{OperationContext, OperationEventKind},
-    prompts::{PromptCatalog, PromptId, PromptPair, PromptRenderRequest, PromptVariables},
+    prompts::{
+        PromptCatalog, PromptId, PromptPair, PromptProvenance, PromptRenderRequest, PromptVariables,
+    },
     providers::{
         GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationLimitError,
         TextGenerationProvider, TextGenerationRequest, TextGenerationResponse, ToolDefinition,
@@ -35,20 +37,31 @@ use crate::{
     tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
 
+mod document;
 mod edit;
 mod layout;
+mod mermaid;
+mod prompting;
+mod publishing;
 mod source_bundle;
 
-pub use edit::{EditSlidesOptions, EditSlidesRequest, EditSlidesResult, edit_slides};
+use document::*;
+pub use edit::{EditSlidesRequest, EditSlidesResult};
+pub(crate) use edit::{EditSlidesOptions, edit_slides};
 use layout::LayoutAssessment;
 #[cfg(test)]
 use layout::layout_score;
+use mermaid::{extract_mermaid_blocks, render_mermaid_diagrams};
+#[cfg(test)]
+use mermaid::{mermaid_theme_config, normalize_mermaid_source};
+use prompting::*;
+use publishing::publish_pdf;
 use source_bundle::{build_compact_source_bundle, build_source_bundle};
 
 const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
 const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
 
-pub struct GenerateSlidesOptions {
+pub(crate) struct GenerateSlidesOptions {
     pub operation: OperationContext,
     pub title: Option<String>,
     pub dry_run: bool,
@@ -76,7 +89,7 @@ pub struct GenerateSlidesResult {
     pub warnings: Vec<String>,
 }
 
-pub async fn generate_slides(
+pub(crate) async fn generate_slides(
     config: EffectiveConfig,
     request: GenerationRequest,
     options: GenerateSlidesOptions,
@@ -338,6 +351,24 @@ pub async fn generate_slides(
     ensure_inside(&artifact_root, &pdf_path)?;
     let mut markdown = normalize_marp_markdown(&response.text, &config, &title)?;
     validate_normalized_deck(&markdown, &title)?;
+    let mermaid_repair = repair_mermaid_once(
+        prompt_catalog.as_ref(),
+        provider.as_ref(),
+        &config,
+        &theme,
+        &request.instruction,
+        &project_instructions_prompt,
+        &title,
+        &markdown,
+        diagram_renderer.as_ref(),
+        workspace.as_ref(),
+        &operation,
+        &event_sink,
+        draft_profile_name,
+    )
+    .await?;
+    markdown = mermaid_repair.markdown;
+    used_prompts.extend(mermaid_repair.prompts);
     let mut reviewer_provider: Option<Box<dyn TextGenerationProvider>> = None;
     if let Some((reviewer_name, reviewer_profile)) = reviewer_selection {
         match provider_factory.text(&config, reviewer_profile) {
@@ -905,27 +936,15 @@ pub async fn generate_slides(
         OperationEventKind::Started,
         BTreeMap::new(),
     );
-    let mut published_pdf_path = None;
-    if let Some(destination) = publish_root {
-        if let Some(pdf) = &committed_pdf {
-            match workspace.publish_atomic(pdf, &destination) {
-                Ok(path) => published_pdf_path = Some(path),
-                Err(error) => warnings.push(format!(
-                    "Committed the workspace revision, but could not publish its PDF: {error:#}"
-                )),
-            }
-        } else {
-            let stale_pdf = destination.join(
-                pdf_path
-                    .file_name()
-                    .context("Generated PDF path must have a filename")?,
-            );
-            if let Err(error) = workspace.remove_file(&stale_pdf) {
-                warnings.push(format!(
-                    "No PDF was generated and the stale published PDF could not be removed: {error:#}"
-                ));
-            }
-        }
+    let publication = publish_pdf(
+        workspace.as_ref(),
+        publish_root.as_deref(),
+        committed_pdf.as_deref(),
+        &pdf_path,
+    )?;
+    let published_pdf_path = publication.path;
+    if let Some(warning) = publication.warning {
+        warnings.push(warning);
     }
     operation.emit(
         OperationStage::Publish,
@@ -1153,694 +1172,106 @@ fn copy_theme_css(
     workspace.copy_file(&theme.marp_css_path(), destination)
 }
 
-async fn render_mermaid_diagrams(
-    markdown: &str,
-    diagrams_dir: &Path,
-    theme: &ThemePackage,
-    renderer: &dyn DiagramRenderer,
-    workspace: &dyn WorkspaceFileSystem,
-    operation: &OperationContext,
-    stage: OperationStage,
-) -> Result<(String, Vec<PathBuf>)> {
-    operation.checkpoint(stage)?;
-    let blocks = extract_mermaid_blocks(markdown)?;
-    if blocks.is_empty() {
-        return Ok((markdown.to_string(), Vec::new()));
-    }
-
-    workspace.create_dir_all(diagrams_dir)?;
-    let mermaid_theme = mermaid_theme_config(&theme.manifest.tokens);
-    let mut rendered = String::new();
-    let mut cursor = 0;
-    let mut artifacts = Vec::new();
-
-    for (index, block) in blocks.iter().enumerate() {
-        rendered.push_str(&markdown[cursor..block.start]);
-        let diagram_index = index + 1;
-        let source = normalize_mermaid_source(&block.source);
-        let content_hash = format!("{:x}", Sha256::digest(source.as_bytes()));
-        let name = format!("diagram-{}", &content_hash[..16]);
-        let source_path = diagrams_dir.join(format!("{name}.mmd"));
-        let artifact_path = diagrams_dir.join(format!("{name}.svg"));
-        workspace.write(&source_path, source.as_bytes())?;
-        let _svg = renderer
-            .render_svg(
-                &source_path,
-                &artifact_path,
-                &mermaid_theme,
-                operation,
-                stage,
-            )
-            .await?;
-        if !workspace.is_file(&artifact_path) {
-            bail!(
-                "Mermaid CLI did not write the expected SVG artifact {}",
-                artifact_path.display()
-            );
-        }
-        rendered.push_str(&format!(
-            "![Mermaid diagram {diagram_index}](diagrams/{name}.svg)"
-        ));
-        artifacts.push(source_path);
-        artifacts.push(artifact_path);
-        cursor = block.end;
-    }
-
-    rendered.push_str(&markdown[cursor..]);
-    prune_unreferenced_diagrams(&rendered, diagrams_dir, workspace)?;
-    Ok((rendered, artifacts))
-}
-
-fn prune_unreferenced_diagrams(
-    markdown: &str,
-    diagrams_dir: &Path,
-    workspace: &dyn WorkspaceFileSystem,
-) -> Result<()> {
-    for entry in workspace.read_dir(diagrams_dir)? {
-        let path = entry.path;
-        if !entry.is_file {
-            continue;
-        }
-        if path.extension().and_then(|value| value.to_str()) != Some("svg") {
-            continue;
-        }
-        let filename = path
-            .file_name()
-            .context("Diagram artifact must have a filename")?
-            .to_string_lossy();
-        if markdown.contains(&format!("diagrams/{filename}")) {
-            continue;
-        }
-        workspace.remove_file(&path)?;
-        let source = path.with_extension("mmd");
-        workspace.remove_file(&source)?;
-    }
-    Ok(())
-}
-
-fn mermaid_theme_config(tokens: &ThemeTokens) -> MermaidThemeConfig {
-    let colors = &tokens.colors;
-    let fonts = &tokens.fonts;
-    let background = theme_token(colors, "background", "#ffffff");
-    let surface = theme_token(colors, "surface", &background);
-    let surface_alt = theme_token(colors, "surface-alt", &surface);
-    let text = theme_token(colors, "text", "#222222");
-    let primary = theme_token(colors, "primary", "#315c8c");
-    let accent = theme_token(colors, "accent", &primary);
-    let muted = theme_token(colors, "muted", &text);
-    let body_font = theme_token(fonts, "body", "system-ui, sans-serif");
-
-    MermaidThemeConfig::new(BTreeMap::from([
-        ("background".to_string(), background.clone()),
-        ("mainBkg".to_string(), surface.clone()),
-        ("primaryColor".to_string(), surface.clone()),
-        ("primaryTextColor".to_string(), text.clone()),
-        ("primaryBorderColor".to_string(), primary.clone()),
-        ("secondaryColor".to_string(), surface_alt.clone()),
-        ("secondaryTextColor".to_string(), text.clone()),
-        ("secondaryBorderColor".to_string(), accent.clone()),
-        ("tertiaryColor".to_string(), background.clone()),
-        ("tertiaryTextColor".to_string(), text.clone()),
-        ("tertiaryBorderColor".to_string(), muted.clone()),
-        ("lineColor".to_string(), accent.clone()),
-        ("textColor".to_string(), text.clone()),
-        ("fontFamily".to_string(), body_font),
-        ("nodeBorder".to_string(), primary.clone()),
-        ("nodeTextColor".to_string(), text.clone()),
-        ("clusterBkg".to_string(), background),
-        ("clusterBorder".to_string(), accent.clone()),
-        ("defaultLinkColor".to_string(), accent.clone()),
-        ("edgeLabelBackground".to_string(), surface_alt.clone()),
-        ("noteBkgColor".to_string(), surface_alt),
-        ("noteTextColor".to_string(), text),
-        ("noteBorderColor".to_string(), accent),
-    ]))
-}
-
-fn normalize_mermaid_source(source: &str) -> String {
-    let mut normalized = String::new();
-    let mut rest = source;
-
-    while let Some(start) = rest.find("[\"") {
-        let label_start = start + 2;
-        normalized.push_str(&rest[..label_start]);
-        let Some(end) = rest[label_start..].find("\"]") else {
-            normalized.push_str(&rest[label_start..]);
-            return normalized;
-        };
-        let label_end = label_start + end;
-        normalized.push_str(&normalize_mermaid_label(&rest[label_start..label_end]));
-        rest = &rest[label_end..];
-    }
-
-    normalized.push_str(rest);
-    normalized
-}
-
-fn normalize_mermaid_label(label: &str) -> String {
-    let label = label.replace("\\n", "<br/>");
-    let spaced = insert_missing_label_spaces(&label);
-    wrap_mermaid_label(&spaced, 28)
-}
-
-fn insert_missing_label_spaces(label: &str) -> String {
-    let mut output = String::new();
-    let mut previous = None;
-
-    for current in label.chars() {
-        if let Some(previous) = previous
-            && should_insert_label_space(previous, current)
-        {
-            output.push(' ');
-        }
-        output.push(current);
-        previous = Some(current);
-    }
-
-    output
-}
-
-fn should_insert_label_space(previous: char, current: char) -> bool {
-    (previous.is_ascii_digit() && current.is_alphabetic())
-        || (previous == ')' && current.is_alphabetic())
-        || (previous.is_lowercase() && current.is_uppercase())
-}
-
-fn wrap_mermaid_label(label: &str, max_len: usize) -> String {
-    label
-        .split("<br/>")
-        .flat_map(|segment| wrap_mermaid_label_segment(segment, max_len))
-        .collect::<Vec<_>>()
-        .join("<br/>")
-}
-
-fn wrap_mermaid_label_segment(segment: &str, max_len: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-
-    for word in segment.split_whitespace() {
-        let next_len =
-            current.chars().count() + usize::from(!current.is_empty()) + word.chars().count();
-        if !current.is_empty() && next_len > max_len {
-            lines.push(current);
-            current = String::new();
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(word);
-    }
-
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    if lines.is_empty() {
-        lines.push(segment.to_string());
-    }
-    lines
-}
-
-fn theme_token(tokens: &BTreeMap<String, String>, name: &str, fallback: &str) -> String {
-    tokens
-        .get(name)
-        .filter(|value| is_mermaid_theme_value(value))
-        .cloned()
-        .unwrap_or_else(|| fallback.to_string())
-}
-
-fn is_mermaid_theme_value(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.starts_with('#') || trimmed.contains(',') || trimmed.contains("sans")
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct MermaidBlock {
-    start: usize,
-    end: usize,
-    source: String,
-}
-
-fn extract_mermaid_blocks(markdown: &str) -> Result<Vec<MermaidBlock>> {
-    let mut blocks = Vec::new();
-    let mut cursor = 0;
-
-    while let Some(relative_start) = markdown[cursor..].find("```") {
-        let fence_start = cursor + relative_start;
-        let after_ticks = fence_start + 3;
-        let line_end = markdown[after_ticks..]
-            .find('\n')
-            .map(|offset| after_ticks + offset)
-            .unwrap_or(markdown.len());
-        let language = markdown[after_ticks..line_end].trim();
-
-        if !language.eq_ignore_ascii_case("mermaid") {
-            cursor = line_end;
-            continue;
-        }
-
-        let content_start = if line_end < markdown.len() {
-            line_end + 1
-        } else {
-            line_end
-        };
-        let Some(relative_end) = markdown[content_start..].find("\n```") else {
-            bail!("Generated Mermaid diagram fence is not closed");
-        };
-        let content_end = content_start + relative_end;
-        let fence_end = content_end + "\n```".len();
-
-        blocks.push(MermaidBlock {
-            start: fence_start,
-            end: fence_end,
-            source: markdown[content_start..content_end].trim().to_string(),
-        });
-        cursor = fence_end;
-    }
-
-    Ok(blocks)
-}
-
-const DRAFT_PROMPTS: PromptPair = PromptPair {
-    system: PromptId::SlidesDraftSystem,
-    user: PromptId::SlidesDraftUser,
-    tool_exhausted: PromptId::SlidesDraftToolExhaustedUser,
-};
-const COMPACT_DRAFT_PROMPTS: PromptPair = PromptPair {
-    system: PromptId::SlidesCompactDraftSystem,
-    user: PromptId::SlidesCompactDraftUser,
-    tool_exhausted: PromptId::SlidesDraftToolExhaustedUser,
-};
-const TITLE_REPAIR_PROMPTS: PromptPair = PromptPair {
-    system: PromptId::SlidesTitleRepairSystem,
-    user: PromptId::SlidesTitleRepairUser,
-    tool_exhausted: PromptId::SlidesDraftToolExhaustedUser,
-};
-const REVIEW_PROMPTS: PromptPair = PromptPair {
-    system: PromptId::SlidesReviewSystem,
-    user: PromptId::SlidesReviewUser,
-    tool_exhausted: PromptId::SlidesReviewToolExhaustedUser,
-};
-const COMPACT_REVIEW_PROMPTS: PromptPair = PromptPair {
-    system: PromptId::SlidesCompactReviewSystem,
-    user: PromptId::SlidesCompactReviewUser,
-    tool_exhausted: PromptId::SlidesReviewToolExhaustedUser,
-};
-const LAYOUT_REPAIR_PROMPTS: PromptPair = PromptPair {
-    system: PromptId::SlidesLayoutRepairSystem,
-    user: PromptId::SlidesLayoutRepairUser,
-    tool_exhausted: PromptId::SlidesLayoutRepairToolExhaustedUser,
-};
-const COMPACT_LAYOUT_REPAIR_PROMPTS: PromptPair = PromptPair {
-    system: PromptId::SlidesCompactLayoutRepairSystem,
-    user: PromptId::SlidesCompactLayoutRepairUser,
-    tool_exhausted: PromptId::SlidesLayoutRepairToolExhaustedUser,
-};
-
-#[derive(Clone, Debug, Default, Serialize)]
-struct SlidePromptContext {
-    learning_style: String,
-    project: String,
-    project_root: String,
-    theme_name: String,
-    theme_colors: String,
-    theme_fonts: String,
-    instruction: String,
-    project_instructions: String,
-    title: String,
-    title_provided: bool,
-    image_generation_available: bool,
-    source_bundle: String,
-    tools: Vec<GenerationToolSummary>,
-    deck_snapshot: String,
-    validation_error: String,
-    headings: String,
-    retry_present: bool,
-    retry_error: String,
-    retry_invalid_response: String,
-    issue_report: String,
-    slide_markdown: String,
-    compact: bool,
-    max_tool_rounds: usize,
-}
-
-fn render_prompt_request(
-    catalog: &dyn PromptCatalog,
-    pair: PromptPair,
-    context: &SlidePromptContext,
-) -> Result<TextGenerationRequest> {
-    let variables = PromptVariables::from_serializable(context)?;
-    let system = catalog.render(PromptRenderRequest {
-        id: pair.system,
-        variables: variables.clone(),
-    })?;
-    let user = catalog.render(PromptRenderRequest {
-        id: pair.user,
-        variables: variables.clone(),
-    })?;
-    let exhausted = catalog.render(PromptRenderRequest {
-        id: pair.tool_exhausted,
-        variables,
-    })?;
-    let mut request = TextGenerationRequest::new(system.text, user.text);
-    request.tool_exhausted_prompt = Some(exhausted.text);
-    request.prompt_provenance = vec![system.provenance, user.provenance, exhausted.provenance];
-    request.max_tool_rounds = context.max_tool_rounds;
-    Ok(request)
+struct MermaidRepairOutcome {
+    markdown: String,
+    prompts: Vec<PromptProvenance>,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn review_prompt_context(
+async fn repair_mermaid_once(
+    catalog: &dyn PromptCatalog,
+    provider: &dyn TextGenerationProvider,
     config: &EffectiveConfig,
     theme: &ThemePackage,
     instruction: &str,
-    project_instructions: String,
-    source_bundle: String,
-    deck_snapshot: String,
-    retry: Option<&ReviewRetryContext>,
-    compact: bool,
-    max_tool_rounds: usize,
-) -> SlidePromptContext {
-    SlidePromptContext {
-        project: config.project_name.clone(),
-        project_root: config.project_root.display().to_string(),
-        theme_name: theme.manifest.name.clone(),
-        theme_colors: format_tokens(&theme.manifest.tokens.colors),
-        theme_fonts: format_tokens(&theme.manifest.tokens.fonts),
-        instruction: instruction.to_string(),
-        project_instructions,
-        source_bundle,
-        deck_snapshot,
-        retry_present: retry.is_some(),
-        retry_error: retry
-            .map(|retry| excerpt(&retry.error, if compact { 1_000 } else { 2_000 }))
-            .unwrap_or_default(),
-        retry_invalid_response: retry
-            .map(|retry| {
-                excerpt(
-                    &retry.invalid_response,
-                    if compact { 4_000 } else { 12_000 },
-                )
-            })
-            .unwrap_or_default(),
-        compact,
-        max_tool_rounds,
-        ..Default::default()
-    }
-}
-
-struct DraftPromptRequestContext<'a> {
-    catalog: &'a dyn PromptCatalog,
-    config: &'a EffectiveConfig,
-    theme: &'a ThemePackage,
-    instruction: &'a str,
-    title: Option<&'a str>,
-    source_bundle: &'a str,
-    image_generation_available: bool,
-    project_instructions: &'a str,
-    tools: &'a [GenerationToolSummary],
-    max_tool_rounds: usize,
-    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
-}
-
-struct ReviewPromptRequestContext<'a> {
-    catalog: &'a dyn PromptCatalog,
-    config: &'a EffectiveConfig,
-    theme: &'a ThemePackage,
-    instruction: &'a str,
-    source_bundle: &'a str,
-    snapshot: &'a ReviewSnapshot,
-    retry: Option<&'a ReviewRetryContext>,
-    project_instructions: &'a str,
-    max_tool_rounds: usize,
-}
-
-fn build_generation_request(args: DraftPromptRequestContext<'_>) -> Result<TextGenerationRequest> {
-    let learning_style = if args.config.user.learning_style.is_empty() {
-        "not specified".to_string()
-    } else {
-        args.config.user.learning_style.join(", ")
-    };
-    let context = SlidePromptContext {
-        learning_style,
-        project: args.config.project_name.clone(),
-        project_root: args.config.project_root.display().to_string(),
-        theme_name: args.theme.manifest.name.clone(),
-        theme_colors: format_tokens(&args.theme.manifest.tokens.colors),
-        theme_fonts: format_tokens(&args.theme.manifest.tokens.fonts),
-        instruction: args.instruction.to_string(),
-        project_instructions: args.project_instructions.to_string(),
-        title: args.title.unwrap_or_default().to_string(),
-        title_provided: args.title.is_some(),
-        image_generation_available: args.image_generation_available,
-        source_bundle: args.source_bundle.to_string(),
-        tools: args.tools.to_vec(),
-        max_tool_rounds: args.max_tool_rounds,
-        ..Default::default()
-    };
-    render_prompt_request(args.catalog, DRAFT_PROMPTS, &context)
-}
-
-fn build_compact_generation_request(
-    args: DraftPromptRequestContext<'_>,
-) -> Result<TextGenerationRequest> {
-    let learning_style = if args.config.user.learning_style.is_empty() {
-        "not specified".to_string()
-    } else {
-        args.config.user.learning_style.join(", ")
-    };
-    let context = SlidePromptContext {
-        learning_style,
-        project: args.config.project_name.clone(),
-        project_root: args.config.project_root.display().to_string(),
-        theme_name: args.theme.manifest.name.clone(),
-        theme_colors: format_tokens(&args.theme.manifest.tokens.colors),
-        theme_fonts: format_tokens(&args.theme.manifest.tokens.fonts),
-        instruction: args.instruction.to_string(),
-        project_instructions: excerpt(args.project_instructions, 4_000),
-        title: args.title.unwrap_or_default().to_string(),
-        title_provided: args.title.is_some(),
-        source_bundle: args.source_bundle.to_string(),
-        compact: true,
-        max_tool_rounds: args.max_tool_rounds,
-        ..Default::default()
-    };
-    let mut request = render_prompt_request(args.catalog, COMPACT_DRAFT_PROMPTS, &context)?;
-    request.event_sink = args.event_sink;
-    Ok(request)
-}
-
-fn build_title_repair_request(
-    catalog: &dyn PromptCatalog,
-    config: &EffectiveConfig,
-    instruction: &str,
-    draft: &str,
-    validation_error: &str,
     project_instructions: &str,
-) -> Result<TextGenerationRequest> {
-    let project_instructions = excerpt(project_instructions, 1_500);
-    let headings = markdown_headings(draft);
-    let headings = if headings.is_empty() {
-        "No usable headings were found in the draft.".to_string()
-    } else {
-        headings
-            .into_iter()
-            .take(20)
-            .map(|heading| format!("- {heading}"))
-            .collect::<Vec<_>>()
-            .join("\n")
+    title: &str,
+    markdown: &str,
+    diagram_renderer: &dyn DiagramRenderer,
+    workspace: &dyn WorkspaceFileSystem,
+    operation: &OperationContext,
+    event_sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    profile: &str,
+) -> Result<MermaidRepairOutcome> {
+    let validation_error = match extract_mermaid_blocks(markdown) {
+        Ok(blocks) if blocks.is_empty() => {
+            return Ok(MermaidRepairOutcome {
+                markdown: markdown.to_string(),
+                prompts: Vec::new(),
+            });
+        }
+        Ok(_) => {
+            validate_mermaid_candidate(markdown, theme, diagram_renderer, workspace, operation)
+                .await
+                .err()
+        }
+        Err(error) => Some(error),
     };
-    let context = SlidePromptContext {
-        project: config.project_name.clone(),
-        instruction: instruction.to_string(),
-        validation_error: validation_error.to_string(),
+    let Some(validation_error) = validation_error else {
+        return Ok(MermaidRepairOutcome {
+            markdown: markdown.to_string(),
+            prompts: Vec::new(),
+        });
+    };
+    if !should_retry_model_output(&validation_error) {
+        return Err(validation_error).context("Could not validate generated Mermaid diagrams");
+    }
+
+    emit_stage(event_sink, GenerationStage::DiagramRepair, Some(profile));
+    operation.emit(
+        OperationStage::Repair,
+        OperationEventKind::Started,
+        BTreeMap::from([
+            ("kind".to_string(), "mermaid".to_string()),
+            ("model".to_string(), profile.to_string()),
+        ]),
+    );
+    let document = SlideDeckDocument::from_marp(markdown, title)
+        .context("Could not parse the deck for Mermaid repair")?;
+    let snapshot = document.snapshot()?;
+    let mut request = build_mermaid_repair_request(
+        catalog,
+        config,
+        theme,
+        instruction,
         project_instructions,
-        headings,
-        max_tool_rounds: 0,
-        ..Default::default()
-    };
-    render_prompt_request(catalog, TITLE_REPAIR_PROMPTS, &context)
-}
-
-fn build_review_request(args: ReviewPromptRequestContext<'_>) -> Result<TextGenerationRequest> {
-    let snapshot = serde_json::to_string_pretty(args.snapshot)
-        .context("Could not serialize slide deck review snapshot")?;
-    let context = review_prompt_context(
-        args.config,
-        args.theme,
-        args.instruction,
-        args.project_instructions.to_string(),
-        args.source_bundle.to_string(),
-        snapshot,
-        args.retry,
-        false,
-        args.max_tool_rounds,
+        &snapshot,
+        &format!("{validation_error:#}"),
+    )?;
+    request.event_sink = event_sink.clone();
+    let prompts = request.prompt_provenance.clone();
+    let response = provider
+        .generate_text(request, operation, OperationStage::Repair)
+        .await
+        .context("Mermaid repair request failed")?;
+    let candidate = apply_mermaid_repair_response(markdown, title, &response.text, config)?;
+    validate_normalized_deck(&candidate, title)?;
+    validate_mermaid_candidate(&candidate, theme, diagram_renderer, workspace, operation)
+        .await
+        .context("Mermaid repair remained invalid after one focused attempt")?;
+    operation.emit(
+        OperationStage::Repair,
+        OperationEventKind::Completed,
+        BTreeMap::from([("kind".to_string(), "mermaid".to_string())]),
     );
-    render_prompt_request(args.catalog, REVIEW_PROMPTS, &context)
+    Ok(MermaidRepairOutcome {
+        markdown: candidate,
+        prompts,
+    })
 }
 
-fn build_compact_review_request(
-    args: ReviewPromptRequestContext<'_>,
-) -> Result<TextGenerationRequest> {
-    let snapshot = compact_review_snapshot(args.snapshot)?;
-    let context = review_prompt_context(
-        args.config,
-        args.theme,
-        args.instruction,
-        excerpt(args.project_instructions, 4_000),
-        args.source_bundle.to_string(),
-        snapshot,
-        args.retry,
-        true,
-        args.max_tool_rounds,
-    );
-    render_prompt_request(args.catalog, COMPACT_REVIEW_PROMPTS, &context)
-}
-
-fn compact_review_snapshot(snapshot: &ReviewSnapshot) -> Result<String> {
-    let document = snapshot
-        .document
-        .as_object()
-        .context("Slide review snapshot document must be an object")?;
-    let slides = document
-        .get("slides")
-        .and_then(serde_json::Value::as_object)
-        .context("Slide review snapshot is missing slides")?;
-    let order = document
-        .get("order")
-        .and_then(serde_json::Value::as_array)
-        .context("Slide review snapshot is missing slide order")?;
-    let per_slide_budget = (30_000 / slides.len().max(1)).clamp(500, 1_800);
-    let compact_slides = order
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .filter_map(|id| {
-            slides
-                .get(id)
-                .and_then(serde_json::Value::as_object)
-                .map(|slide| (id, slide))
-        })
-        .map(|(id, slide)| {
-            let markdown = slide
-                .get("markdown")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            serde_json::json!({
-                "id": id,
-                "revision": slide.get("revision"),
-                "kind": slide.get("kind"),
-                "heading": slide.get("heading"),
-                "elements": slide.get("elements"),
-                "markdown": excerpt(markdown, per_slide_budget),
-                "markdown_complete": markdown.chars().count() <= per_slide_budget,
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::to_string_pretty(&serde_json::json!({
-        "schema_version": snapshot.schema_version,
-        "format": snapshot.format,
-        "revision": snapshot.revision,
-        "title": document.get("title"),
-        "order": order,
-        "slides": compact_slides,
-    }))
-    .context("Could not serialize compact slide review snapshot")
-}
-
-struct ReviewRetryContext {
-    invalid_response: String,
-    error: String,
-}
-
-fn build_layout_repair_request(
-    catalog: &dyn PromptCatalog,
-    context: LayoutRepairRequestContext<'_>,
-    retry: Option<&LayoutRepairRetryContext>,
-    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
-) -> Result<TextGenerationRequest> {
-    let issue_report =
-        serde_json::to_string_pretty(context.issue).unwrap_or_else(|_| "{}".to_string());
-    let prompt_context = SlidePromptContext {
-        project: context.config.project_name.clone(),
-        instruction: context.instruction.to_string(),
-        title: context.title.to_string(),
-        title_provided: true,
-        theme_name: context.theme.manifest.name.clone(),
-        theme_colors: format_tokens(&context.theme.manifest.tokens.colors),
-        theme_fonts: format_tokens(&context.theme.manifest.tokens.fonts),
-        project_instructions: context.project_instructions.to_string(),
-        issue_report,
-        slide_markdown: context.slide_markdown.to_string(),
-        retry_present: retry.is_some(),
-        retry_error: retry
-            .map(|retry| excerpt(&retry.error, 4_000))
-            .unwrap_or_default(),
-        retry_invalid_response: retry
-            .map(|retry| excerpt(&retry.invalid_response, 12_000))
-            .unwrap_or_default(),
-        max_tool_rounds: 0,
-        ..Default::default()
-    };
-    let mut request = render_prompt_request(catalog, LAYOUT_REPAIR_PROMPTS, &prompt_context)?;
-    request.event_sink = event_sink;
-    Ok(request)
-}
-
-fn build_compact_layout_repair_request(
-    catalog: &dyn PromptCatalog,
-    context: LayoutRepairRequestContext<'_>,
-    retry: Option<&LayoutRepairRetryContext>,
-    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
-) -> Result<TextGenerationRequest> {
-    let compact_retry = retry.map(|retry| LayoutRepairRetryContext {
-        invalid_response: excerpt(&retry.invalid_response, 2_000),
-        error: excerpt(&retry.error, 1_000),
-    });
-    let compact_instructions = excerpt(context.project_instructions, 1_500);
-    let issue_report =
-        serde_json::to_string_pretty(context.issue).unwrap_or_else(|_| "{}".to_string());
-    let prompt_context = SlidePromptContext {
-        project: context.config.project_name.clone(),
-        instruction: context.instruction.to_string(),
-        title: context.title.to_string(),
-        title_provided: true,
-        theme_name: context.theme.manifest.name.clone(),
-        theme_colors: format_tokens(&context.theme.manifest.tokens.colors),
-        theme_fonts: format_tokens(&context.theme.manifest.tokens.fonts),
-        project_instructions: compact_instructions,
-        issue_report,
-        slide_markdown: context.slide_markdown.to_string(),
-        retry_present: compact_retry.is_some(),
-        retry_error: compact_retry
-            .as_ref()
-            .map(|retry| retry.error.clone())
-            .unwrap_or_default(),
-        retry_invalid_response: compact_retry
-            .as_ref()
-            .map(|retry| retry.invalid_response.clone())
-            .unwrap_or_default(),
-        compact: true,
-        max_tool_rounds: 0,
-        ..Default::default()
-    };
-    let mut request =
-        render_prompt_request(catalog, COMPACT_LAYOUT_REPAIR_PROMPTS, &prompt_context)?;
-    request.event_sink = event_sink;
-    Ok(request)
-}
-
-struct LayoutRepairRequestContext<'a> {
-    config: &'a EffectiveConfig,
-    theme: &'a ThemePackage,
-    instruction: &'a str,
-    title: &'a str,
-    slide_markdown: &'a str,
-    issue: &'a SlideLayoutIssue,
-    project_instructions: &'a str,
-}
-
-struct LayoutRepairRetryContext {
-    invalid_response: String,
-    error: String,
+fn apply_mermaid_repair_response(
+    markdown: &str,
+    title: &str,
+    response: &str,
+    config: &EffectiveConfig,
+) -> Result<String> {
+    let patch = parse_json_patch(response)
+        .context("Mermaid repair did not return a valid RFC 6902 patch")?;
+    let mut document = SlideDeckDocument::from_marp(markdown, title)
+        .context("Could not parse the deck returned for Mermaid repair")?;
+    document.apply_patch(&patch)?;
+    normalize_marp_markdown(&document.render()?, config, title)
 }
 
 async fn validate_mermaid_candidate(
@@ -1919,723 +1350,6 @@ fn format_tokens(tokens: &std::collections::BTreeMap<String, String>) -> String 
         .map(|(name, value)| format!("{name}={value}"))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn validate_title(title: &str) -> Result<String> {
-    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-    if title.is_empty() {
-        bail!("Slide title cannot be empty");
-    }
-    if slugify(&title).is_empty() {
-        bail!("Slide title must contain characters that can be used in a filename");
-    }
-    Ok(title)
-}
-
-fn slide_artifact_paths(slides_dir: &Path, title: &str) -> Result<(PathBuf, PathBuf)> {
-    let title = validate_title(title)?;
-    let slug = slugify(title);
-    Ok((
-        slides_dir.join(format!("{slug}.md")),
-        slides_dir.join(format!("{slug}.pdf")),
-    ))
-}
-
-fn extract_generated_title(generated: &str) -> Option<String> {
-    let markdown = strip_code_fence(generated.trim());
-    let markdown = sanitize_marp_markdown(markdown);
-    let markdown = promote_marp_frontmatter(markdown);
-    let markdown = body_without_frontmatter(&markdown);
-    let mut code_fence: Option<(char, usize)> = None;
-
-    for line in markdown.lines() {
-        let trimmed = line.trim_start();
-        if let Some((marker, length)) = markdown_code_fence(trimmed) {
-            match code_fence {
-                Some((open_marker, open_length))
-                    if marker == open_marker && length >= open_length =>
-                {
-                    code_fence = None;
-                }
-                None => code_fence = Some((marker, length)),
-                _ => {}
-            }
-            continue;
-        }
-        if code_fence.is_some() {
-            continue;
-        }
-
-        if let Some(title) = trimmed.strip_prefix("# ") {
-            let title = clean_generated_title(title);
-            if let Ok(title) = validate_title(&title) {
-                return Some(title);
-            }
-        }
-    }
-
-    None
-}
-
-fn validate_draft_title(generated: &str, instruction: &str) -> Result<String> {
-    let title = extract_generated_title(generated).context(
-        "The drafter did not provide a title. Return a concise title as the first `# H1` on the title slide",
-    )?;
-    if titles_are_equivalent(&title, instruction) {
-        bail!(
-            "The drafter reused the instruction as the title. Generate a concise subject title instead"
-        );
-    }
-    Ok(title)
-}
-
-fn parse_repaired_title(response: &str, instruction: &str) -> Result<String> {
-    let line = strip_code_fence(response.trim())
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .context("Title repair response was empty")?;
-    let title = line
-        .trim()
-        .trim_start_matches('#')
-        .trim()
-        .trim_matches(['\'', '"', '`'])
-        .trim_end_matches(['.', ':', ';'])
-        .trim();
-    let title = validate_title(&clean_generated_title(title))?;
-    if titles_are_equivalent(&title, instruction) {
-        bail!("Title repair reused the generation instruction");
-    }
-    Ok(title)
-}
-
-fn markdown_headings(markdown: &str) -> Vec<String> {
-    let markdown = strip_code_fence(markdown.trim());
-    let mut code_fence: Option<(char, usize)> = None;
-    let mut headings = Vec::new();
-    for line in markdown.lines() {
-        let trimmed = line.trim_start();
-        if let Some((marker, length)) = markdown_code_fence(trimmed) {
-            match code_fence {
-                Some((open_marker, open_length))
-                    if marker == open_marker && length >= open_length =>
-                {
-                    code_fence = None;
-                }
-                None => code_fence = Some((marker, length)),
-                _ => {}
-            }
-            continue;
-        }
-        if code_fence.is_some() {
-            continue;
-        }
-        let heading = trimmed.trim_start_matches('#').trim();
-        if trimmed.starts_with('#') && !heading.is_empty() {
-            headings.push(clean_generated_title(heading));
-        }
-    }
-    headings
-}
-
-fn clean_generated_title(title: &str) -> String {
-    let mut title = title.trim().trim_end_matches('#').trim();
-    loop {
-        let mut changed = false;
-        for delimiter in ["**", "__", "`", "*", "_"] {
-            if let Some(inner) = title
-                .strip_prefix(delimiter)
-                .and_then(|value| value.strip_suffix(delimiter))
-            {
-                title = inner.trim();
-                changed = true;
-                break;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    title.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn titles_are_equivalent(title: &str, instruction: &str) -> bool {
-    let normalize = |value: &str| {
-        value
-            .chars()
-            .filter(|character| character.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect::<String>()
-    };
-    normalize(title) == normalize(instruction)
-}
-
-fn request_chars(request: &TextGenerationRequest) -> usize {
-    request.system_prompt.chars().count() + request.user_prompt.chars().count()
-}
-
-fn generation_limit(error: &anyhow::Error) -> Option<&TextGenerationLimitError> {
-    error.downcast_ref::<TextGenerationLimitError>()
-}
-
-fn compact_retry_failed(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<CompactRetryError>().is_some()
-}
-
-fn excerpt(content: &str, max_chars: usize) -> String {
-    let mut excerpt = content.chars().take(max_chars).collect::<String>();
-    if content.chars().count() > max_chars {
-        excerpt.push_str("\n[...truncated by sfumato...]");
-    }
-    excerpt
-}
-
-fn normalize_marp_markdown(
-    generated: &str,
-    config: &EffectiveConfig,
-    title: &str,
-) -> Result<String> {
-    let mut markdown = strip_code_fence(generated.trim()).to_string();
-    markdown = sanitize_marp_markdown(&markdown);
-    markdown = promote_marp_frontmatter(markdown);
-    let body = body_without_frontmatter(&markdown);
-
-    markdown = canonical_marp_document(body, &config.theme);
-    markdown = remove_duplicate_leading_title_slides(markdown, title);
-    markdown = constrain_generated_images(&markdown);
-
-    if !markdown.contains("\n---") {
-        bail!("Generated deck does not contain Marp slide separators.");
-    }
-
-    markdown = ensure_title_slide(markdown, title)?;
-
-    Ok(markdown)
-}
-
-fn validate_normalized_deck(markdown: &str, title: &str) -> Result<()> {
-    SlideDeckDocument::from_marp(markdown, title)
-        .context("Generated slide deck is invalid after normalization")?;
-    Ok(())
-}
-
-fn canonical_marp_document(body: &str, theme: &str) -> String {
-    format!(
-        "---\nmarp: true\ntheme: {theme}\npaginate: true\nmath: mathjax\n---\n\n{}",
-        body.trim()
-    )
-}
-
-fn insert_title_slide(markdown: String, title: &str) -> String {
-    let fences = markdown_fences(&markdown);
-    if fences.len() < 2 || fences[0].start != 0 {
-        return format!("# {title}\n\n---\n\n{markdown}");
-    }
-
-    format!(
-        "{}\n\n# {title}\n\n---\n\n{}",
-        markdown[..fences[1].end].trim_end(),
-        markdown[fences[1].end..].trim_start()
-    )
-}
-
-fn ensure_title_slide(mut markdown: String, title: &str) -> Result<String> {
-    let first_slide = slide_ranges(&markdown)?
-        .into_iter()
-        .next()
-        .context("Generated deck does not contain a title slide")?;
-    if let Some((start, end)) = first_h1_range(&markdown[first_slide.start..first_slide.end]) {
-        markdown.replace_range(
-            first_slide.start + start..first_slide.start + end,
-            &format!("# {title}"),
-        );
-        Ok(markdown)
-    } else {
-        Ok(insert_title_slide(markdown, title))
-    }
-}
-
-fn first_h1_range(markdown: &str) -> Option<(usize, usize)> {
-    let mut cursor = 0;
-    let mut code_fence: Option<(char, usize)> = None;
-    for line in markdown.split_inclusive('\n') {
-        let without_newline = line.trim_end_matches(['\n', '\r']);
-        let trimmed = without_newline.trim_start();
-        if let Some((marker, length)) = markdown_code_fence(trimmed) {
-            match code_fence {
-                Some((open_marker, open_length))
-                    if marker == open_marker && length >= open_length =>
-                {
-                    code_fence = None;
-                }
-                None => code_fence = Some((marker, length)),
-                _ => {}
-            }
-        } else if code_fence.is_none() && trimmed.starts_with("# ") {
-            let indentation = without_newline.len() - trimmed.len();
-            return Some((cursor + indentation, cursor + without_newline.len()));
-        }
-        cursor += line.len();
-    }
-    None
-}
-
-#[derive(Clone, Copy)]
-struct Fence {
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SlideRange {
-    start: usize,
-    end: usize,
-}
-
-fn promote_marp_frontmatter(markdown: String) -> String {
-    let fences = markdown_fences(&markdown);
-    let Some(frontmatter_index) = fences.windows(2).position(|window| {
-        frontmatter_contains_key(&markdown[window[0].end..window[1].start], "marp")
-    }) else {
-        return markdown;
-    };
-    if frontmatter_index == 0 {
-        return markdown;
-    }
-
-    let frontmatter = markdown[fences[frontmatter_index].start..fences[frontmatter_index + 1].end]
-        .trim()
-        .to_string();
-    let prefix_body = if fences[0].start == 0 {
-        markdown[fences[0].end..fences[frontmatter_index].start]
-            .trim()
-            .to_string()
-    } else {
-        markdown[..fences[frontmatter_index].start]
-            .trim()
-            .to_string()
-    };
-    let suffix_body = markdown[fences[frontmatter_index + 1].end..].trim_start();
-    let suffix_body = if !prefix_body.is_empty()
-        && !suffix_body.is_empty()
-        && !suffix_body.trim_start().starts_with("---")
-    {
-        format!("---\n\n{suffix_body}")
-    } else {
-        suffix_body.to_string()
-    };
-
-    [frontmatter, prefix_body, suffix_body]
-        .into_iter()
-        .filter(|part| !part.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn markdown_fences(markdown: &str) -> Vec<Fence> {
-    let mut fences = Vec::new();
-    let mut cursor = 0;
-    let mut code_fence: Option<(char, usize)> = None;
-
-    for line in markdown.split_inclusive('\n') {
-        let line_without_newline = line.trim_end_matches('\n').trim_end_matches('\r');
-        let trimmed = line_without_newline.trim_start();
-        if let Some((marker, length)) = markdown_code_fence(trimmed) {
-            match code_fence {
-                Some((open_marker, open_length))
-                    if marker == open_marker && length >= open_length =>
-                {
-                    code_fence = None;
-                }
-                None => code_fence = Some((marker, length)),
-                _ => {}
-            }
-        } else if code_fence.is_none() && line_without_newline.trim() == "---" {
-            fences.push(Fence {
-                start: cursor,
-                end: cursor + line.len(),
-            });
-        }
-        cursor += line.len();
-    }
-
-    if cursor < markdown.len() && markdown[cursor..].trim() == "---" {
-        fences.push(Fence {
-            start: cursor,
-            end: markdown.len(),
-        });
-    }
-
-    fences
-}
-
-fn markdown_code_fence(line: &str) -> Option<(char, usize)> {
-    let marker = line.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-    let length = line
-        .chars()
-        .take_while(|character| *character == marker)
-        .count();
-    (length >= 3).then_some((marker, length))
-}
-
-fn slide_ranges(markdown: &str) -> Result<Vec<SlideRange>> {
-    let fences = markdown_fences(markdown);
-    if fences.len() < 2
-        || fences[0].start != 0
-        || !frontmatter_contains_key(&markdown[fences[0].end..fences[1].start], "marp")
-    {
-        bail!("Cannot locate canonical Marp frontmatter for slide replacement");
-    }
-
-    let mut ranges = Vec::new();
-    let mut start = fences[1].end;
-    for separator in fences.iter().skip(2) {
-        ranges.push(SlideRange {
-            start,
-            end: separator.start,
-        });
-        start = separator.end;
-    }
-    ranges.push(SlideRange {
-        start,
-        end: markdown.len(),
-    });
-    Ok(ranges)
-}
-
-fn normalize_slide_replacement(generated: &str) -> Result<String> {
-    let mut fragment = strip_code_fence(generated.trim()).trim().to_string();
-    fragment = sanitize_marp_markdown(&fragment).trim().to_string();
-
-    let fences = markdown_fences(&fragment);
-    if fences.len() >= 2
-        && fences[0].start == 0
-        && frontmatter_contains_key(&fragment[fences[0].end..fences[1].start], "marp")
-    {
-        fragment = fragment[fences[1].end..].trim_start().to_string();
-    }
-
-    fragment = trim_outer_slide_separators(&fragment).to_string();
-    fragment = constrain_generated_images(&fragment);
-    if fragment.trim().is_empty() {
-        bail!("Reviewer returned an empty slide replacement");
-    }
-    Ok(fragment.trim().to_string())
-}
-
-fn trim_outer_slide_separators(fragment: &str) -> &str {
-    let mut fragment = fragment.trim();
-    loop {
-        let fences = markdown_fences(fragment);
-        if fences.first().is_some_and(|fence| fence.start == 0) {
-            fragment = fragment[fences[0].end..].trim_start();
-            continue;
-        }
-        if fences
-            .last()
-            .is_some_and(|fence| fence.end == fragment.len())
-        {
-            fragment = fragment[..fences.last().expect("checked above").start].trim_end();
-            continue;
-        }
-        return fragment;
-    }
-}
-
-fn frontmatter_contains_key(frontmatter: &str, key: &str) -> bool {
-    let prefix = format!("{key}:");
-    frontmatter
-        .lines()
-        .any(|line| line.trim_start().starts_with(&prefix))
-}
-
-fn body_without_frontmatter(markdown: &str) -> &str {
-    let fences = markdown_fences(markdown);
-    if fences.len() >= 2 && fences[0].start == 0 {
-        markdown[fences[1].end..].trim_start()
-    } else {
-        markdown.trim()
-    }
-}
-
-fn remove_duplicate_leading_title_slides(markdown: String, title: &str) -> String {
-    let mut markdown = markdown;
-
-    loop {
-        let fences = markdown_fences(&markdown);
-        if fences.len() < 3 || fences[0].start != 0 {
-            return markdown;
-        }
-
-        let first_slide = markdown[fences[1].end..fences[2].start].trim();
-        if !is_only_title_slide(first_slide, title) {
-            return markdown;
-        }
-
-        let remaining = markdown[fences[2].end..].trim_start();
-        if !remaining_starts_with_title_slide(remaining, title) {
-            return markdown;
-        }
-
-        markdown = format!("{}\n\n{}", markdown[..fences[1].end].trim_end(), remaining);
-    }
-}
-
-fn is_only_title_slide(slide: &str, title: &str) -> bool {
-    slide
-        .strip_prefix("# ")
-        .map(|heading| heading.trim().eq_ignore_ascii_case(title))
-        .unwrap_or(false)
-}
-
-fn remaining_starts_with_title_slide(remaining: &str, title: &str) -> bool {
-    let first_slide = remaining
-        .split_once("\n---")
-        .map(|(first, _)| first)
-        .unwrap_or(remaining);
-    first_slide.lines().any(|line| {
-        line.trim_start_matches("# ")
-            .trim()
-            .eq_ignore_ascii_case(title)
-    }) || first_slide.contains("<!-- _class: title -->")
-}
-
-fn sanitize_marp_markdown(markdown: &str) -> String {
-    let without_svg = strip_html_blocks(markdown, "svg");
-    let without_style = strip_html_blocks(&without_svg, "style");
-    let without_css_fences =
-        strip_code_blocks_by_language(&without_style, &["css", "scss", "sass"]);
-    remove_html_tags_by_names(
-        &without_css_fences,
-        &[
-            "article", "div", "section", "span", "p", "br", "svg", "style",
-        ],
-    )
-}
-
-fn constrain_generated_images(markdown: &str) -> String {
-    let mut output = String::with_capacity(markdown.len());
-    let mut cursor = 0;
-
-    while let Some(relative_start) = markdown[cursor..].find("![") {
-        let image_start = cursor + relative_start;
-        output.push_str(&markdown[cursor..image_start]);
-
-        let alt_start = image_start + 2;
-        let Some(relative_alt_end) = markdown[alt_start..].find("](") else {
-            output.push_str(&markdown[image_start..]);
-            return output;
-        };
-        let alt_end = alt_start + relative_alt_end;
-        let target_start = alt_end + 2;
-        let Some(relative_target_end) = markdown[target_start..].find(')') else {
-            output.push_str(&markdown[image_start..]);
-            return output;
-        };
-        let target_end = target_start + relative_target_end;
-        let alt = &markdown[alt_start..alt_end];
-        let target = markdown[target_start..target_end].trim();
-
-        if is_generated_image_target(target) && !has_marp_image_layout(alt) {
-            output.push_str(&format!(
-                "![height:{GENERATED_IMAGE_MARP_HEIGHT}]({target})"
-            ));
-        } else {
-            output.push_str(&markdown[image_start..=target_end]);
-        }
-        cursor = target_end + 1;
-    }
-
-    output.push_str(&markdown[cursor..]);
-    output
-}
-
-fn is_generated_image_target(target: &str) -> bool {
-    target.starts_with("images/") || target.starts_with("./images/")
-}
-
-fn has_marp_image_layout(alt: &str) -> bool {
-    alt.split_whitespace().any(|part| {
-        let option = part.to_ascii_lowercase();
-        option == "bg"
-            || option.starts_with("bg:")
-            || ["width:", "height:", "w:", "h:"]
-                .iter()
-                .any(|prefix| option.starts_with(prefix))
-    })
-}
-
-fn strip_code_blocks_by_language(markdown: &str, languages: &[&str]) -> String {
-    let mut output = String::new();
-    let mut cursor = 0;
-
-    while let Some(relative_start) = markdown[cursor..].find("```") {
-        let fence_start = cursor + relative_start;
-        output.push_str(&markdown[cursor..fence_start]);
-
-        let after_ticks = fence_start + 3;
-        let line_end = markdown[after_ticks..]
-            .find('\n')
-            .map(|offset| after_ticks + offset)
-            .unwrap_or(markdown.len());
-        let language = markdown[after_ticks..line_end].trim();
-
-        if !languages
-            .iter()
-            .any(|candidate| language.eq_ignore_ascii_case(candidate))
-        {
-            output.push_str(&markdown[fence_start..line_end]);
-            cursor = line_end;
-            continue;
-        }
-
-        let content_start = if line_end < markdown.len() {
-            line_end + 1
-        } else {
-            line_end
-        };
-        if let Some(relative_end) = markdown[content_start..].find("\n```") {
-            cursor = content_start + relative_end + "\n```".len();
-        } else {
-            cursor = markdown.len();
-        }
-    }
-
-    output.push_str(&markdown[cursor..]);
-    output
-}
-
-fn strip_html_blocks(markdown: &str, tag_name: &str) -> String {
-    let mut output = String::new();
-    let mut cursor = 0;
-    let lower = markdown.to_lowercase();
-    let opening = format!("<{}", tag_name.to_lowercase());
-    let closing = format!("</{}>", tag_name.to_lowercase());
-
-    while let Some(relative_start) = lower[cursor..].find(&opening) {
-        let start = cursor + relative_start;
-        output.push_str(&markdown[cursor..start]);
-
-        let after_start = start + opening.len();
-        let is_tag_boundary = lower[after_start..]
-            .chars()
-            .next()
-            .map(|next| next.is_whitespace() || next == '>' || next == '/')
-            .unwrap_or(false);
-        if !is_tag_boundary {
-            output.push_str(&markdown[start..after_start]);
-            cursor = after_start;
-            continue;
-        }
-
-        if let Some(relative_end) = lower[after_start..].find(&closing) {
-            cursor = after_start + relative_end + closing.len();
-        } else if let Some(relative_tag_end) = lower[after_start..].find('>') {
-            cursor = after_start + relative_tag_end + 1;
-        } else {
-            cursor = markdown.len();
-        }
-    }
-
-    output.push_str(&markdown[cursor..]);
-    output
-}
-
-fn remove_html_tags_by_names(markdown: &str, tag_names: &[&str]) -> String {
-    let mut output = String::new();
-    let mut cursor = 0;
-
-    while let Some(relative_start) = markdown[cursor..].find('<') {
-        let start = cursor + relative_start;
-        output.push_str(&markdown[cursor..start]);
-
-        let Some(relative_end) = markdown[start..].find('>') else {
-            output.push_str(&markdown[start..]);
-            return output;
-        };
-        let end = start + relative_end + 1;
-        let tag = &markdown[start + 1..end - 1];
-
-        if is_named_html_tag(tag, tag_names) {
-            cursor = end;
-        } else {
-            output.push_str(&markdown[start..end]);
-            cursor = end;
-        }
-    }
-
-    output.push_str(&markdown[cursor..]);
-    output
-}
-
-fn is_named_html_tag(tag: &str, tag_names: &[&str]) -> bool {
-    let tag = tag.trim_start().trim_start_matches('/').trim_start();
-    let name = tag
-        .split(|character: char| character.is_whitespace() || character == '/' || character == '>')
-        .next()
-        .unwrap_or_default();
-    tag_names
-        .iter()
-        .any(|candidate| name.eq_ignore_ascii_case(candidate))
-}
-
-fn strip_code_fence(text: &str) -> &str {
-    let text = text.trim();
-    for marker in ["```", "~~~"] {
-        let Some(after_marker) = text.strip_prefix(marker) else {
-            continue;
-        };
-        let Some(opening_line_end) = after_marker.find('\n') else {
-            continue;
-        };
-        let language = after_marker[..opening_line_end].trim();
-        let body = &after_marker[opening_line_end + 1..];
-        if is_markdown_document_language(language) {
-            return strip_optional_document_closing_fence(body, marker);
-        }
-        let Some(body) = body.trim_end().strip_suffix(marker) else {
-            continue;
-        };
-        return body.trim();
-    }
-    text
-}
-
-fn is_markdown_document_language(language: &str) -> bool {
-    matches!(
-        language.to_ascii_lowercase().as_str(),
-        "marp" | "markdown" | "md"
-    )
-}
-
-fn strip_optional_document_closing_fence<'a>(body: &'a str, marker: &str) -> &'a str {
-    let marker_character = marker.chars().next().unwrap_or('`');
-    let marker_count = body
-        .lines()
-        .filter_map(|line| markdown_code_fence(line.trim_start()))
-        .filter(|(character, length)| *character == marker_character && *length >= marker.len())
-        .count();
-    let body = body.trim();
-
-    if marker_count % 2 == 1 {
-        body.strip_suffix(marker).map(str::trim_end).unwrap_or(body)
-    } else {
-        body
-    }
-}
-
-fn ensure_inside(root: &Path, path: &Path) -> Result<()> {
-    if !path.starts_with(root) {
-        bail!(
-            "Refusing to write {} because it is outside {}",
-            path.display(),
-            root.display()
-        );
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
