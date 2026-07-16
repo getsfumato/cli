@@ -4,10 +4,10 @@
 
 ## Context
 
-Drafting, title repair, review, layout repair, editing, compact recovery, and tool
-exhaustion need distinct system and user messages. Inline strings duplicate
-rules and make provenance, required variables, customization, and validation
-difficult to test.
+Drafting, title repair, structural validation repair, Mermaid repair, review,
+layout repair, editing, compact recovery, and tool exhaustion need distinct
+system and user messages. Inline strings duplicate rules and make provenance,
+required variables, customization, and validation difficult to test.
 
 ## Decision
 
@@ -21,7 +21,7 @@ structured `PromptVariables`. The MiniJinja implementation in
 `sfumato-adapters` resolves a manifest-relative template path in this order:
 
 1. `<project-root>/.sfumato/prompts/`;
-2. `~/.config/sfumato/prompts/`;
+2. the platform config directory's `sfumato/prompts/`;
 3. bundled prompt assets.
 
 The highest existing template fully overrides the lower source for that ID.
@@ -40,7 +40,8 @@ bundled templates. Root `SFUMATO.md` remains a typed template variable.
 
 - Every ID has manifest/enum parity and golden rendering tests.
 - A user can customize one message without forking the pipeline.
-- Dry-run and generation output can report exact template provenance.
+- Generation output and committed artifact manifests report exact template
+  provenance.
 - Invalid or stale overrides fail before a model request instead of silently
   falling back.
 - Template authors must track the manifest's required variables.

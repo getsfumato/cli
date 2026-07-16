@@ -1,9 +1,6 @@
 # ADR-0004: Make Errors Typed And Cancellation Cooperative
 
-**Decision status:** Accepted for v0.2. **Implementation status:** Mixed.
-Typed errors, operation context, cancellation primitives, and nonblocking event
-ports exist; legacy workflow exits and child-process cancellation are not yet
-fully mapped.
+**Decision status:** Accepted and implemented for v0.2.
 
 ## Context
 
@@ -30,9 +27,14 @@ cancellation token, and event sink. Cancellation is cooperative and checked:
 
 Provider requests observe the token; spawned child processes are terminated and
 reaped; tool loops stop scheduling work. Cancellation before commit rolls back
-staging and returns `Cancelled`. Once commit begins, the coordinator completes or
-recovers the commit and returns the committed result with a cancellation warning.
-This avoids reporting cancellation while leaving an unknown artifact state.
+staging and returns `Cancelled`. Artifact commit is a short, locked atomic
+operation; after it succeeds, optional publication failures or cancellation are
+reported without invalidating the committed revision. This avoids reporting an
+unknown artifact state.
+
+The OpenAI-compatible adapter also caps a complete HTTP request at 300 seconds.
+Transport timeouts are classified as retryable provider failures; an explicit
+operation deadline or cancellation may stop the request earlier.
 
 `Cancelled` is not logged as an internal error and is not automatically retried.
 Compact recovery remains a response to typed provider limits, not to arbitrary

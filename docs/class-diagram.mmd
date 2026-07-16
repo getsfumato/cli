@@ -1,3 +1,4 @@
+%% Public and composition-relevant Rust types in Sfumato v0.2.
 classDiagram
     direction LR
 
@@ -18,75 +19,88 @@ classDiagram
             <<trait>>
             +run() Result
         }
-        class TuiApp {
-            -Screen screen
-            -JobId activeJob
-            -CancellationToken cancellation
-            -JoinHandle activeTask
-            +handleKey(KeyEvent)
-            +draw(Frame)
+        class App {
+            -screen
+            -application
+            -jobs
+            -active_task
+        }
+        class OperationLifecycle {
+            +begin(events) OperationContext
+            +cancel()
+            +finish(job_id)
         }
     }
 
     namespace Domain {
-        class ProjectName
-        class ModelProfileName
-        class ThemeName
-        class SecretRef
-        class Capability {
-            <<enum>>
-            Text
-            Code
-            Image
-            Video
-            Speech
-            Embedding
-        }
+        class DeckDocument
         class ReviewableDocument {
             <<trait>>
             +snapshot() ReviewSnapshot
-            +applyPatch(Patch) PatchReport
+            +apply_patch(patch) PatchReport
             +validate()
             +render() String
         }
-        class DeckDocument
-        class Patch
+        class Capability
+        class SecretRef
         class ArtifactManifest
-        class JobId
         class RevisionId
     }
 
     namespace Core {
-        class GenerateSlidesOptions
-        class EditSlidesOptions
-        class AgentRunner
+        class SfumatoApplication {
+            +generate_slides(command) GenerateSlidesResult
+            +edit_slides(command) EditSlidesResult
+            +list_projects()
+            +list_models()
+            +list_themes()
+            +list_prompts()
+        }
+        class SfumatoApplicationDependencies
+        class GenerateSlidesCommand
+        class EditSlidesCommand
+        class AgentRunner {
+            +run(model, request, tools, operation) TextModelResponse
+        }
         class TextModel {
             <<trait>>
-            +complete(TextModelRequest) TextModelResponse
+            +complete(request, operation) TextModelResponse
         }
         class ProviderFactory {
             <<trait>>
-            +text(EffectiveConfig, ModelProfile)
-            +image(EffectiveConfig, ModelProfile)
+            +text(config, profile) TextGenerationProvider
+            +image(config, profile) ImageGenerationProvider
+        }
+        class EffectiveConfigResolver {
+            <<trait>>
+            +resolve(overrides) EffectiveConfig
         }
         class PromptCatalog {
             <<trait>>
-            +render(PromptRenderRequest) RenderedPrompt
-            +validate() PromptProvenance[]
+            +render(request) RenderedPrompt
+            +validate_all() PromptProvenance
+        }
+        class SourceReader {
+            <<trait>>
+        }
+        class GenerationToolFactory {
+            <<trait>>
+        }
+        class DiagramRenderer {
+            <<trait>>
+        }
+        class SlideRenderer {
+            <<trait>>
         }
         class ArtifactStore {
             <<trait>>
-            +projectRoot(project) PathBuf
+            +project_root(project) PathBuf
             +begin(project, kind) ArtifactTransaction
         }
         class ArtifactTransaction {
             <<trait>>
-            +stagingRoot() Path
-            +commit(ResourceArtifactManifest) CommittedRevision
-        }
-        class ToolExecutor {
-            <<trait>>
-            +execute(ToolExecutionRequest) String
+            +staging_root() Path
+            +commit(manifest) CommittedArtifactRevision
         }
         class GlobalConfigRepository {
             <<trait>>
@@ -97,43 +111,70 @@ classDiagram
         class ThemeRepository {
             <<trait>>
         }
-        class GenerationOutput
-        class PromptProvenance
+        class WorkspaceFileSystem {
+            <<trait>>
+        }
+        class SfumatoError
+        class OperationContext
     }
 
     namespace Adapters {
+        class FilesystemConfigResolver
+        class LayeredPromptCatalog
         class OpenAiCompatibleProviderFactory
         class OpenAiCompatibleTextProvider
         class OpenAiCompatibleImageProvider
-        class LayeredPromptCatalog
+        class FilesystemSourceReader
+        class FilesystemGenerationToolFactory
+        class MermaidCliRenderer
+        class MarpCliRenderer
         class FilesystemArtifactStore
+        class FilesystemGlobalConfigRepository
+        class FilesystemProjectRepository
+        class FilesystemThemeRepository
+        class LocalWorkspaceFileSystem
     }
 
     Commands ..|> RunnableCommand
-    TuiApp --> GenerateSlidesOptions
-    TuiApp --> EditSlidesOptions
+    App --> OperationLifecycle
+    App --> SfumatoApplication
 
     DeckDocument ..|> ReviewableDocument
-    ReviewableDocument --> Patch
-    ArtifactManifest --> JobId
     ArtifactManifest --> RevisionId
-
-    GenerateSlidesOptions --> ProviderFactory
-    GenerateSlidesOptions --> PromptCatalog
-    GenerateSlidesOptions --> ArtifactStore
-    GenerateSlidesOptions --> GenerationOutput
-    EditSlidesOptions --> ReviewableDocument
-    EditSlidesOptions --> ProviderFactory
-    EditSlidesOptions --> PromptCatalog
-    EditSlidesOptions --> ArtifactStore
+    SfumatoApplication *-- SfumatoApplicationDependencies
+    SfumatoApplication --> GenerateSlidesCommand
+    SfumatoApplication --> EditSlidesCommand
+    SfumatoApplication --> AgentRunner
+    SfumatoApplication --> ProviderFactory
+    SfumatoApplication --> EffectiveConfigResolver
+    SfumatoApplication --> PromptCatalog
+    SfumatoApplication --> SourceReader
+    SfumatoApplication --> GenerationToolFactory
+    SfumatoApplication --> DiagramRenderer
+    SfumatoApplication --> SlideRenderer
+    SfumatoApplication --> ArtifactStore
+    SfumatoApplication --> GlobalConfigRepository
+    SfumatoApplication --> ProjectRepository
+    SfumatoApplication --> ThemeRepository
+    SfumatoApplication --> WorkspaceFileSystem
+    SfumatoApplication --> SfumatoError
+    GenerateSlidesCommand --> OperationContext
+    EditSlidesCommand --> OperationContext
     AgentRunner --> TextModel
-    AgentRunner --> ToolExecutor
-    PromptCatalog --> PromptProvenance
     ArtifactStore --> ArtifactTransaction
 
+    FilesystemConfigResolver ..|> EffectiveConfigResolver
+    LayeredPromptCatalog ..|> PromptCatalog
     OpenAiCompatibleProviderFactory ..|> ProviderFactory
     OpenAiCompatibleProviderFactory --> OpenAiCompatibleTextProvider
     OpenAiCompatibleProviderFactory --> OpenAiCompatibleImageProvider
     OpenAiCompatibleTextProvider ..|> TextModel
-    LayeredPromptCatalog ..|> PromptCatalog
+    FilesystemSourceReader ..|> SourceReader
+    FilesystemGenerationToolFactory ..|> GenerationToolFactory
+    MermaidCliRenderer ..|> DiagramRenderer
+    MarpCliRenderer ..|> SlideRenderer
     FilesystemArtifactStore ..|> ArtifactStore
+    FilesystemGlobalConfigRepository ..|> GlobalConfigRepository
+    FilesystemProjectRepository ..|> ProjectRepository
+    FilesystemThemeRepository ..|> ThemeRepository
+    LocalWorkspaceFileSystem ..|> WorkspaceFileSystem

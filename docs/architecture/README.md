@@ -67,6 +67,9 @@ and operator/integrator contracts under [`docs/reference`](../reference/).
    without a PDF removes any stale published PDF.
 8. Prompt provenance records ID, origin, manifest version, and SHA-256 source
    hash in the generation result and committed manifest metadata.
+9. Mermaid fences are rendered with project theme tokens and embedded at a
+   bounded 300 px Marp height in both layout previews and final artifacts, so
+   intrinsic SVG dimensions cannot create undetected overflow.
 
 ## Verification Gate
 

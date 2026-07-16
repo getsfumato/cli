@@ -4,7 +4,7 @@
 
 | ID | Requirement | Current anchor | Evidence |
 | --- | --- | --- | --- |
-| V02-001 | Four workspace packages with inward dependency direction. | Root workspace manifest and three crate manifests. | Workspace build and strict Clippy gate. |
+| V02-001 | Four workspace packages with inward dependency direction. | Root workspace manifest and three crate manifests. | `tests/architecture.rs`, workspace build, and strict Clippy gate. |
 | V02-002 | Pure domain types and invariants. | `sfumato-domain::{artifact,deck,primitives,review}`. | Domain unit suite and dependency manifest. |
 | V02-003 | Traits only at replaceable outbound boundaries. | Core artifact, config, filesystem, prompt, provider, renderer, repository, source, and tool ports. | Adapter and fake implementations compile against typed contracts. |
 | V02-004 | Strict layered prompts with deterministic provenance. | `PromptId`, `PromptCatalog`, `LayeredPromptCatalog`, prompt assets. | `tests/prompts.rs`: parity, strict render, precedence, traversal, symlink, size, customization, aggregate hash. |

@@ -2,6 +2,8 @@
 
 use super::*;
 
+const MERMAID_IMAGE_HEIGHT_PX: u16 = 300;
+
 pub(super) async fn render_mermaid_diagrams(
     markdown: &str,
     diagrams_dir: &Path,
@@ -23,9 +25,8 @@ pub(super) async fn render_mermaid_diagrams(
     let mut cursor = 0;
     let mut artifacts = Vec::new();
 
-    for (index, block) in blocks.iter().enumerate() {
+    for block in &blocks {
         rendered.push_str(&markdown[cursor..block.start]);
-        let diagram_index = index + 1;
         let source = normalize_mermaid_source(&block.source);
         let content_hash = format!("{:x}", Sha256::digest(source.as_bytes()));
         let name = format!("diagram-{}", &content_hash[..16]);
@@ -47,9 +48,7 @@ pub(super) async fn render_mermaid_diagrams(
                 artifact_path.display()
             );
         }
-        rendered.push_str(&format!(
-            "![Mermaid diagram {diagram_index}](diagrams/{name}.svg)"
-        ));
+        rendered.push_str(&mermaid_image_markdown(&name));
         artifacts.push(source_path);
         artifacts.push(artifact_path);
         cursor = block.end;
@@ -58,6 +57,10 @@ pub(super) async fn render_mermaid_diagrams(
     rendered.push_str(&markdown[cursor..]);
     prune_unreferenced_diagrams(&rendered, diagrams_dir, workspace)?;
     Ok((rendered, artifacts))
+}
+
+pub(super) fn mermaid_image_markdown(name: &str) -> String {
+    format!("![height:{MERMAID_IMAGE_HEIGHT_PX}px](diagrams/{name}.svg)",)
 }
 
 fn prune_unreferenced_diagrams(

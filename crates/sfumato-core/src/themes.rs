@@ -96,18 +96,18 @@ impl ThemeService {
 
     /// Installs the bundled default package when absent.
     pub fn install_default(&self) -> Result<ThemePackage> {
-        Ok(self.repository.install_default()?)
+        self.repository.install_default()
     }
 
     /// Creates a custom package from the bundled scaffold.
     pub fn create(&self, name: &str) -> Result<ThemePackage> {
         validate_theme_name(name)?;
-        Ok(self.repository.create(name)?)
+        self.repository.create(name)
     }
 
     /// Lists installed packages.
     pub fn list(&self) -> Result<Vec<ThemeSummary>> {
-        Ok(self.repository.list()?)
+        self.repository.list()
     }
 
     /// Lists installed package names.
@@ -133,7 +133,7 @@ impl ThemeService {
     /// Resolves one installed and validated package.
     pub fn resolve(&self, name: &str) -> Result<ThemePackage> {
         validate_theme_name(name)?;
-        Ok(self.repository.load(name)?)
+        self.repository.load(name)
     }
 }
 

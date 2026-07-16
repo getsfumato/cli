@@ -15,17 +15,18 @@ Connector API keys become optional indirect `SecretRef` values such as
 `env:OPENROUTER_API_KEY`; raw secret material is invalid in v4.
 
 Prompt roots are conventional directories rather than config fields: user
-overrides live under `~/.config/sfumato/prompts`, project overrides under
-`<project-root>/.sfumato/prompts`, and project templates win.
+overrides live under the platform config directory's `sfumato/prompts`, project
+overrides under `<project-root>/.sfumato/prompts`, and project templates win.
 
 Load each scope without mutation. Legacy, missing, and future schema versions
 fail without writing; v0.2 is an explicit configuration reset. Validate complete
 v4 documents before replacing originals through same-directory temporary files.
+Writes hold a cross-process lock and reject a stale content revision.
 
 Resolution order remains command over project over global. Validated project,
 model-profile, theme, and capability values plus model/connector references,
 supported secret schemes, theme adapters, and publication paths are checked
-before producing an immutable `ConfigSnapshot`. One operation uses one snapshot
+before producing an immutable `EffectiveConfig`. One operation uses one snapshot
 even if files change while it runs.
 
 Config mutation is typed: dotted-key commands modify an in-memory v4 document,

@@ -1,8 +1,6 @@
 # ADR-0002: Put Narrow Traits At Volatile Boundaries
 
-**Decision status:** Accepted for v0.2. **Implementation status:** Mixed. Text,
-image, tool, repository, prompt, artifact, and event ports exist; renderer and
-source boundaries remain to be extracted.
+**Decision status:** Accepted and implemented for v0.2.
 
 ## Context
 
@@ -40,10 +38,9 @@ with one stable implementation and no test boundary.
 - Adding a new adapter does not change use-case orchestration.
 - Port evolution must be deliberate because it affects every implementation.
 
-## Compatibility
+## Current Contract
 
-The existing `TextGenerationProvider`, `ImageGenerationProvider`,
-`ToolExecutor`, repository traits, and `PromptCatalog` should be adapted rather
-than duplicated.
-Their public error and cancellation signatures change only at the v0.2 facade
-boundary until internal migration is complete.
+`TextGenerationProvider`, `ImageGenerationProvider`, `ToolExecutor`, repository
+traits, `PromptCatalog`, `SourceReader`, `WorkspaceFileSystem`, renderers, and
+the artifact store all return typed core results. Adapters may use richer local
+errors internally but classify them once before crossing a port boundary.

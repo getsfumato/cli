@@ -18,6 +18,8 @@ use sfumato_core::{
 
 use crate::runtime::await_operation;
 
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[derive(Clone, Debug)]
 pub struct OpenAiCompatibleConnector {
     client: Client,
@@ -30,7 +32,7 @@ impl OpenAiCompatibleConnector {
         let _ = resolve_api_key(&config)?;
         Ok(Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(HTTP_REQUEST_TIMEOUT)
                 .build()
                 .context("Could not build the OpenAI-compatible HTTP client")?,
             name,
@@ -332,6 +334,8 @@ fn provider_error(error: anyhow::Error, stage: OperationStage) -> SfumatoError {
 
     let message = format!("{error:#}");
     let class = if message.contains("Could not reach")
+        || message.contains("operation timed out")
+        || message.contains("timed out")
         || message.contains("HTTP 429")
         || message.contains("HTTP 500")
         || message.contains("HTTP 502")

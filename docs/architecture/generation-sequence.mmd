@@ -1,55 +1,59 @@
-%% Sfumato v0.2 generation sequence
-%% Status: PROPOSED orchestration; implemented behavior is called out in notes.
+%% Implemented Sfumato v0.2 slide generation sequence.
 sequenceDiagram
     autonumber
-    actor Client as CLI, TUI, or library client
-    participant App as GenerateSlides use case [Proposed boundary]
-    participant Config as ConfigResolver [Implemented behavior]
-    participant Prompt as PromptCatalog [In flight]
-    participant Source as SourceReader [Implemented behavior]
-    participant Model as TextProvider [Implemented trait]
-    participant Review as ReviewableDocument [Implemented]
-    participant Render as Render ports [Implemented behavior]
-    participant Tx as ArtifactTransaction [Proposed]
-    participant Events as EventSink [Proposed contract]
+    actor Client as CLI or TUI
+    participant App as SfumatoApplication
+    participant Config as EffectiveConfigResolver
+    participant Source as SourceReader
+    participant Prompt as PromptCatalog
+    participant Agent as AgentRunner
+    participant Deck as DeckDocument
+    participant Render as Diagram and Slide renderers
+    participant Tx as ArtifactTransaction
+    participant Publish as WorkspaceFileSystem
 
-    Client->>App: generate(request, operation_context)
-    App->>Events: stage(Configuring)
-    App->>Config: resolve(overrides)
-    Config-->>App: ConfigSnapshot with provenance
-    App->>Source: collect bounded sources
-    Source-->>App: SourceBundle
-    App->>Prompt: render(draft PromptPair, variables)
-    Prompt-->>App: Rendered system and user prompts with provenance
-    App->>Events: stage(Drafting)
-    App->>Model: generate_text(prompt, tools, cancellation)
-    alt provider reports context or output limit
-        App->>Prompt: render(compact draft PromptPair, variables)
-        App->>Model: generate_text(compact prompt, no new tools)
+    Client->>App: generate_slides(command)
+    App->>Config: resolve(command overrides)
+    Config-->>App: EffectiveConfig
+    App->>Source: read bounded sources and SFUMATO.md
+    Source-->>App: deterministic source bundle and warnings
+    App->>Prompt: render draft pair
+    Prompt-->>App: messages and provenance
+    App->>Agent: run draft with declared tools
+    opt provider context or output limit
+        App->>Prompt: render compact draft pair
+        App->>Agent: run compact draft
     end
-    Model-->>App: complete draft
-    App->>Review: parse and validate canonical deck
+    Agent-->>App: draft Markdown
+    App->>Deck: normalize and validate
+    opt invalid draft with recoverable structure
+        App->>Prompt: render validation-repair pair
+        App->>Agent: repair complete draft without tools
+        App->>Deck: normalize and validate once
+    end
+    opt Mermaid syntax is invalid
+        App->>Prompt: render Mermaid-repair pair with snapshot and error
+        App->>Agent: return guarded RFC 6902 patch
+        App->>Deck: apply patch and validate once
+    end
     opt semantic review enabled
-        App->>Prompt: render(review PromptPair, variables)
-        App->>Model: generate guarded JSON Patch
-        App->>Review: test revisions, apply patch, validate
+        App->>Prompt: render review pair with source and deck snapshot
+        App->>Agent: return guarded RFC 6902 patch
+        App->>Deck: test revisions, apply patch, and validate
     end
-    App->>Render: inspect layout
-    opt focused repair improves measured overflow
-        App->>Prompt: render(layout-repair PromptPair, variables)
-        App->>Model: generate guarded replacement
-        App->>Review: apply and validate
-        App->>Render: inspect candidate again
+    App->>Render: inspect 1280x720 slide layout
+    loop each overflowing slide, at most once
+        App->>Prompt: render focused layout-repair pair
+        App->>Agent: repair only that slide
+        App->>Deck: replace focused slide and validate
+        App->>Render: compare layout metrics
     end
-    App->>Tx: begin(artifact plan)
-    App->>Render: stage Mermaid, theme, Markdown, and PDF
-    Render-->>Tx: staged artifacts
-    App->>Tx: validate manifest and commit
-    Tx-->>App: committed ArtifactManifest
-    opt publication requested
-        App->>Tx: publish processed artifact
+    App->>Tx: begin project slide transaction
+    App->>Render: stage theme, Mermaid SVGs, Markdown, and optional PDF
+    App->>Tx: validate manifest and commit immutable revision
+    Tx-->>App: committed revision and current pointer
+    opt publish directory resolved
+        App->>Publish: atomically publish processed PDF or remove stale PDF
+        Publish-->>App: path or nonfatal warning
     end
-    App-->>Client: GenerationResult
-
-    Note over App,Render: Drafting, guarded review, layout checks, Mermaid rendering, and PDF export are implemented today.
-    Note over App,Tx: v0.2 adds one cancellation-aware use-case boundary and a recoverable transaction.
+    App-->>Client: GenerateSlidesResult with artifacts, review summary, warnings, and provenance

@@ -125,3 +125,14 @@ fn recognizes_structured_and_textual_context_limit_responses() {
     ));
     assert!(!is_context_limit_response("temporary upstream failure"));
 }
+
+#[test]
+fn classifies_http_timeouts_as_retryable_provider_failures() {
+    let error = provider_error(
+        anyhow::anyhow!("request or response body error: operation timed out"),
+        OperationStage::Review,
+    );
+
+    assert_eq!(error.class, ErrorClass::Retry);
+    assert_eq!(error.stage, Some(OperationStage::Review));
+}

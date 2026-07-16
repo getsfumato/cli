@@ -1,47 +1,42 @@
-%% Sfumato v0.2 edit sequence
-%% Status: Implemented workflow; facade and renderer boundaries remain transitional.
+%% Implemented v0.2 focused slide-edit sequence.
 sequenceDiagram
     autonumber
-    actor Client as CLI, TUI, or library client
-    participant App as EditSlides workflow
-    participant Config as EffectiveConfig resolver
-    participant Store as ArtifactStore port
-    participant Deck as SlideDeckDocument [Implemented]
-    participant Prompt as PromptCatalog port
-    participant Model as TextProvider [Implemented trait]
-    participant Render as Render ports [Implemented behavior]
-    participant Tx as ArtifactTransaction port
+    actor Client as CLI or TUI
+    participant App as SfumatoApplication
+    participant Config as EffectiveConfigResolver
+    participant FS as WorkspaceFileSystem
+    participant Deck as DeckDocument
+    participant Prompt as PromptCatalog
+    participant Agent as AgentRunner
+    participant Render as Diagram and Slide renderers
+    participant Tx as ArtifactTransaction
 
-    Client->>App: edit(request, operation_context)
+    Client->>App: edit_slides(command)
     App->>Config: resolve project and text model
-    Config-->>App: ConfigSnapshot
-    App->>Store: read generated Markdown inside project workspace
-    Store-->>App: original deck bytes and identity
-    App->>Deck: parse, snapshot, and validate
+    Config-->>App: EffectiveConfig
+    App->>FS: canonicalize requested Markdown and project artifact root
+    FS-->>App: contained managed revision path
+    App->>FS: read deck and copy parent revision into staging
+    App->>Deck: parse, validate, and snapshot
     Deck-->>App: revision-guarded ReviewSnapshot
-    App->>Prompt: render(edit PromptPair, variables)
-    App->>Model: generate_text(prompt, cancellation)
-    alt provider limit
-        App->>Prompt: render(compact edit PromptPair, variables)
-        App->>Model: generate compact patch
+    App->>Prompt: render edit pair with instruction and snapshot
+    App->>Agent: request RFC 6902 patch
+    opt provider context or output limit
+        App->>Prompt: render compact edit pair
+        App->>Agent: request compact patch
     end
-    Model-->>App: RFC 6902 patch
-    App->>Deck: allow only tests and slide Markdown replacements
-    alt invalid response on first attempt
-        App->>Prompt: render(edit pair with corrective variables)
-        App->>Model: generate corrected patch
-        Model-->>App: corrected patch
+    Agent-->>App: RFC 6902 patch
+    App->>Deck: allow tests and content-only slide Markdown replacements
+    opt first patch is invalid
+        App->>Prompt: render corrective edit pair with validation error
+        App->>Agent: request one corrected patch
+        Agent-->>App: corrected RFC 6902 patch
         App->>Deck: apply and validate
-    else valid response
-        Deck-->>App: candidate and PatchReport
     end
-    App->>Render: inspect layout and render diagrams
-    App->>Tx: begin immutable child revision
-    App->>Render: render candidate PDF into staging
-    Render-->>Tx: staged Markdown, PDF, theme, and diagrams
-    App->>Tx: validate manifest and atomically commit revision
-    Tx-->>App: committed artifact receipts
-    App-->>Client: EditSlidesResult
+    App->>Render: inspect layout and report remaining overflow
+    App->>Render: render Mermaid SVGs, theme CSS, Markdown, and PDF in staging
+    App->>Tx: commit manifest with parent revision
+    Tx-->>App: immutable child revision and current pointer
+    App-->>Client: EditSlidesResult with changed slides, artifacts, warnings, and provenance
 
-    Note over Deck,Model: Title slide, frontmatter, IDs, order, and unrelated content remain protected.
-    Note over Store,Tx: Staging is rolled back on failure. A successful commit renames the complete immutable revision and atomically updates current.json.
+    Note over Deck,Agent: Frontmatter, title slide, slide IDs, order, and unrelated content are code-protected.

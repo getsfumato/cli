@@ -28,7 +28,9 @@ records its parent revision in the manifest.
 
 Publication occurs after workspace commit and includes processed artifacts
 only. It uses a destination-local temporary file and atomic rename. Publication
-failure returns a warning and never rolls back a valid workspace revision.
+failure returns a warning and never rolls back a valid workspace revision. If a
+new revision intentionally has no PDF, Sfumato removes a stale previously
+published PDF instead of leaving it to masquerade as current output.
 
 ## Consequences
 

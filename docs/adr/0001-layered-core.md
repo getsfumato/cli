@@ -1,8 +1,6 @@
 # ADR-0001: Layer The Core Around Use Cases
 
-**Decision status:** Accepted for v0.2. **Implementation status:** Mixed. The
-workspace and inward dependency graph exist; renderer, source, theme, and config
-filesystem implementations still need extraction from `sfumato-core`.
+**Decision status:** Accepted and implemented for v0.2.
 
 ## Context
 
@@ -40,9 +38,9 @@ depends on all three to compose the application.
   feature changes.
 - Composition becomes explicit and slightly more verbose.
 
-## Migration
+## Enforcement
 
-Extract domain types and ports before moving orchestration. Wrap current
-filesystem and provider code as adapters, then migrate generation and edit one
-stage at a time. Keep temporary compatibility exports private or deprecated;
-do not establish a second permanent API.
+Workspace manifests enforce the dependency graph, and an architecture test
+rejects forbidden presentation or adapter dependencies in domain/core. Raw
+resource orchestrators remain crate-private; frontends enter through
+`SfumatoApplication`.

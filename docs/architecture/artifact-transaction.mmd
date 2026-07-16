@@ -1,21 +1,24 @@
+%% Immutable artifact transaction and optional publication lifecycle.
 stateDiagram-v2
     [*] --> Locked: acquire project artifact lock
     Locked --> Staging: create unique job staging directory
-    Staging --> Staging: write deck, media, diagrams, theme, and render outputs
-    Staging --> Validating: build complete ResourceArtifactManifest
-    Validating --> RolledBack: missing file, unsafe path, symlink, or cancellation
-    Validating --> Committing: manifest identity and every declared file validate
-    Committing --> Committed: rename staging directory to immutable revision
-    Committed --> Current: atomically replace current.json pointer
-    Current --> Publishing: optional processed PDF publication
-    Publishing --> Completed: atomic publication rename succeeds
-    Publishing --> CompletedWithWarning: publication fails after workspace commit
+    Staging --> Staging: write Markdown, media, diagrams, theme, and render outputs
+    Staging --> Validating: build ResourceArtifactManifest
+    Validating --> RolledBack: cancellation, missing file, unsafe path, symlink, duplicate, or reserved path
+    Validating --> Committing: identity and every declared file validate
+    Committing --> RevisionRenamed: atomically rename staging to immutable revision
+    RevisionRenamed --> RolledBack: current pointer write fails; remove new revision
+    RevisionRenamed --> Current: atomically write current.json
+    Current --> Publishing: optional processed PDF destination
+    Publishing --> Completed: destination-local atomic rename succeeds
+    Publishing --> CompletedWithWarning: publication fails after commit
+    Publishing --> Completed: no PDF removes stale published PDF
     Current --> Completed: no publication requested
     RolledBack --> [*]
     Completed --> [*]
     CompletedWithWarning --> [*]
 
     note right of Committing
-      The whole revision is one directory rename.
-      Existing revisions are immutable and never replaced.
+      Existing revisions are immutable.
+      current.json is updated only after a complete revision exists.
     end note

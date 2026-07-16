@@ -12,7 +12,7 @@ For the relative path named by the bundled manifest, the first existing source
 wins:
 
 1. `<project-root>/.sfumato/prompts/<relative-path>`;
-2. `~/.config/sfumato/prompts/<relative-path>`;
+2. `<platform-config>/sfumato/prompts/<relative-path>`;
 3. the bundled template.
 
 For example, a project override for the draft user message is:
@@ -27,6 +27,10 @@ Absolute paths, `..`, symlinks, and includes that escape an override root are
 rejected. Each template is limited to 64 KiB. Invalid UTF-8 or an oversize file
 is an error, not a fallback.
 
+`<platform-config>` is the operating-system directory described in
+[Configuration v4](config-v4.md), such as `~/Library/Application Support` on
+macOS or `$XDG_CONFIG_HOME` on Linux.
+
 ## Stable Prompt IDs
 
 | Workflow | System ID | User ID |
@@ -34,8 +38,10 @@ is an error, not a fallback.
 | Draft | `slides.draft.system` | `slides.draft.user` |
 | Compact draft | `slides.compact-draft.system` | `slides.compact-draft.user` |
 | Title repair | `slides.title-repair.system` | `slides.title-repair.user` |
+| Structural validation repair | `slides.validation-repair.system` | `slides.validation-repair.user` |
 | Review | `slides.review.system` | `slides.review.user` |
 | Compact review | `slides.compact-review.system` | `slides.compact-review.user` |
+| Mermaid repair | `slides.mermaid-repair.system` | `slides.mermaid-repair.user` |
 | Layout repair | `slides.layout-repair.system` | `slides.layout-repair.user` |
 | Compact layout repair | `slides.compact-layout-repair.system` | `slides.compact-layout-repair.user` |
 | Edit | `slides.edit.system` | `slides.edit.user` |
@@ -80,9 +86,11 @@ The manifest is authoritative. Common required values are:
 | --- | --- |
 | Draft | `learning_style`; user message also receives `project`, `project_root`, `theme_name`, `theme_colors`, `theme_fonts`, `instruction`, `project_instructions`, `title`, `image_generation_available`, `source_bundle`. |
 | Title repair | `project`, `instruction`, `validation_error`, `project_instructions`, `headings`. |
-| Review | `instruction`, `project`, theme values, `project_instructions`, retry values, source bundle, and `snapshot`. |
+| Structural validation repair | `instruction`, `title`, `project`, theme values, `project_instructions`, `validation_error`, and `draft_markdown`. |
+| Review | `instruction`, `project`, theme values, `project_instructions`, retry values, source bundle, and `deck_snapshot`. |
+| Mermaid repair | `instruction`, `project`, theme values, `project_instructions`, `validation_error`, and `deck_snapshot`. |
 | Layout repair | `instruction`, `title`, `project`, `theme_name`, `project_instructions`, `issue_report`, retry values, and `slide_markdown`. |
-| Edit | `project`, `instruction`, theme values, `project_instructions`, retry values, and `snapshot`. |
+| Edit | `project`, `instruction`, theme values, `project_instructions`, retry values, and `deck_snapshot`. |
 | Tool exhausted | `max_tool_rounds`. |
 
 Compact variants use compact source/snapshot values selected by the use case.
@@ -106,8 +114,9 @@ snapshots, rejected responses, and tool results because those values are data.
 ## Provenance And Validation
 
 Every render records prompt ID, `bundled`, `user`, or `project` origin, manifest
-schema version, and SHA-256 hash of the selected template source. Dry-run and
-result metadata may expose provenance but not source bundles or secrets.
+schema version, and SHA-256 hash of the selected template source. Generation
+results and committed revision manifests retain that provenance without source
+bundles or secrets.
 
 The target prompt commands or equivalent facade methods list IDs, show the
 selected source, copy a bundled template into user/project scope without

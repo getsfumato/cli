@@ -1,17 +1,8 @@
-%% Sfumato v0.2 types currently present in sfumato-domain and sfumato-core.
+%% Domain entities and application contracts implemented in v0.2.
 classDiagram
-    class ProjectName {
-        +new(value)
-        +as_str()
-    }
-    class ModelProfileName {
-        +new(value)
-        +as_str()
-    }
-    class ThemeName {
-        +new(value)
-        +as_str()
-    }
+    class ProjectName
+    class ModelProfileName
+    class ThemeName
     class JobId
     class ArtifactId
     class RevisionId
@@ -20,6 +11,8 @@ classDiagram
         Text
         Code
         Image
+        Video
+        Speech
         Embedding
     }
 
@@ -32,6 +25,7 @@ classDiagram
         +from_marp(markdown, title)
         +snapshot()
         +apply_patch(patch)
+        +replace_slide(position, markdown)
         +render()
     }
     class ReviewableDocument {
@@ -66,55 +60,45 @@ classDiagram
     }
     class SlideId
     class SlideElement
-    class PatchReport {
-        +operations
-        +changed_nodes
-    }
+    class PatchReport
 
-    class ArtifactManifest {
+    class ResourceArtifactManifest {
         +schema_version
-        +artifact_id
+        +resource_id
+        +project
         +job_id
         +revision_id
         +parent_revision_id
-        +kind
         +files
+        +metadata
         +prompts
     }
-    class ArtifactMetadata
     class PromptProvenance
-
     class OperationContext {
-        +job_id
-        +deadline
+        +job_id()
         +checkpoint(stage)
-        +emit(event)
-    }
-    class CancellationToken {
-        +cancel()
-        +is_cancelled()
+        +emit(stage, kind, fields)
+        +remaining()
     }
     class SfumatoError {
         +code
         +class
         +stage
         +message
+        +details
     }
 
     ReviewableDocument <|.. DeckDocument
-    DeckDocument *-- SlideId
     DeckDocument *-- SlideDocument
+    DeckDocument *-- SlideId
     SlideDocument *-- SlideElement
     DeckDocument --> ReviewSnapshot
     ReviewSnapshot *-- ReviewConstraint
     DeckDocument --> PatchReport
-    ArtifactManifest *-- ArtifactMetadata
-    ArtifactManifest *-- PromptProvenance
-    ArtifactManifest --> ArtifactId
-    ArtifactManifest --> JobId
-    ArtifactManifest --> RevisionId
-    OperationContext *-- JobId
-    OperationContext *-- CancellationToken
+    ResourceArtifactManifest --> ProjectName
+    ResourceArtifactManifest --> JobId
+    ResourceArtifactManifest --> RevisionId
+    ResourceArtifactManifest *-- PromptProvenance
+    OperationContext --> JobId
     OperationContext --> SfumatoError
     ModelProfileName --> Capability
-    ModelProfileName --> SecretRef

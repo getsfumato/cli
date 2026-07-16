@@ -26,7 +26,7 @@ impl ProjectService {
     }
 
     pub fn init(&self, name: String, path: PathBuf, activate: bool) -> Result<ProjectConfig> {
-        Ok(self.repository.register(name, path, activate)?)
+        self.repository.register(name, path, activate)
     }
 
     pub fn list(&self) -> Result<Vec<ProjectSummary>> {
@@ -43,11 +43,11 @@ impl ProjectService {
     }
 
     pub fn show(&self, requested: Option<&str>) -> Result<ProjectConfig> {
-        Ok(self.repository.load(requested)?)
+        self.repository.load(requested)
     }
 
     pub fn use_project(&self, name: &str) -> Result<String> {
-        Ok(self.repository.set_active(name)?)
+        self.repository.set_active(name)
     }
 
     pub fn remove(&self, name: &str) -> Result<ProjectRemoved> {

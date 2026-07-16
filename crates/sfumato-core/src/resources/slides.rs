@@ -54,6 +54,8 @@ pub use edit::{EditSlidesRequest, EditSlidesResult};
 use layout::LayoutAssessment;
 #[cfg(test)]
 use layout::layout_score;
+#[cfg(test)]
+use mermaid::mermaid_image_markdown;
 use mermaid::{extract_mermaid_blocks, render_mermaid_diagrams};
 #[cfg(test)]
 use mermaid::{mermaid_theme_config, normalize_mermaid_source};

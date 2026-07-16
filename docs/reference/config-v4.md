@@ -9,13 +9,18 @@ version other than 4 are read-only errors.
 
 | Scope | Default path | Purpose |
 | --- | --- | --- |
-| Global | `~/.config/sfumato/config.toml` | User profile, connectors, models, defaults, roles, and Marp. |
-| Registry | `~/.config/sfumato/projects.toml` | Registered project roots and active project. |
+| Global | `<platform-config>/sfumato/config.toml` | User profile, connectors, models, defaults, roles, and Marp. |
+| Registry | `<platform-config>/sfumato/projects.toml` | Registered project roots and active project. |
 | Project | `<project-root>/.sfumato/project.toml` | Portable theme, publication, model overrides, and Marp. |
 
 Every document starts with `schema_version = 4`. Prompt templates use
 conventional directories documented in [Prompt Authoring](prompt-authoring.md);
 their paths are not stored in config.
+
+`<platform-config>` comes from the operating system through the Rust `dirs`
+crate. It is normally `~/Library/Application Support` on macOS and
+`$XDG_CONFIG_HOME` (or `~/.config`) on Linux. This configuration root is
+separate from the managed artifact root at `~/.sfumato/Projects`.
 
 ## Global Example
 
@@ -52,7 +57,7 @@ text = "local-text"
 reviewer = "local-text"
 
 [marp]
-pdf = false
+pdf = true
 # browser_path = "/path/to/chromium"
 ```
 
@@ -104,7 +109,9 @@ remain provider-owned strings and are not slug-normalized.
 - `connectors.<name>` contains `base_url`, optional indirect `credential`, and
   optional string `headers`. A connector name is a portable token.
 - `models.<name>` contains connector name, provider model ID, non-empty unique
-  capabilities, and typed TOML `options`.
+  capabilities, and a flat persisted `options` table. The adapter converts that
+  table into capability-specific `TextModelOptions` and `ImageModelOptions`
+  before a use case can consume it.
 - `defaults` maps capability to model profile.
 - `model_roles` maps role to model profile; v0.2 defines `reviewer`.
 - global `marp` contains `pdf` and optional `browser_path`.
@@ -128,7 +135,7 @@ for that capability or role. Project `marp`, when present, replaces global
 `marp`; a command PDF flag can only enable PDF for one operation. Command theme
 replaces project theme. Publication path resolves from command, then project.
 
-Before returning an immutable `ConfigSnapshot`, resolution validates selected
+Before returning an immutable `EffectiveConfig`, resolution validates selected
 project identity, model-to-connector references, required capabilities, secret
 scheme support, theme adapters, publication path semantics, and configured
 browser path. One operation retains one snapshot even if files change.
@@ -148,3 +155,7 @@ document and cross-references, then write a temporary file beside the target,
 sync it, and atomically replace the target.
 Deleting a required field, inserting a raw secret, or creating an unknown field
 fails without writing.
+
+Writes hold a cross-process lock and compare the caller's content revision
+before replacement. A stale editor therefore cannot overwrite a newer config;
+it must reload and retry.

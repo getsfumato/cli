@@ -536,6 +536,14 @@ fn extracts_mermaid_fences_for_pre_rendering() {
 }
 
 #[test]
+fn rendered_mermaid_images_are_bounded_for_marp_layout() {
+    assert_eq!(
+        mermaid_image_markdown("diagram-deadbeef"),
+        "![height:300px](diagrams/diagram-deadbeef.svg)"
+    );
+}
+
+#[test]
 fn normalizes_mermaid_labels_before_rendering() {
     let source = "flowchart TB\n    A[\"a₀/2average heightDC offset\"]";
     let normalized = normalize_mermaid_source(source);
