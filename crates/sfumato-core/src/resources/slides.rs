@@ -4,18 +4,21 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use sfumato_domain::ArtifactKind;
 use sha2::{Digest, Sha256};
 use slug::slugify;
 
+use crate::sfumato_bail as bail;
 use crate::{
     artifacts::{
         ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
     },
     config::{Capability, EffectiveConfig, ModelRole},
-    errors::OperationStage,
+    errors::{
+        ErrorClass, ErrorCode, OperationStage, ResultContext as Context, SfumatoError,
+        SfumatoResult as Result,
+    },
     filesystem::WorkspaceFileSystem,
     generation::{
         GenerationOutput, GenerationRequest, GenerationToolSummary, ReviewStatus, SlideLayoutIssue,
@@ -26,8 +29,8 @@ use crate::{
         PromptCatalog, PromptId, PromptPair, PromptProvenance, PromptRenderRequest, PromptVariables,
     },
     providers::{
-        GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationLimitError,
-        TextGenerationProvider, TextGenerationRequest, TextGenerationResponse, ToolDefinition,
+        GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationProvider,
+        TextGenerationRequest, TextGenerationResponse, ToolDefinition,
     },
     renderers::{DiagramRenderer, MermaidThemeConfig, SlideRenderer},
     repositories::ThemeRepository,
@@ -46,8 +49,8 @@ mod publishing;
 mod source_bundle;
 
 use document::*;
-pub use edit::{EditSlidesRequest, EditSlidesResult};
 pub(crate) use edit::{EditSlidesOptions, edit_slides};
+pub use edit::{EditSlidesRequest, EditSlidesResult};
 use layout::LayoutAssessment;
 #[cfg(test)]
 use layout::layout_score;
@@ -172,7 +175,7 @@ pub(crate) async fn generate_slides(
         .map(|(profile_name, profile)| {
             let provider: Arc<dyn crate::providers::ImageGenerationProvider> =
                 Arc::from(provider_factory.image(&config, profile)?);
-            Ok::<ImageToolConfig, anyhow::Error>(ImageToolConfig {
+            Ok::<ImageToolConfig, SfumatoError>(ImageToolConfig {
                 provider,
                 profile_name: profile_name.to_string(),
                 output_dir: images_dir.clone(),
@@ -349,8 +352,22 @@ pub(crate) async fn generate_slides(
     let slug = slugify(&title);
     ensure_inside(&artifact_root, &markdown_path)?;
     ensure_inside(&artifact_root, &pdf_path)?;
-    let mut markdown = normalize_marp_markdown(&response.text, &config, &title)?;
-    validate_normalized_deck(&markdown, &title)?;
+    let validation_repair = normalize_and_repair_draft_once(
+        prompt_catalog.as_ref(),
+        provider.as_ref(),
+        &config,
+        &theme,
+        &request.instruction,
+        &project_instructions_prompt,
+        &title,
+        &response.text,
+        &operation,
+        &event_sink,
+        draft_profile_name,
+    )
+    .await?;
+    let mut markdown = validation_repair.markdown;
+    used_prompts.extend(validation_repair.prompts);
     let mermaid_repair = repair_mermaid_once(
         prompt_catalog.as_ref(),
         provider.as_ref(),
@@ -720,7 +737,7 @@ pub(crate) async fn generate_slides(
                                     &operation,
                                 )
                                 .await?;
-                                Ok::<_, anyhow::Error>((
+                                Ok::<_, SfumatoError>((
                                     candidate_document,
                                     candidate_markdown,
                                     candidate_issues,
@@ -1016,25 +1033,6 @@ struct CompactRetryOutcome {
     limit_error: Option<String>,
 }
 
-#[derive(Debug)]
-struct CompactRetryError(anyhow::Error);
-
-impl std::fmt::Display for CompactRetryError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "Model request failed after compacting context: {}",
-            self.0
-        )
-    }
-}
-
-impl std::error::Error for CompactRetryError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.0.as_ref())
-    }
-}
-
 async fn generate_with_compact_retry(
     provider: &dyn TextGenerationProvider,
     request: TextGenerationRequest,
@@ -1064,7 +1062,11 @@ async fn generate_with_compact_retry(
             let response = provider
                 .generate_text(compact_request, operation, operation_stage)
                 .await
-                .map_err(CompactRetryError)?;
+                .map_err(|error| {
+                    error
+                        .context("Model request failed after compacting context")
+                        .with_detail("compact_retry_failed", "true")
+                })?;
             Ok(CompactRetryOutcome {
                 response,
                 limit_error: Some(limit_error),
@@ -1169,12 +1171,83 @@ fn copy_theme_css(
     destination: &Path,
     workspace: &dyn WorkspaceFileSystem,
 ) -> Result<()> {
-    workspace.copy_file(&theme.marp_css_path(), destination)
+    workspace.copy_file(&theme.marp_css_path(), destination)?;
+    Ok(())
 }
 
 struct MermaidRepairOutcome {
     markdown: String,
     prompts: Vec<PromptProvenance>,
+}
+
+struct DraftValidationRepairOutcome {
+    markdown: String,
+    prompts: Vec<PromptProvenance>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn normalize_and_repair_draft_once(
+    catalog: &dyn PromptCatalog,
+    provider: &dyn TextGenerationProvider,
+    config: &EffectiveConfig,
+    theme: &ThemePackage,
+    instruction: &str,
+    project_instructions: &str,
+    title: &str,
+    draft: &str,
+    operation: &OperationContext,
+    event_sink: &Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    profile: &str,
+) -> Result<DraftValidationRepairOutcome> {
+    let initial = normalize_marp_markdown(draft, config, title)
+        .and_then(|candidate| validate_normalized_deck(&candidate, title).map(|_| candidate));
+    let validation_error = match initial {
+        Ok(markdown) => {
+            return Ok(DraftValidationRepairOutcome {
+                markdown,
+                prompts: Vec::new(),
+            });
+        }
+        Err(error) if should_retry_model_output(&error) => error,
+        Err(error) => return Err(error.context("Generated slide deck is invalid")),
+    };
+
+    emit_stage(event_sink, GenerationStage::ValidationRepair, Some(profile));
+    operation.emit(
+        OperationStage::Repair,
+        OperationEventKind::Started,
+        BTreeMap::from([
+            ("kind".to_string(), "validation".to_string()),
+            ("model".to_string(), profile.to_string()),
+        ]),
+    );
+    let mut request = build_validation_repair_request(
+        catalog,
+        config,
+        theme,
+        instruction,
+        title,
+        draft,
+        &validation_error.to_string(),
+        project_instructions,
+    )?;
+    request.event_sink = event_sink.clone();
+    let prompts = request.prompt_provenance.clone();
+    let response = provider
+        .generate_text(request, operation, OperationStage::Repair)
+        .await
+        .map_err(|error| error.context("Draft validation repair request failed"))?;
+    let markdown = normalize_marp_markdown(&response.text, config, title)
+        .and_then(|candidate| validate_normalized_deck(&candidate, title).map(|_| candidate))
+        .map_err(|error| {
+            error.context("Draft remained invalid after one focused validation repair")
+        })?;
+    operation.emit(
+        OperationStage::Repair,
+        OperationEventKind::Completed,
+        BTreeMap::from([("kind".to_string(), "validation".to_string())]),
+    );
+    Ok(DraftValidationRepairOutcome { markdown, prompts })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1296,10 +1369,9 @@ async fn validate_mermaid_candidate(
     .map(|_| ())
 }
 
-fn should_retry_model_output(error: &anyhow::Error) -> bool {
-    let error = format!("{error:#}");
-    !error.contains("is not installed")
-        && !error.contains("Could not create Mermaid validation workspace")
+fn should_retry_model_output(error: &SfumatoError) -> bool {
+    error.class == ErrorClass::InvalidOutput
+        || error.code == ErrorCode::Validation && !error.message.contains("validation workspace")
 }
 
 async fn inspect_candidate_layout(
@@ -1329,7 +1401,7 @@ async fn inspect_candidate_layout(
     .await?;
     copy_theme_css(theme, &theme_path, workspace)?;
     workspace.write(&markdown_path, rendered.as_bytes())?;
-    slide_renderer
+    let issues = slide_renderer
         .inspect_layout(
             &markdown_path,
             &theme_path,
@@ -1337,7 +1409,8 @@ async fn inspect_candidate_layout(
             browser_path,
             operation,
         )
-        .await
+        .await?;
+    Ok(issues)
 }
 
 fn model_tool_rounds(profile: &crate::config::ModelProfile) -> usize {

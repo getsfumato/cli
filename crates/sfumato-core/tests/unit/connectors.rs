@@ -9,11 +9,11 @@ impl GlobalConfigRepository for MemoryGlobal {
         true
     }
 
-    fn load(&self) -> Result<GlobalConfig> {
+    fn load(&self) -> crate::errors::SfumatoResult<GlobalConfig> {
         Ok(self.0.lock().unwrap().clone())
     }
 
-    fn save(&self, config: &GlobalConfig) -> Result<()> {
+    fn save(&self, config: &GlobalConfig) -> crate::errors::SfumatoResult<()> {
         *self.0.lock().unwrap() = config.clone();
         Ok(())
     }

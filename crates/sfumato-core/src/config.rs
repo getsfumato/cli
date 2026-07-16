@@ -4,9 +4,13 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 pub use sfumato_domain::{Capability, SecretRef};
+
+use crate::{
+    errors::{ResultContext as Context, SfumatoError, SfumatoResult as Result},
+    sfumato_bail as bail,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigOverrides {
@@ -174,7 +178,7 @@ impl ModelRole {
 }
 
 impl FromStr for ModelRole {
-    type Err = anyhow::Error;
+    type Err = SfumatoError;
 
     fn from_str(value: &str) -> Result<Self> {
         match value.to_lowercase().as_str() {

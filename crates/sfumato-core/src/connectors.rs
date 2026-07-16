@@ -3,11 +3,11 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result};
 use sfumato_domain::SecretRef;
 
 use crate::{
     config::{GlobalConfig, OpenAiCompatibleConnectorConfig},
+    errors::{ResultContext as Context, SfumatoResult as Result},
     repositories::GlobalConfigRepository,
 };
 
@@ -106,7 +106,10 @@ impl ConnectorService {
                 "openrouter",
                 OpenAiCompatibleConnectorConfig {
                     base_url: "https://openrouter.ai/api/v1".to_string(),
-                    credential: Some(SecretRef::environment(&api_key_env)?),
+                    credential: Some(
+                        SecretRef::environment(&api_key_env)
+                            .context("Invalid connector credential environment reference")?,
+                    ),
                     headers: BTreeMap::new(),
                 },
             ),

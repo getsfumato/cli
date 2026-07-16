@@ -82,6 +82,26 @@ required = [
 ]
 
 [[prompts]]
+id = "slides.validation-repair.system"
+path = "slides/validation-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "slides.validation-repair.user"
+path = "slides/validation-repair.user.md.j2"
+required = [
+  "instruction",
+  "title",
+  "project",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "project_instructions",
+  "validation_error",
+  "draft_markdown",
+]
+
+[[prompts]]
 id = "slides.review.system"
 path = "slides/review.system.md.j2"
 required = []

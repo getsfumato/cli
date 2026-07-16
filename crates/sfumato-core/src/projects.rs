@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
-use anyhow::Result;
-
-use crate::{config::ProjectConfig, repositories::ProjectRepository};
+use crate::{
+    config::ProjectConfig, errors::SfumatoResult as Result, repositories::ProjectRepository,
+};
 
 #[derive(Clone, Debug)]
 pub struct ProjectSummary {
@@ -26,7 +26,7 @@ impl ProjectService {
     }
 
     pub fn init(&self, name: String, path: PathBuf, activate: bool) -> Result<ProjectConfig> {
-        self.repository.register(name, path, activate)
+        Ok(self.repository.register(name, path, activate)?)
     }
 
     pub fn list(&self) -> Result<Vec<ProjectSummary>> {
@@ -43,11 +43,11 @@ impl ProjectService {
     }
 
     pub fn show(&self, requested: Option<&str>) -> Result<ProjectConfig> {
-        self.repository.load(requested)
+        Ok(self.repository.load(requested)?)
     }
 
     pub fn use_project(&self, name: &str) -> Result<String> {
-        self.repository.set_active(name)
+        Ok(self.repository.set_active(name)?)
     }
 
     pub fn remove(&self, name: &str) -> Result<ProjectRemoved> {

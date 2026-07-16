@@ -9,14 +9,12 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result as AnyResult;
-
 use crate::{
-    artifacts::{ArtifactStore, ArtifactStoreError},
+    artifacts::ArtifactStore,
     config::{ConfigOverrides, EffectiveConfig, GlobalConfig},
     config_editor::{ConfigEditor, ConfigTarget},
     connectors::{ConnectorDetails, ConnectorPreset, ConnectorService, ConnectorSummary},
-    errors::{ErrorClass, ErrorCode, OperationStage, SfumatoError, SfumatoResult},
+    errors::{ErrorCode, OperationStage, SfumatoError, SfumatoResult},
     filesystem::WorkspaceFileSystem,
     generation::GenerationRequest,
     models::{ModelDefaultChanged, ModelService, ModelSummary},
@@ -26,9 +24,7 @@ use crate::{
         PromptCatalog, PromptError, PromptId, PromptManager, PromptOverrideScope, PromptProvenance,
         PromptTemplateSource, PromptTemplateSummary,
     },
-    providers::{
-        ProviderFactory, TextGenerationEvent, TextGenerationLimitError, TextGenerationLimitKind,
-    },
+    providers::{ProviderFactory, TextGenerationEvent},
     renderers::{DiagramRenderer, SlideRenderer},
     repositories::{GlobalConfigRepository, ProjectRepository, ThemeRepository},
     resources::slides::{
@@ -44,13 +40,13 @@ use crate::{
 /// Resolves one immutable effective configuration snapshot for an operation.
 pub trait EffectiveConfigResolver: Send + Sync {
     /// Loads and validates configuration using the supplied command overrides.
-    fn resolve(&self, overrides: ConfigOverrides) -> AnyResult<EffectiveConfig>;
+    fn resolve(&self, overrides: ConfigOverrides) -> SfumatoResult<EffectiveConfig>;
 }
 
 /// Creates a layered prompt catalog scoped to one project root.
 pub trait PromptCatalogFactory: Send + Sync {
     /// Builds the catalog used for one operation.
-    fn for_project(&self, project_root: &Path) -> AnyResult<Arc<dyn PromptCatalog>>;
+    fn for_project(&self, project_root: &Path) -> SfumatoResult<Arc<dyn PromptCatalog>>;
 }
 
 /// Complete request for the slide-generation use case.
@@ -189,15 +185,14 @@ impl SfumatoApplication {
         command: GenerateSlidesCommand,
     ) -> SfumatoResult<GenerateSlidesResult> {
         command.operation.checkpoint(OperationStage::Resolve)?;
-        let config = self.config.resolve(command.config).map_err(|error| {
-            application_error(error, ErrorCode::Config, Some(OperationStage::Resolve))
-        })?;
+        let config = self
+            .config
+            .resolve(command.config)
+            .map_err(|error| error.at_stage(OperationStage::Resolve))?;
         let prompt_catalog = self
             .prompts
             .for_project(&config.project_root)
-            .map_err(|error| {
-                application_error(error, ErrorCode::Config, Some(OperationStage::RenderPrompt))
-            })?;
+            .map_err(|error| error.at_stage(OperationStage::RenderPrompt))?;
         generate_slides(
             config,
             command.request,
@@ -219,21 +214,19 @@ impl SfumatoApplication {
             },
         )
         .await
-        .map_err(|error| application_error(error, ErrorCode::Internal, None))
     }
 
     /// Applies focused content patches and commits a new deck revision.
     pub async fn edit_slides(&self, command: EditSlidesCommand) -> SfumatoResult<EditSlidesResult> {
         command.operation.checkpoint(OperationStage::Resolve)?;
-        let config = self.config.resolve(command.config).map_err(|error| {
-            application_error(error, ErrorCode::Config, Some(OperationStage::Resolve))
-        })?;
+        let config = self
+            .config
+            .resolve(command.config)
+            .map_err(|error| error.at_stage(OperationStage::Resolve))?;
         let prompt_catalog = self
             .prompts
             .for_project(&config.project_root)
-            .map_err(|error| {
-                application_error(error, ErrorCode::Config, Some(OperationStage::RenderPrompt))
-            })?;
+            .map_err(|error| error.at_stage(OperationStage::RenderPrompt))?;
         edit_slides(
             config,
             command.request,
@@ -251,7 +244,13 @@ impl SfumatoApplication {
             },
         )
         .await
-        .map_err(|error| application_error(error, ErrorCode::Internal, Some(OperationStage::Edit)))
+        .map_err(|error| {
+            if error.stage.is_some() {
+                error
+            } else {
+                error.at_stage(OperationStage::Edit)
+            }
+        })
     }
 
     /// Creates a reusable theme package from the bundled scaffold.
@@ -459,11 +458,11 @@ impl SfumatoApplication {
         ProjectService::new(Arc::clone(&self.projects))
     }
 
-    fn model_service(&self) -> AnyResult<ModelService> {
+    fn model_service(&self) -> SfumatoResult<ModelService> {
         ModelService::new(Arc::clone(&self.global_config), Arc::clone(&self.projects))
     }
 
-    fn connector_service(&self) -> AnyResult<ConnectorService> {
+    fn connector_service(&self) -> SfumatoResult<ConnectorService> {
         ConnectorService::new(Arc::clone(&self.global_config))
     }
 
@@ -570,50 +569,16 @@ impl SfumatoApplication {
     }
 }
 
-fn public_result<T>(result: AnyResult<T>, fallback_code: ErrorCode) -> SfumatoResult<T> {
-    result.map_err(|error| application_error(error, fallback_code, None))
+fn public_result<T>(result: SfumatoResult<T>, _fallback_code: ErrorCode) -> SfumatoResult<T> {
+    result
 }
 
 fn public_prompt_error(error: PromptError) -> SfumatoError {
-    application_error(
-        error.into(),
-        ErrorCode::Config,
-        Some(OperationStage::RenderPrompt),
-    )
-}
-
-fn application_error(
-    error: anyhow::Error,
-    fallback_code: ErrorCode,
-    stage: Option<OperationStage>,
-) -> SfumatoError {
-    if let Some(error) = error.downcast_ref::<SfumatoError>() {
-        return error.clone();
-    }
-
-    let (code, class) = if let Some(limit) = error.downcast_ref::<TextGenerationLimitError>() {
-        let class = match limit.kind {
-            TextGenerationLimitKind::Context => ErrorClass::ContextLimit,
-            TextGenerationLimitKind::Output => ErrorClass::InvalidOutput,
-        };
-        (ErrorCode::Provider, class)
-    } else if error.downcast_ref::<ArtifactStoreError>().is_some() {
-        (ErrorCode::Artifact, ErrorClass::Permanent)
-    } else if error.downcast_ref::<PromptError>().is_some() {
-        (ErrorCode::Config, ErrorClass::Permanent)
-    } else {
-        (fallback_code, ErrorClass::Permanent)
-    };
-
-    let public = SfumatoError::sanitized(code, class, format_args!("{error:#}"));
-    match stage {
-        Some(stage) => public.at_stage(stage),
-        None => public,
-    }
+    error.into()
 }
 
 #[cfg(test)]
 // Test bodies live outside the implementation while retaining access to the
-// private application-boundary classifier.
+// private application-facade helpers.
 #[path = "../tests/unit/application.rs"]
 mod tests;

@@ -1,10 +1,10 @@
 use std::{str::FromStr, sync::Arc};
 
-use anyhow::{Context, Result, bail};
-
 use crate::{
     config::{Capability, GlobalConfig, ModelOptions, ModelProfile, ModelRole},
+    errors::{ResultContext as Context, SfumatoError, SfumatoResult as Result},
     repositories::{GlobalConfigRepository, ProjectRepository},
+    sfumato_bail as bail,
 };
 
 pub struct ModelService {
@@ -52,14 +52,14 @@ impl ModelSelection {
 }
 
 impl FromStr for ModelSelection {
-    type Err = anyhow::Error;
+    type Err = SfumatoError;
 
     fn from_str(value: &str) -> Result<Self> {
         Capability::from_str(value)
             .map(Self::Capability)
             .or_else(|_| ModelRole::from_str(value).map(Self::Role))
             .map_err(|_| {
-                anyhow::anyhow!(
+                SfumatoError::validation(
                     "Unknown model capability or role '{value}'. Use text, code, image, video, speech, embedding, or reviewer."
                 )
             })
@@ -383,7 +383,7 @@ fn validate_profile_name(name: &str) -> Result<()> {
 fn parse_capabilities(values: &[String]) -> Result<Vec<Capability>> {
     let mut parsed = values
         .iter()
-        .map(|value| Capability::from_str(value.trim()).map_err(anyhow::Error::from))
+        .map(|value| Capability::from_str(value.trim()).map_err(SfumatoError::validation))
         .collect::<Result<Vec<_>>>()?;
     parsed.sort();
     parsed.dedup();
@@ -428,8 +428,11 @@ where
     T: FromStr,
     T::Err: std::fmt::Display,
 {
-    raw.parse::<T>()
-        .map_err(|error| anyhow::anyhow!("Model option '{key}' has invalid value '{raw}': {error}"))
+    raw.parse::<T>().map_err(|error| {
+        SfumatoError::validation(format!(
+            "Model option '{key}' has invalid value '{raw}': {error}"
+        ))
+    })
 }
 
 fn required_option_string(raw: &str, key: &str) -> Result<String> {

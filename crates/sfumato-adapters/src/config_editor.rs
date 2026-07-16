@@ -11,6 +11,7 @@ use sfumato_core::{
     application::EffectiveConfigResolver,
     config::ConfigOverrides,
     config_editor::{ConfigEditor, ConfigTarget},
+    errors::{SfumatoError, SfumatoResult},
     repositories::{GlobalConfigRepository, ProjectRepository},
 };
 use toml::{Table, Value};
@@ -115,32 +116,34 @@ impl ConfigEditor for TomlConfigEditor {
         scope: ConfigTarget,
         project: Option<String>,
         key: Option<String>,
-    ) -> Result<String> {
-        let mut value = match scope {
-            ConfigTarget::Effective => {
-                let config = self.effective.resolve(ConfigOverrides {
-                    project,
-                    ..Default::default()
-                })?;
-                Value::try_from(config).context("Could not serialize effective config")?
-            }
-            ConfigTarget::User => {
-                self.global.load()?;
-                Value::Table(self.read_config_table(&self.user_config_path)?)
-            }
-            ConfigTarget::Project => {
-                Value::Table(self.read_config_table(&self.project_path(project.as_deref())?)?)
-            }
-        };
-        redact_sensitive_values(&mut value);
-        let shown = if let Some(key) = key {
-            get_dotted_value(&value, &key)
-                .with_context(|| format!("Config key '{key}' was not found"))?
-                .clone()
-        } else {
-            value
-        };
-        render_config_value(&shown)
+    ) -> SfumatoResult<String> {
+        config_result((|| {
+            let mut value = match scope {
+                ConfigTarget::Effective => {
+                    let config = self.effective.resolve(ConfigOverrides {
+                        project,
+                        ..Default::default()
+                    })?;
+                    Value::try_from(config).context("Could not serialize effective config")?
+                }
+                ConfigTarget::User => {
+                    self.global.load()?;
+                    Value::Table(self.read_config_table(&self.user_config_path)?)
+                }
+                ConfigTarget::Project => {
+                    Value::Table(self.read_config_table(&self.project_path(project.as_deref())?)?)
+                }
+            };
+            redact_sensitive_values(&mut value);
+            let shown = if let Some(key) = key {
+                get_dotted_value(&value, &key)
+                    .with_context(|| format!("Config key '{key}' was not found"))?
+                    .clone()
+            } else {
+                value
+            };
+            render_config_value(&shown)
+        })())
     }
 
     fn set(
@@ -149,25 +152,38 @@ impl ConfigEditor for TomlConfigEditor {
         project: Option<String>,
         key: &str,
         raw_value: &str,
-    ) -> Result<PathBuf> {
-        let path = self.editable_path(scope, project.as_deref())?;
-        reject_secret_key(key)?;
-        edit_toml(&path, |table| {
-            set_dotted_value(table, key, parse_config_value(raw_value))?;
-            self.validate_table(scope, table)
-        })?;
-        Ok(path)
+    ) -> SfumatoResult<PathBuf> {
+        config_result((|| {
+            let path = self.editable_path(scope, project.as_deref())?;
+            reject_secret_key(key)?;
+            edit_toml(&path, |table| {
+                set_dotted_value(table, key, parse_config_value(raw_value))?;
+                self.validate_table(scope, table)
+            })?;
+            Ok(path)
+        })())
     }
 
-    fn delete(&self, scope: ConfigTarget, project: Option<String>, key: &str) -> Result<PathBuf> {
-        let path = self.editable_path(scope, project.as_deref())?;
-        reject_secret_key(key)?;
-        edit_toml(&path, |table| {
-            delete_dotted_value(table, key)?;
-            self.validate_table(scope, table)
-        })?;
-        Ok(path)
+    fn delete(
+        &self,
+        scope: ConfigTarget,
+        project: Option<String>,
+        key: &str,
+    ) -> SfumatoResult<PathBuf> {
+        config_result((|| {
+            let path = self.editable_path(scope, project.as_deref())?;
+            reject_secret_key(key)?;
+            edit_toml(&path, |table| {
+                delete_dotted_value(table, key)?;
+                self.validate_table(scope, table)
+            })?;
+            Ok(path)
+        })())
     }
+}
+
+fn config_result<T>(result: Result<T>) -> SfumatoResult<T> {
+    result.map_err(|error| SfumatoError::config(format_args!("{error:#}")))
 }
 
 fn reject_secret_key(key: &str) -> Result<()> {

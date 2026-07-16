@@ -37,6 +37,10 @@ fn representative_variables() -> PromptVariables {
         ("retry_invalid_response", Value::Null),
         ("deck_snapshot", json!({"revision": "r1", "slides": {}})),
         (
+            "draft_markdown",
+            json!("---\nmarp: true\n---\n# Fourier Series\n\n---\n\n## Spectrum"),
+        ),
+        (
             "issue_report",
             json!({"slide": 2, "vertical_overflow_px": 80}),
         ),
@@ -91,7 +95,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "5f452db2486e876551c8c31462c22cc0223bbdd95b8a04e85ed01e0208581d2e"
+        "8b61d8e3dfdc579d97813b9bc754a9851e999544df0766b1ef88ea0404994122"
     );
 }
 

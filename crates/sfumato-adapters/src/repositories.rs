@@ -10,6 +10,7 @@ use sfumato_core::{
     config::{
         GlobalConfig, ProjectConfig, ProjectRegistry, RegisteredProject, validate_project_name,
     },
+    errors::{ErrorClass, ErrorCode, SfumatoError, SfumatoResult},
     repositories::{GlobalConfigRepository, ProjectRepository, RepositorySnapshot},
     themes::DEFAULT_THEME,
 };
@@ -45,43 +46,51 @@ impl GlobalConfigRepository for FilesystemGlobalConfigRepository {
         self.path.is_file()
     }
 
-    fn load(&self) -> Result<GlobalConfig> {
-        if !self.path.exists() {
-            return Ok(GlobalConfig::default_config());
-        }
-        let persisted: GlobalConfigDto =
-            read_versioned(&self.path, "global").with_context(|| {
-                format!(
-                    "Could not load {}. Run `sfumato init user --force` to create a v0.2 configuration.",
-                    self.path.display()
-                )
-            })?;
-        persisted.into_domain()
+    fn load(&self) -> SfumatoResult<GlobalConfig> {
+        repository_result((|| {
+            if !self.path.exists() {
+                return Ok(GlobalConfig::default_config());
+            }
+            let persisted: GlobalConfigDto =
+                read_versioned(&self.path, "global").with_context(|| {
+                    format!(
+                        "Could not load {}. Run `sfumato init user --force` to create a v0.2 configuration.",
+                        self.path.display()
+                    )
+                })?;
+            persisted.into_domain()
+        })())
     }
 
-    fn save(&self, config: &GlobalConfig) -> Result<()> {
-        config.validate()?;
-        write_toml(&self.path, &GlobalConfigDto::from_domain(config))
+    fn save(&self, config: &GlobalConfig) -> SfumatoResult<()> {
+        repository_result((|| {
+            config.validate()?;
+            write_toml(&self.path, &GlobalConfigDto::from_domain(config))
+        })())
     }
 
-    fn load_snapshot(&self) -> Result<RepositorySnapshot<GlobalConfig>> {
-        if !self.path.exists() {
-            return Ok(RepositorySnapshot {
-                value: GlobalConfig::default_config(),
-                revision: "missing".to_string(),
-            });
-        }
-        let snapshot: RepositorySnapshot<GlobalConfigDto> =
-            read_versioned_snapshot(&self.path, "global")?;
-        Ok(RepositorySnapshot {
-            value: snapshot.value.into_domain()?,
-            revision: snapshot.revision,
-        })
+    fn load_snapshot(&self) -> SfumatoResult<RepositorySnapshot<GlobalConfig>> {
+        repository_result((|| {
+            if !self.path.exists() {
+                return Ok(RepositorySnapshot {
+                    value: GlobalConfig::default_config(),
+                    revision: "missing".to_string(),
+                });
+            }
+            let snapshot: RepositorySnapshot<GlobalConfigDto> =
+                read_versioned_snapshot(&self.path, "global")?;
+            Ok(RepositorySnapshot {
+                value: snapshot.value.into_domain()?,
+                revision: snapshot.revision,
+            })
+        })())
     }
 
-    fn save_if_revision(&self, config: &GlobalConfig, expected: &str) -> Result<String> {
-        config.validate()?;
-        write_toml_if_revision(&self.path, &GlobalConfigDto::from_domain(config), expected)
+    fn save_if_revision(&self, config: &GlobalConfig, expected: &str) -> SfumatoResult<String> {
+        repository_result((|| {
+            config.validate()?;
+            write_toml_if_revision(&self.path, &GlobalConfigDto::from_domain(config), expected)
+        })())
     }
 }
 
@@ -126,16 +135,18 @@ impl FilesystemProjectRepository {
 }
 
 impl ProjectRepository for FilesystemProjectRepository {
-    fn registry(&self) -> Result<ProjectRegistry> {
-        if !self.registry_path.exists() {
-            return Ok(ProjectRegistry::default());
-        }
-        let persisted: ProjectRegistryDto =
-            read_versioned(&self.registry_path, "project registry")?;
-        persisted.into_domain()
+    fn registry(&self) -> SfumatoResult<ProjectRegistry> {
+        repository_result((|| {
+            if !self.registry_path.exists() {
+                return Ok(ProjectRegistry::default());
+            }
+            let persisted: ProjectRegistryDto =
+                read_versioned(&self.registry_path, "project registry")?;
+            persisted.into_domain()
+        })())
     }
 
-    fn list(&self) -> Result<Vec<(String, RegisteredProject, bool)>> {
+    fn list(&self) -> SfumatoResult<Vec<(String, RegisteredProject, bool)>> {
         let registry = self.registry()?;
         Ok(registry
             .projects
@@ -147,95 +158,114 @@ impl ProjectRepository for FilesystemProjectRepository {
             .collect())
     }
 
-    fn load(&self, name: Option<&str>) -> Result<ProjectConfig> {
-        let registry = self.registry()?;
-        let (_, root) = registry.selected(name)?;
-        let persisted: ProjectConfigDto = read_versioned(&project_config_path(&root), "project")?;
-        persisted.into_domain()
+    fn load(&self, name: Option<&str>) -> SfumatoResult<ProjectConfig> {
+        repository_result((|| {
+            let registry = self.registry()?;
+            let (_, root) = registry.selected(name)?;
+            let persisted: ProjectConfigDto =
+                read_versioned(&project_config_path(&root), "project")?;
+            persisted.into_domain()
+        })())
     }
 
-    fn save(&self, project: &ProjectConfig) -> Result<()> {
-        project.validate()?;
-        let registry = self.registry()?;
-        let registered = registry
-            .projects
-            .get(&project.name)
-            .with_context(|| format!("Project '{}' is not registered", project.name))?;
-        write_toml(
-            &project_config_path(&registered.path),
-            &ProjectConfigDto::from_domain(project),
-        )
-    }
-
-    fn load_snapshot(&self, name: Option<&str>) -> Result<RepositorySnapshot<ProjectConfig>> {
-        let registry = self.registry()?;
-        let (_, root) = registry.selected(name)?;
-        let snapshot: RepositorySnapshot<ProjectConfigDto> =
-            read_versioned_snapshot(&project_config_path(&root), "project")?;
-        Ok(RepositorySnapshot {
-            value: snapshot.value.into_domain()?,
-            revision: snapshot.revision,
-        })
-    }
-
-    fn save_if_revision(&self, project: &ProjectConfig, expected: &str) -> Result<String> {
-        project.validate()?;
-        let registry = self.registry()?;
-        let registered = registry
-            .projects
-            .get(&project.name)
-            .with_context(|| format!("Project '{}' is not registered", project.name))?;
-        write_toml_if_revision(
-            &project_config_path(&registered.path),
-            &ProjectConfigDto::from_domain(project),
-            expected,
-        )
-    }
-
-    fn register(&self, name: String, path: PathBuf, activate: bool) -> Result<ProjectConfig> {
-        validate_project_name(&name)?;
-        let root = absolute_path(&path)?;
-        fs::create_dir_all(&root)
-            .with_context(|| format!("Could not create project root {}", root.display()))?;
-        let config_path = project_config_path(&root);
-        let project = ProjectConfig {
-            name: name.clone(),
-            theme: DEFAULT_THEME.to_string(),
-            publish_dir: None,
-            model_defaults: Default::default(),
-            model_roles: Default::default(),
-            marp: None,
-        };
-        self.edit_registry(|registry| {
-            if registry.projects.contains_key(&name) {
-                bail!("Project '{name}' is already registered");
-            }
-            if config_path.exists() {
-                bail!("Project config already exists at {}", config_path.display());
-            }
-            write_toml(&config_path, &ProjectConfigDto::from_domain(&project))?;
-            registry
+    fn save(&self, project: &ProjectConfig) -> SfumatoResult<()> {
+        repository_result((|| {
+            project.validate()?;
+            let registry = self.registry()?;
+            let registered = registry
                 .projects
-                .insert(name.clone(), RegisteredProject { path: root });
-            if activate || registry.active.is_none() {
-                registry.active = Some(name);
-            }
-            Ok(project)
-        })
+                .get(&project.name)
+                .with_context(|| format!("Project '{}' is not registered", project.name))?;
+            write_toml(
+                &project_config_path(&registered.path),
+                &ProjectConfigDto::from_domain(project),
+            )
+        })())
     }
 
-    fn set_active(&self, name: &str) -> Result<String> {
-        self.edit_registry(|registry| {
+    fn load_snapshot(
+        &self,
+        name: Option<&str>,
+    ) -> SfumatoResult<RepositorySnapshot<ProjectConfig>> {
+        repository_result((|| {
+            let registry = self.registry()?;
+            let (_, root) = registry.selected(name)?;
+            let snapshot: RepositorySnapshot<ProjectConfigDto> =
+                read_versioned_snapshot(&project_config_path(&root), "project")?;
+            Ok(RepositorySnapshot {
+                value: snapshot.value.into_domain()?,
+                revision: snapshot.revision,
+            })
+        })())
+    }
+
+    fn save_if_revision(&self, project: &ProjectConfig, expected: &str) -> SfumatoResult<String> {
+        repository_result((|| {
+            project.validate()?;
+            let registry = self.registry()?;
+            let registered = registry
+                .projects
+                .get(&project.name)
+                .with_context(|| format!("Project '{}' is not registered", project.name))?;
+            write_toml_if_revision(
+                &project_config_path(&registered.path),
+                &ProjectConfigDto::from_domain(project),
+                expected,
+            )
+        })())
+    }
+
+    fn register(
+        &self,
+        name: String,
+        path: PathBuf,
+        activate: bool,
+    ) -> SfumatoResult<ProjectConfig> {
+        repository_result((|| {
+            validate_project_name(&name)?;
+            let root = absolute_path(&path)?;
+            fs::create_dir_all(&root)
+                .with_context(|| format!("Could not create project root {}", root.display()))?;
+            let config_path = project_config_path(&root);
+            let project = ProjectConfig {
+                name: name.clone(),
+                theme: DEFAULT_THEME.to_string(),
+                publish_dir: None,
+                model_defaults: Default::default(),
+                model_roles: Default::default(),
+                marp: None,
+            };
+            self.edit_registry(|registry| {
+                if registry.projects.contains_key(&name) {
+                    bail!("Project '{name}' is already registered");
+                }
+                if config_path.exists() {
+                    bail!("Project config already exists at {}", config_path.display());
+                }
+                write_toml(&config_path, &ProjectConfigDto::from_domain(&project))?;
+                registry
+                    .projects
+                    .insert(name.clone(), RegisteredProject { path: root });
+                if activate || registry.active.is_none() {
+                    registry.active = Some(name);
+                }
+                Ok(project)
+            })
+        })())
+    }
+
+    fn set_active(&self, name: &str) -> SfumatoResult<String> {
+        repository_result(self.edit_registry(|registry| {
             if !registry.projects.contains_key(name) {
                 bail!("Project '{name}' is not registered");
             }
             registry.active = Some(name.to_string());
             Ok(name.to_string())
-        })
+        }))
     }
 
-    fn remove(&self, name: &str) -> Result<ProjectConfig> {
-        self.edit_registry(|registry| {
+    fn remove(&self, name: &str) -> SfumatoResult<ProjectConfig> {
+        repository_result(self.edit_registry(|registry| {
             let registered = registry
                 .projects
                 .remove(name)
@@ -247,8 +277,28 @@ impl ProjectRepository for FilesystemProjectRepository {
                 registry.active = None;
             }
             Ok(project)
-        })
+        }))
     }
+}
+
+fn repository_result<T>(result: Result<T>) -> SfumatoResult<T> {
+    result.map_err(|error| {
+        if let Some(error) = error.downcast_ref::<SfumatoError>() {
+            return error.clone();
+        }
+        let message = format!("{error:#}");
+        let code = if message.contains("not registered") || message.contains("was not found") {
+            ErrorCode::NotFound
+        } else if message.contains("already registered")
+            || message.contains("already exists")
+            || message.contains("Invalid ")
+        {
+            ErrorCode::Validation
+        } else {
+            ErrorCode::Config
+        };
+        SfumatoError::new(code, ErrorClass::Permanent, message)
+    })
 }
 
 fn absolute_path(path: &Path) -> Result<PathBuf> {

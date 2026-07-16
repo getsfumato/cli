@@ -29,6 +29,10 @@ pub enum PromptId {
     SlidesTitleRepairSystem,
     /// User prompt for repairing a missing title.
     SlidesTitleRepairUser,
+    /// System prompt for repairing an invalid Marp draft.
+    SlidesValidationRepairSystem,
+    /// User prompt for repairing an invalid Marp draft.
+    SlidesValidationRepairUser,
     /// System prompt for semantic review.
     SlidesReviewSystem,
     /// User prompt for semantic review.
@@ -81,6 +85,8 @@ impl PromptId {
             Self::SlidesCompactDraftUser,
             Self::SlidesTitleRepairSystem,
             Self::SlidesTitleRepairUser,
+            Self::SlidesValidationRepairSystem,
+            Self::SlidesValidationRepairUser,
             Self::SlidesReviewSystem,
             Self::SlidesReviewUser,
             Self::SlidesCompactReviewSystem,
@@ -113,6 +119,8 @@ impl PromptId {
             Self::SlidesCompactDraftUser => "slides.compact-draft.user",
             Self::SlidesTitleRepairSystem => "slides.title-repair.system",
             Self::SlidesTitleRepairUser => "slides.title-repair.user",
+            Self::SlidesValidationRepairSystem => "slides.validation-repair.system",
+            Self::SlidesValidationRepairUser => "slides.validation-repair.user",
             Self::SlidesReviewSystem => "slides.review.system",
             Self::SlidesReviewUser => "slides.review.user",
             Self::SlidesCompactReviewSystem => "slides.compact-review.system",

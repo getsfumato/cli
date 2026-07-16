@@ -1,7 +1,7 @@
 use super::*;
 use async_trait::async_trait;
 use sfumato_core::{
-    errors::OperationStage,
+    errors::{OperationStage, SfumatoResult},
     operation::OperationContext,
     prompts::{PromptError, PromptOrigin, PromptProvenance, RenderedPrompt},
     providers::{ImageGenerationProvider, ImageGenerationResponse},
@@ -76,7 +76,7 @@ impl ImageGenerationProvider for MockImageProvider {
         request: ImageGenerationRequest,
         _operation: &OperationContext,
         _stage: OperationStage,
-    ) -> Result<ImageGenerationResponse> {
+    ) -> SfumatoResult<ImageGenerationResponse> {
         self.prompts.lock().unwrap().push(request.prompt);
         Ok(ImageGenerationResponse {
             bytes: b"fake-png".to_vec(),

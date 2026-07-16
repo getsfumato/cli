@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, bail};
 use json_patch::Patch;
 use serde::Serialize;
 use serde_json::Value;
@@ -18,10 +17,11 @@ use super::{
     markdown_fences, render_mermaid_diagrams, render_prompt_request, request_chars,
     resource_artifact_file, validate_normalized_deck,
 };
+use crate::sfumato_bail as bail;
 use crate::{
     artifacts::{ArtifactResourceKind, ArtifactStore, ResourceArtifactManifest},
     config::{Capability, EffectiveConfig},
-    errors::OperationStage,
+    errors::{OperationStage, ResultContext as Context, SfumatoResult as Result},
     filesystem::WorkspaceFileSystem,
     generation::SlideLayoutIssue,
     operation::{OperationContext, OperationEventKind},

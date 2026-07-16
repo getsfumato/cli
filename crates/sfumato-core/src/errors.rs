@@ -5,7 +5,7 @@
 //! separation keeps presentation and retry policy independent from adapter
 //! implementation details.
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::{any::Any, collections::BTreeMap, error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -211,6 +211,46 @@ impl SfumatoError {
         Self::new(code, class, sanitize_message(&message.to_string()))
     }
 
+    /// Creates a permanent configuration error.
+    pub fn config(message: impl fmt::Display) -> Self {
+        Self::sanitized(ErrorCode::Config, ErrorClass::Permanent, message)
+    }
+
+    /// Creates a permanent validation error.
+    pub fn validation(message: impl fmt::Display) -> Self {
+        Self::sanitized(ErrorCode::Validation, ErrorClass::Permanent, message)
+    }
+
+    /// Creates a permanent missing-resource error.
+    pub fn not_found(message: impl fmt::Display) -> Self {
+        Self::sanitized(ErrorCode::NotFound, ErrorClass::Permanent, message)
+    }
+
+    /// Creates a provider error with an explicit recovery classification.
+    pub fn provider(class: ErrorClass, message: impl fmt::Display) -> Self {
+        Self::sanitized(ErrorCode::Provider, class, message)
+    }
+
+    /// Creates a tool error with an explicit recovery classification.
+    pub fn tool(class: ErrorClass, message: impl fmt::Display) -> Self {
+        Self::sanitized(ErrorCode::Tool, class, message)
+    }
+
+    /// Creates a renderer error with an explicit recovery classification.
+    pub fn render(class: ErrorClass, message: impl fmt::Display) -> Self {
+        Self::sanitized(ErrorCode::Render, class, message)
+    }
+
+    /// Creates an artifact error with an explicit recovery classification.
+    pub fn artifact(class: ErrorClass, message: impl fmt::Display) -> Self {
+        Self::sanitized(ErrorCode::Artifact, class, message)
+    }
+
+    /// Creates a permanent unexpected application error.
+    pub fn internal(message: impl fmt::Display) -> Self {
+        Self::sanitized(ErrorCode::Internal, ErrorClass::Permanent, message)
+    }
+
     /// Creates a cooperative-cancellation error at an optional stage.
     pub fn cancelled(stage: Option<OperationStage>) -> Self {
         Self {
@@ -249,6 +289,13 @@ impl SfumatoError {
         self
     }
 
+    /// Prepends safe operation context while preserving classification details.
+    #[must_use]
+    pub fn context(mut self, context: impl fmt::Display) -> Self {
+        self.message = sanitize_message(&format!("{context}: {}", self.message));
+        self
+    }
+
     /// Returns whether a bounded recovery attempt can be meaningful.
     pub const fn is_retryable(&self) -> bool {
         self.retryable
@@ -267,8 +314,109 @@ impl fmt::Display for SfumatoError {
 
 impl Error for SfumatoError {}
 
+impl From<crate::artifacts::ArtifactStoreError> for SfumatoError {
+    fn from(error: crate::artifacts::ArtifactStoreError) -> Self {
+        Self::artifact(ErrorClass::Permanent, error).at_stage(OperationStage::CommitArtifacts)
+    }
+}
+
+impl From<sfumato_domain::ReviewError> for SfumatoError {
+    fn from(error: sfumato_domain::ReviewError) -> Self {
+        Self::new(
+            ErrorCode::Validation,
+            ErrorClass::InvalidOutput,
+            error.to_string(),
+        )
+    }
+}
+
+impl From<crate::prompts::PromptError> for SfumatoError {
+    fn from(error: crate::prompts::PromptError) -> Self {
+        Self::config(error).at_stage(OperationStage::RenderPrompt)
+    }
+}
+
+impl From<serde_json::Error> for SfumatoError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::new(
+            ErrorCode::Validation,
+            ErrorClass::InvalidOutput,
+            error.to_string(),
+        )
+    }
+}
+
 /// Result type returned by public Sfumato operations.
 pub type SfumatoResult<T> = Result<T, SfumatoError>;
+
+/// Adds user-safe context to fallible parsing and validation operations.
+///
+/// This deliberately classifies otherwise untyped failures as permanent
+/// validation errors. Infrastructure ports must classify their own errors
+/// before crossing into core, so this helper is reserved for local parsing,
+/// serialization, and invariant checks.
+pub trait ResultContext<T> {
+    /// Adds a static or eagerly formatted context message.
+    fn context(self, context: impl fmt::Display) -> SfumatoResult<T>;
+
+    /// Adds a lazily formatted context message.
+    fn with_context<M>(self, context: impl FnOnce() -> M) -> SfumatoResult<T>
+    where
+        M: fmt::Display;
+}
+
+impl<T, E> ResultContext<T> for Result<T, E>
+where
+    E: fmt::Display + 'static,
+{
+    fn context(self, context: impl fmt::Display) -> SfumatoResult<T> {
+        self.map_err(|error| contextualize_error(error, context))
+    }
+
+    fn with_context<M>(self, context: impl FnOnce() -> M) -> SfumatoResult<T>
+    where
+        M: fmt::Display,
+    {
+        self.map_err(|error| contextualize_error(error, context()))
+    }
+}
+
+fn contextualize_error(
+    error: impl fmt::Display + 'static,
+    context: impl fmt::Display,
+) -> SfumatoError {
+    if let Some(error) = (&error as &dyn Any).downcast_ref::<SfumatoError>() {
+        error.clone().context(context)
+    } else {
+        SfumatoError::validation(format!("{context}: {error}"))
+    }
+}
+
+impl<T> ResultContext<T> for Option<T> {
+    fn context(self, context: impl fmt::Display) -> SfumatoResult<T> {
+        self.ok_or_else(|| SfumatoError::validation(context))
+    }
+
+    fn with_context<M>(self, context: impl FnOnce() -> M) -> SfumatoResult<T>
+    where
+        M: fmt::Display,
+    {
+        self.ok_or_else(|| SfumatoError::validation(context()))
+    }
+}
+
+/// Returns a permanent validation error from the current function.
+#[macro_export]
+macro_rules! sfumato_bail {
+    ($message:literal $(, $argument:expr)* $(,)?) => {
+        return Err($crate::errors::SfumatoError::validation(format!(
+            $message $(, $argument)*
+        )))
+    };
+    ($error:expr $(,)?) => {
+        return Err($crate::errors::SfumatoError::validation($error))
+    };
+}
 
 fn sanitize_message(message: &str) -> String {
     let mut sanitized = message

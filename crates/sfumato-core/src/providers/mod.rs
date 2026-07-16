@@ -1,4 +1,3 @@
-use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -6,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use thiserror::Error;
 
 use crate::config::{EffectiveConfig, ModelProfile};
-use crate::errors::{ErrorClass, OperationStage, SfumatoError};
+use crate::errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult};
 use crate::operation::{OperationContext, OperationEventKind};
 use crate::prompts::PromptProvenance;
 
@@ -78,6 +77,28 @@ impl TextGenerationLimitError {
                 "Connector rejected the '{model}' request because its context token limit was exceeded: {detail}"
             ),
         }
+    }
+}
+
+impl From<TextGenerationLimitError> for SfumatoError {
+    fn from(limit: TextGenerationLimitError) -> Self {
+        let class = match limit.kind {
+            TextGenerationLimitKind::Context => ErrorClass::ContextLimit,
+            TextGenerationLimitKind::Output => ErrorClass::InvalidOutput,
+        };
+        let mut error = SfumatoError::provider(class, &limit.message)
+            .with_detail("model", limit.model)
+            .with_detail("max_tokens", limit.max_tokens.to_string());
+        if let Some(reason) = limit.finish_reason {
+            error = error.with_detail("finish_reason", reason);
+        }
+        if let Some(tokens) = limit.completion_tokens {
+            error = error.with_detail("completion_tokens", tokens.to_string());
+        }
+        if let Some(tokens) = limit.reasoning_tokens {
+            error = error.with_detail("reasoning_tokens", tokens.to_string());
+        }
+        error
     }
 }
 
@@ -175,6 +196,7 @@ pub enum TextGenerationEvent {
 pub enum GenerationStage {
     Draft,
     Edit,
+    ValidationRepair,
     SemanticReview,
     DiagramRepair,
     LayoutCheck,
@@ -187,6 +209,7 @@ impl GenerationStage {
         match self {
             Self::Draft => "drafting slides",
             Self::Edit => "editing slide content",
+            Self::ValidationRepair => "repairing slide structure",
             Self::SemanticReview => "reviewing content",
             Self::DiagramRepair => "repairing diagrams",
             Self::LayoutCheck => "checking layout",
@@ -223,7 +246,7 @@ pub trait ToolExecutor: Send + Sync {
         request: ToolExecutionRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<String>;
+    ) -> SfumatoResult<String>;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -252,7 +275,7 @@ pub trait TextGenerationProvider: Send + Sync {
         request: TextGenerationRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<TextGenerationResponse>;
+    ) -> SfumatoResult<TextGenerationResponse>;
 }
 
 /// Provider-neutral conversation message used for one model turn.
@@ -307,7 +330,7 @@ pub trait TextModel: Send + Sync {
         request: TextModelRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<TextModelResponse>;
+    ) -> SfumatoResult<TextModelResponse>;
 }
 
 /// Application-level agent loop that executes provider-neutral tools.
@@ -329,7 +352,7 @@ impl TextGenerationProvider for AgentRunner {
         request: TextGenerationRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<TextGenerationResponse> {
+    ) -> SfumatoResult<TextGenerationResponse> {
         operation.checkpoint(stage)?;
         let mut messages = vec![
             ModelMessage::System(request.system_prompt.clone()),
@@ -362,9 +385,13 @@ impl TextGenerationProvider for AgentRunner {
                 return complete_agent_response(&request, response.content);
             }
 
-            let executor = request.tool_executor.as_ref().context(
-                "Connector requested tool calls, but no Sfumato tool executor is available",
-            )?;
+            let executor = request.tool_executor.as_ref().ok_or_else(|| {
+                SfumatoError::tool(
+                    ErrorClass::Permanent,
+                    "Connector requested tool calls, but no Sfumato tool executor is available",
+                )
+                .at_stage(stage)
+            })?;
             messages.push(ModelMessage::Assistant {
                 content: response.content,
                 tool_calls: response.tool_calls.clone(),
@@ -402,13 +429,10 @@ impl TextGenerationProvider for AgentRunner {
                         result
                     }
                     Err(error) => {
-                        if error
-                            .downcast_ref::<SfumatoError>()
-                            .is_some_and(|error| error.class == ErrorClass::Cancelled)
-                        {
+                        if error.class == ErrorClass::Cancelled {
                             return Err(error);
                         }
-                        let error = format!("{error:#}");
+                        let error = error.to_string();
                         request.emit(TextGenerationEvent::ToolCallFailed {
                             name: tool_call.function.name.clone(),
                             error: error.clone(),
@@ -424,9 +448,12 @@ impl TextGenerationProvider for AgentRunner {
             }
         }
 
-        let exhausted = request.tool_exhausted_prompt.clone().context(
-            "The model exhausted its tool rounds, but this request has no output-contract prompt",
-        )?;
+        let exhausted = request.tool_exhausted_prompt.clone().ok_or_else(|| {
+            SfumatoError::internal(
+                "The model exhausted its tool rounds, but this request has no output-contract prompt",
+            )
+            .at_stage(stage)
+        })?;
         messages.push(ModelMessage::User(exhausted));
         request.emit(TextGenerationEvent::RequestStarted {
             round: request.max_tool_rounds + 1,
@@ -444,7 +471,11 @@ impl TextGenerationProvider for AgentRunner {
             )
             .await?;
         if !response.tool_calls.is_empty() {
-            bail!("Model requested tools after tool calling was disabled");
+            return Err(SfumatoError::provider(
+                ErrorClass::InvalidOutput,
+                "Model requested tools after tool calling was disabled",
+            )
+            .at_stage(stage));
         }
         complete_agent_response(&request, response.content)
     }
@@ -453,10 +484,13 @@ impl TextGenerationProvider for AgentRunner {
 fn complete_agent_response(
     request: &TextGenerationRequest,
     content: Option<String>,
-) -> Result<TextGenerationResponse> {
+) -> SfumatoResult<TextGenerationResponse> {
     let text = content.unwrap_or_default().trim().to_string();
     if text.is_empty() {
-        bail!("Connector response did not include text content");
+        return Err(SfumatoError::provider(
+            ErrorClass::InvalidOutput,
+            "Connector response did not include text content",
+        ));
     }
     request.emit(TextGenerationEvent::ResponseCompleted);
     Ok(TextGenerationResponse { text })
@@ -480,7 +514,7 @@ pub trait ImageGenerationProvider: Send + Sync {
         request: ImageGenerationRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<ImageGenerationResponse>;
+    ) -> SfumatoResult<ImageGenerationResponse>;
 }
 /// Port for resolving model profiles into provider implementations.
 pub trait ProviderFactory: Send + Sync {
@@ -489,12 +523,12 @@ pub trait ProviderFactory: Send + Sync {
         &self,
         config: &EffectiveConfig,
         profile: &ModelProfile,
-    ) -> Result<Box<dyn TextGenerationProvider>>;
+    ) -> SfumatoResult<Box<dyn TextGenerationProvider>>;
 
     /// Builds an image-generation provider for a resolved profile.
     fn image(
         &self,
         config: &EffectiveConfig,
         profile: &ModelProfile,
-    ) -> Result<Box<dyn ImageGenerationProvider>>;
+    ) -> SfumatoResult<Box<dyn ImageGenerationProvider>>;
 }

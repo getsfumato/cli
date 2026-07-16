@@ -1,6 +1,12 @@
 use super::*;
 
-use crate::{config::GlobalConfig, sources::SourceDocument};
+use crate::{
+    config::GlobalConfig,
+    prompts::{PromptError, PromptOrigin, RenderedPrompt},
+    providers::TextGenerationLimitError,
+    sources::SourceDocument,
+    themes::{THEME_SCHEMA_VERSION, ThemeAdapters, ThemeManifest},
+};
 
 fn effective_config() -> EffectiveConfig {
     let global = GlobalConfig::default_config();
@@ -26,6 +32,66 @@ struct ImmediateFailureProvider {
     calls: std::sync::atomic::AtomicUsize,
 }
 
+struct StaticPromptCatalog;
+
+impl PromptCatalog for StaticPromptCatalog {
+    fn render(
+        &self,
+        request: PromptRenderRequest,
+    ) -> std::result::Result<RenderedPrompt, PromptError> {
+        Ok(RenderedPrompt {
+            text: format!("rendered {}", request.id),
+            provenance: PromptProvenance {
+                id: request.id,
+                origin: PromptOrigin::Bundled,
+                version: 1,
+                content_hash: format!("hash-{}", request.id),
+            },
+        })
+    }
+
+    fn validate(&self) -> std::result::Result<Vec<PromptProvenance>, PromptError> {
+        Ok(Vec::new())
+    }
+}
+
+struct RepairProvider {
+    calls: std::sync::atomic::AtomicUsize,
+    response: String,
+}
+
+#[async_trait::async_trait]
+impl TextGenerationProvider for RepairProvider {
+    async fn generate_text(
+        &self,
+        request: TextGenerationRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
+    ) -> crate::errors::SfumatoResult<TextGenerationResponse> {
+        assert!(request.tools.is_empty());
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(TextGenerationResponse {
+            text: self.response.clone(),
+        })
+    }
+}
+
+fn theme_package() -> ThemePackage {
+    ThemePackage {
+        root: PathBuf::from("/tmp/theme"),
+        manifest: ThemeManifest {
+            schema_version: THEME_SCHEMA_VERSION,
+            name: "sfumato-default".to_string(),
+            description: "test".to_string(),
+            tokens: ThemeTokens::default(),
+            adapters: ThemeAdapters {
+                marp_css: PathBuf::from("marp/theme.css"),
+                html: None,
+            },
+        },
+    }
+}
+
 #[async_trait::async_trait]
 impl TextGenerationProvider for ImmediateFailureProvider {
     async fn generate_text(
@@ -33,9 +99,12 @@ impl TextGenerationProvider for ImmediateFailureProvider {
         _request: TextGenerationRequest,
         _operation: &OperationContext,
         _stage: OperationStage,
-    ) -> Result<TextGenerationResponse> {
+    ) -> crate::errors::SfumatoResult<TextGenerationResponse> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        anyhow::bail!("connector unavailable")
+        Err(crate::errors::SfumatoError::provider(
+            crate::errors::ErrorClass::Unavailable,
+            "connector unavailable",
+        ))
     }
 }
 
@@ -46,7 +115,7 @@ impl TextGenerationProvider for LimitThenSuccessProvider {
         request: TextGenerationRequest,
         _operation: &OperationContext,
         _stage: OperationStage,
-    ) -> Result<TextGenerationResponse> {
+    ) -> crate::errors::SfumatoResult<TextGenerationResponse> {
         let mut prompts = self.prompts.lock().unwrap();
         prompts.push(request.user_prompt);
         if prompts.len() == 1 {
@@ -130,6 +199,46 @@ async fn unrelated_provider_errors_do_not_trigger_compaction() {
 
     assert!(error.to_string().contains("connector unavailable"));
     assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn invalid_draft_receives_one_dedicated_structural_repair() {
+    let provider = RepairProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        response: "---\nmarp: true\ntheme: sfumato-default\npaginate: true\nmath: mathjax\n---\n\n# Series de Fourier\n\n---\n\n## Intuicion\n\nUna suma de armonicos."
+            .to_string(),
+    };
+    let config = effective_config();
+    let outcome = normalize_and_repair_draft_once(
+        &StaticPromptCatalog,
+        &provider,
+        &config,
+        &theme_package(),
+        "Explica visualmente las series de Fourier",
+        "Ensenar en espanol.",
+        "Series de Fourier",
+        "# Series de Fourier\n\nNo slide separator",
+        &OperationContext::detached(),
+        &None,
+        "draft-model",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    validate_normalized_deck(&outcome.markdown, "Series de Fourier").unwrap();
+    assert!(
+        outcome
+            .prompts
+            .iter()
+            .any(|prompt| prompt.id == PromptId::SlidesValidationRepairSystem)
+    );
+    assert!(
+        outcome
+            .prompts
+            .iter()
+            .any(|prompt| prompt.id == PromptId::SlidesValidationRepairUser)
+    );
 }
 
 #[test]
@@ -621,11 +730,14 @@ fn compact_source_bundle_distributes_a_fixed_budget_across_files() {
 
 #[test]
 fn model_output_retry_excludes_missing_dependencies() {
-    assert!(should_retry_model_output(&anyhow::anyhow!(
-        "Mermaid CLI exited with a parse error"
+    assert!(should_retry_model_output(&SfumatoError::new(
+        ErrorCode::Validation,
+        ErrorClass::InvalidOutput,
+        "Mermaid CLI exited with a parse error",
     )));
-    assert!(!should_retry_model_output(&anyhow::anyhow!(
-        "Mermaid CLI is not installed"
+    assert!(!should_retry_model_output(&SfumatoError::render(
+        ErrorClass::Unavailable,
+        "Mermaid CLI is not installed",
     )));
 }
 

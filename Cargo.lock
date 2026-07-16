@@ -2622,7 +2622,6 @@ dependencies = [
 name = "sfumato-core"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "json-patch",
  "serde",

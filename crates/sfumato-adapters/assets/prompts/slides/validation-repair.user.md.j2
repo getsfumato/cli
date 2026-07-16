@@ -1,0 +1,25 @@
+Repair this draft so it satisfies the reported structural validation error.
+
+Project: {{ project }}
+Original instruction: {{ instruction }}
+Required title: {{ title }}
+Theme: {{ theme_name }}
+Semantic colors: {{ theme_colors }}
+Typography: {{ theme_fonts }}
+
+Project guidance:
+{{ project_instructions }}
+
+Validation error:
+{{ validation_error }}
+
+Requirements:
+- Return the complete deck.
+- Preserve the exact required title as the first H1.
+- Keep one canonical Marp frontmatter block with `marp: true`, `theme: {{ theme_name }}`, `paginate: true`, and `math: mathjax`.
+- Keep every useful grounded explanation, example, image, and Mermaid diagram unless it directly caused the error.
+- Keep slide separators outside fenced blocks.
+- Do not add raw HTML, SVG, CSS, or a Markdown wrapper fence.
+
+Invalid draft:
+{{ draft_markdown }}

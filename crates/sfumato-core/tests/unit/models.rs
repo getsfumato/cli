@@ -17,11 +17,11 @@ impl GlobalConfigRepository for MemoryGlobal {
         true
     }
 
-    fn load(&self) -> Result<GlobalConfig> {
+    fn load(&self) -> crate::errors::SfumatoResult<GlobalConfig> {
         Ok(self.0.lock().unwrap().clone())
     }
 
-    fn save(&self, config: &GlobalConfig) -> Result<()> {
+    fn save(&self, config: &GlobalConfig) -> crate::errors::SfumatoResult<()> {
         *self.0.lock().unwrap() = config.clone();
         Ok(())
     }
@@ -51,11 +51,11 @@ impl MemoryProjects {
 }
 
 impl ProjectRepository for MemoryProjects {
-    fn registry(&self) -> Result<ProjectRegistry> {
+    fn registry(&self) -> crate::errors::SfumatoResult<ProjectRegistry> {
         Ok(self.registry.lock().unwrap().clone())
     }
 
-    fn list(&self) -> Result<Vec<(String, RegisteredProject, bool)>> {
+    fn list(&self) -> crate::errors::SfumatoResult<Vec<(String, RegisteredProject, bool)>> {
         let registry = self.registry()?;
         Ok(registry
             .projects
@@ -67,21 +67,21 @@ impl ProjectRepository for MemoryProjects {
             .collect())
     }
 
-    fn load(&self, name: Option<&str>) -> Result<ProjectConfig> {
+    fn load(&self, name: Option<&str>) -> crate::errors::SfumatoResult<ProjectConfig> {
         let registry = self.registry()?;
         let selected = name
             .map(ToOwned::to_owned)
             .or(registry.active)
-            .context("No project selected")?;
+            .ok_or_else(|| crate::errors::SfumatoError::not_found("No project selected"))?;
         self.projects
             .lock()
             .unwrap()
             .get(&selected)
             .cloned()
-            .context("Project not found")
+            .ok_or_else(|| crate::errors::SfumatoError::not_found("Project not found"))
     }
 
-    fn save(&self, project: &ProjectConfig) -> Result<()> {
+    fn save(&self, project: &ProjectConfig) -> crate::errors::SfumatoResult<()> {
         self.projects
             .lock()
             .unwrap()
@@ -89,24 +89,29 @@ impl ProjectRepository for MemoryProjects {
         Ok(())
     }
 
-    fn register(&self, name: String, _path: PathBuf, activate: bool) -> Result<ProjectConfig> {
+    fn register(
+        &self,
+        name: String,
+        _path: PathBuf,
+        activate: bool,
+    ) -> crate::errors::SfumatoResult<ProjectConfig> {
         let project = project(&name);
         self.insert(project.clone(), activate);
         Ok(project)
     }
 
-    fn set_active(&self, name: &str) -> Result<String> {
+    fn set_active(&self, name: &str) -> crate::errors::SfumatoResult<String> {
         self.registry.lock().unwrap().active = Some(name.to_string());
         Ok(name.to_string())
     }
 
-    fn remove(&self, name: &str) -> Result<ProjectConfig> {
+    fn remove(&self, name: &str) -> crate::errors::SfumatoResult<ProjectConfig> {
         self.registry.lock().unwrap().projects.remove(name);
         self.projects
             .lock()
             .unwrap()
             .remove(name)
-            .context("Project not found")
+            .ok_or_else(|| crate::errors::SfumatoError::not_found("Project not found"))
     }
 }
 

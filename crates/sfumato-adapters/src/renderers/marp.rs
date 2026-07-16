@@ -6,7 +6,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use sfumato_core::{
-    errors::OperationStage, generation::SlideLayoutIssue, operation::OperationContext,
+    errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
+    generation::SlideLayoutIssue,
+    operation::OperationContext,
     renderers::SlideRenderer,
 };
 use tokio::process::Command;
@@ -32,27 +34,31 @@ impl SlideRenderer for MarpCliRenderer {
         pdf_path: &Path,
         browser_path: Option<&Path>,
         operation: &OperationContext,
-    ) -> Result<()> {
-        let args = command_args(markdown_path, theme_css_path, pdf_path, browser_path)?;
-        let mut command = Command::new("marp");
-        command.args(args);
-        let output = run_command(&mut command, operation, OperationStage::Render).await;
-        let output = match output {
-            Ok(output) => output,
-            Err(error) if is_not_found(&error) => {
-                return Err(MarpError::Missing.into());
+    ) -> SfumatoResult<()> {
+        let result: Result<()> = async {
+            let args = command_args(markdown_path, theme_css_path, pdf_path, browser_path)?;
+            let mut command = Command::new("marp");
+            command.args(args);
+            let output = run_command(&mut command, operation, OperationStage::Render).await;
+            let output = match output {
+                Ok(output) => output,
+                Err(error) if is_not_found(&error) => {
+                    return Err(MarpError::Missing.into());
+                }
+                Err(error) => return Err(error).context("Could not run Marp CLI"),
+            };
+            if !output.status.success() {
+                bail!(
+                    "Marp CLI exited with status {}{}{}",
+                    output.status,
+                    format_stream("stdout", String::from_utf8_lossy(&output.stdout).trim()),
+                    format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
+                );
             }
-            Err(error) => return Err(error).context("Could not run Marp CLI"),
-        };
-        if !output.status.success() {
-            bail!(
-                "Marp CLI exited with status {}{}{}",
-                output.status,
-                format_stream("stdout", String::from_utf8_lossy(&output.stdout).trim()),
-                format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
-            );
+            Ok(())
         }
-        Ok(())
+        .await;
+        result.map_err(|error| render_error(error, OperationStage::Render))
     }
 
     async fn inspect_layout(
@@ -62,33 +68,56 @@ impl SlideRenderer for MarpCliRenderer {
         html_path: &Path,
         browser_path: Option<&Path>,
         operation: &OperationContext,
-    ) -> Result<Vec<SlideLayoutIssue>> {
-        render_html(markdown_path, theme_css_path, html_path, operation).await?;
-        inject_layout_inspector(html_path)?;
-        let browser = resolved_browser_path(browser_path)?
-            .context("Could not find Chrome, Chromium, or Edge for Marp layout inspection")?;
-        let url = format!("file://{}", html_path.canonicalize()?.display());
-        let mut command = Command::new(browser);
-        command.args([
-            "--headless",
-            "--disable-gpu",
-            "--allow-file-access-from-files",
-            "--dump-dom",
-            "--virtual-time-budget=3000",
-            &url,
-        ]);
-        let output = run_command(&mut command, operation, OperationStage::InspectLayout)
-            .await
-            .context("Could not run the browser for Marp layout inspection")?;
-        if !output.status.success() {
-            bail!(
-                "Browser layout inspection exited with status {}{}",
-                output.status,
-                format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
-            );
+    ) -> SfumatoResult<Vec<SlideLayoutIssue>> {
+        let result: Result<Vec<SlideLayoutIssue>> = async {
+            render_html(markdown_path, theme_css_path, html_path, operation).await?;
+            inject_layout_inspector(html_path)?;
+            let browser = resolved_browser_path(browser_path)?
+                .context("Could not find Chrome, Chromium, or Edge for Marp layout inspection")?;
+            let url = format!("file://{}", html_path.canonicalize()?.display());
+            let mut command = Command::new(browser);
+            command.args([
+                "--headless",
+                "--disable-gpu",
+                "--allow-file-access-from-files",
+                "--dump-dom",
+                "--virtual-time-budget=3000",
+                &url,
+            ]);
+            let output = run_command(&mut command, operation, OperationStage::InspectLayout)
+                .await
+                .context("Could not run the browser for Marp layout inspection")?;
+            if !output.status.success() {
+                bail!(
+                    "Browser layout inspection exited with status {}{}",
+                    output.status,
+                    format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
+                );
+            }
+            parse_layout_report(&String::from_utf8_lossy(&output.stdout))
         }
-        parse_layout_report(&String::from_utf8_lossy(&output.stdout))
+        .await;
+        result.map_err(|error| render_error(error, OperationStage::InspectLayout))
     }
+}
+
+fn render_error(error: anyhow::Error, stage: OperationStage) -> SfumatoError {
+    if let Some(error) = error.downcast_ref::<SfumatoError>() {
+        let mut error = error.clone();
+        if error.stage.is_none() {
+            error.stage = Some(stage);
+        }
+        return error;
+    }
+    let message = format!("{error:#}");
+    let class = if error.downcast_ref::<MarpError>().is_some()
+        || message.contains("Could not find Chrome")
+    {
+        ErrorClass::Unavailable
+    } else {
+        ErrorClass::Permanent
+    };
+    SfumatoError::render(class, message).at_stage(stage)
 }
 
 async fn render_html(

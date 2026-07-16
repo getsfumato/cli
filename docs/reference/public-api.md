@@ -1,73 +1,98 @@
 # Public Rust API
 
-**Implementation status:** Transitional v0.2 surface.
+**Implementation status:** active v0.2 facade.
 
-The workspace exposes pure domain contracts from `sfumato-domain`, application
-ports and workflows from `sfumato-core`, and production implementations from
-`sfumato-adapters`. The root binary is the composition and presentation layer.
+External frontends use `sfumato_core::application::SfumatoApplication`. Production
+composition is provided by `sfumato_adapters::application::production_application`.
+Raw slide orchestrators and their dependency bundles are crate-private.
 
-## Slide Workflows
+## Application Facade
 
 ```rust
-pub async fn generate_slides(
-    request: GenerationRequest,
-    options: GenerateSlidesOptions,
-) -> anyhow::Result<GenerateSlidesResult>;
+let application = sfumato_adapters::application::production_application()?;
 
-pub async fn edit_slides(
-    request: EditSlidesRequest,
-    options: EditSlidesOptions,
-) -> anyhow::Result<EditSlidesResult>;
+let result = application
+    .generate_slides(GenerateSlidesCommand {
+        operation,
+        config: ConfigOverrides::default(),
+        request,
+        title: None,
+        dry_run: false,
+        review: true,
+        event_sink: None,
+    })
+    .await?;
 ```
 
-Both option DTOs receive `ProviderFactory`, `PromptCatalog`, and `ArtifactStore`
-ports. This keeps connector HTTP, template resolution, and artifact persistence
-replaceable in tests and alternate frontends. The CLI and TUI call the same root
-execution functions and receive the same core result DTOs.
+`generate_slides` returns `SfumatoResult<GenerateSlidesResult>` and
+`edit_slides` returns `SfumatoResult<EditSlidesResult>`. The same facade also
+owns project, model, connector, theme, prompt, setup, and configuration use
+cases. CLI and TUI construct the same command DTOs.
+
+## Outbound Ports
+
+`SfumatoApplicationDependencies` makes external variability explicit:
+
+- `EffectiveConfigResolver` and `PromptCatalogFactory`;
+- `PromptManager` and schema-aware `ConfigEditor`;
+- `ArtifactStore`, repositories, and `WorkspaceFileSystem`;
+- `ProviderFactory`, `TextModel`, and `ImageGenerationProvider`;
+- `DiagramRenderer`, `SlideRenderer`, `SourceReader`, and `GenerationToolFactory`.
+
+Every core port returns a typed result. Adapters may use implementation-specific
+diagnostics internally, but classify and sanitize failures before crossing the
+port boundary.
 
 ## Stable Contracts
 
-- `ReviewableDocument` and `DeckDocument` provide revision-guarded RFC 6902
-  review and editing.
-- `TextModel::complete` performs exactly one provider turn.
-- `AgentRunner` owns tool rounds, tool execution, and tool-exhaustion behavior.
-- `PromptCatalog` resolves `PromptId` plus structured variables into text and
-  `PromptProvenance`.
-- `ArtifactStore` creates an `ArtifactTransaction` which commits one immutable
+- `ReviewableDocument` and `DeckDocument` expose revision-guarded RFC 6902
+  snapshots and transactional patch application.
+- `TextModel::complete` performs one provider turn only.
+- `AgentRunner` owns transcripts, tools, tool-round limits, the final no-tools
+  output-contract turn, and cancellation checkpoints.
+- `PromptCatalog` resolves a stable `PromptId` and `PromptVariables` into a
+  rendered message plus `PromptProvenance`.
+- `ArtifactTransaction` stages files and commits one immutable
   `ResourceArtifactManifest` revision.
-- `ProviderFactory` resolves text and image profiles without leaking connector
-  details into slide workflows.
+- `OperationContext` carries `JobId`, cancellation, optional deadline, and a
+  bounded nonblocking `EventSink`.
 
-## Operation Lifecycle
+## Errors
 
-`OperationContext` is the runtime-neutral lifecycle contract:
+`SfumatoError` is the only core application error:
 
 ```rust
-pub struct OperationContext {
-    pub job_id: JobId,
-    pub deadline: Option<Instant>,
-    pub cancellation: CancellationToken,
-    pub events: Arc<dyn EventSink>,
+pub struct SfumatoError {
+    pub code: ErrorCode,
+    pub class: ErrorClass,
+    pub retryable: bool,
+    pub stage: Option<OperationStage>,
+    pub message: String,
+    pub details: BTreeMap<String, String>,
 }
 ```
 
-Its event sink is bounded and nonblocking by contract. `SfumatoError` exposes a
-stable `ErrorCode`, `ErrorClass`, optional `OperationStage`, safe message, and
-structured details. These types and their tests are implemented; mapping every
-legacy `anyhow` workflow exit and process operation into them remains tracked in
-the architecture traceability table.
+Classes distinguish retry, context compaction, invalid-output repair,
+dependency unavailability, cancellation, and permanent failure. Provider limits,
+tool failures, renderers, artifact persistence, prompt rendering, and local
+validation retain their classification through the facade. Messages and details
+are sanitized before presentation.
 
 ## Results And Provenance
 
-Generation results include selected models, injected tools, review/layout
-summary, internal and published artifacts, warnings, and every resolved prompt's
-ID, origin, version, and SHA-256 source hash. Edit results include changed slide
-IDs and patch operation count. A committed `manifest.json` is the authoritative
-inventory for one revision.
+Generation results identify the selected project and model profiles, declared
+tools, committed and published paths, review/layout state, warnings, project
+instruction path, and every contributing prompt's ID, origin, version, and
+SHA-256 hash. Edit results additionally report changed slide IDs, patch count,
+context compaction, and parent-linked revision artifacts.
 
-## Compatibility Direction
+The committed `manifest.json` and `current.json` pointer are authoritative.
+Published PDFs are convenience copies and never supersede the managed revision.
 
-The next boundary step is a single `SfumatoApplication` facade that resolves
-configuration once and accepts `OperationContext` for every call. Until that
-facade replaces the free functions, modules documented above are public but not
-promised as a stable semver surface.
+## Public Surface Policy
+
+`#![warn(missing_docs)]` is enabled in domain, core, and adapters. The facade,
+ports, errors, operations, prompts, artifacts, and curated adapter constructors
+are documented public API. Broad DTO/service modules currently use scoped
+`#[allow(missing_docs)]` declarations while they are narrowed; this does not
+relax documentation linting for the curated integration surface.

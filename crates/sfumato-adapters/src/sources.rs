@@ -8,7 +8,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use sfumato_core::sources::{ProjectInstructions, SourceDocument, SourceReader};
+use sfumato_core::{
+    errors::{ErrorClass, SfumatoError, SfumatoResult},
+    sources::{ProjectInstructions, SourceDocument, SourceReader},
+};
 use walkdir::WalkDir;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -25,76 +28,96 @@ const MAX_PROJECT_INSTRUCTIONS_BYTES: u64 = 64 * 1024;
 pub struct FilesystemSourceReader;
 
 impl SourceReader for FilesystemSourceReader {
-    fn collect(&self, inputs: &[PathBuf]) -> Result<Vec<SourceDocument>> {
-        let mut documents = Vec::new();
-        let mut total_bytes = 0_u64;
-        let mut seen = BTreeSet::new();
-        for input in inputs {
-            if input.is_file() {
-                push_source_file(input, &mut documents, &mut total_bytes, &mut seen)?;
-            } else if input.is_dir() {
-                for entry in WalkDir::new(input) {
-                    let entry = entry.with_context(|| {
-                        format!("Could not traverse source directory {}", input.display())
-                    })?;
-                    if entry.file_type().is_file() {
-                        push_source_file(
-                            entry.path(),
-                            &mut documents,
-                            &mut total_bytes,
-                            &mut seen,
-                        )?;
+    fn collect(&self, inputs: &[PathBuf]) -> SfumatoResult<Vec<SourceDocument>> {
+        let result: Result<Vec<SourceDocument>> = (|| {
+            let mut documents = Vec::new();
+            let mut total_bytes = 0_u64;
+            let mut seen = BTreeSet::new();
+            for input in inputs {
+                if input.is_file() {
+                    push_source_file(input, &mut documents, &mut total_bytes, &mut seen)?;
+                } else if input.is_dir() {
+                    for entry in WalkDir::new(input) {
+                        let entry = entry.with_context(|| {
+                            format!("Could not traverse source directory {}", input.display())
+                        })?;
+                        if entry.file_type().is_file() {
+                            push_source_file(
+                                entry.path(),
+                                &mut documents,
+                                &mut total_bytes,
+                                &mut seen,
+                            )?;
+                        }
                     }
+                } else {
+                    bail!("Input path does not exist: {}", input.display());
                 }
-            } else {
-                bail!("Input path does not exist: {}", input.display());
             }
-        }
-        documents.sort_by(|left, right| left.path.cmp(&right.path));
-        Ok(documents)
+            documents.sort_by(|left, right| left.path.cmp(&right.path));
+            Ok(documents)
+        })();
+        source_result(result)
     }
 
-    fn project_instructions(&self, project_root: &Path) -> Result<Option<ProjectInstructions>> {
-        let path = project_root.join(PROJECT_INSTRUCTIONS_FILE);
-        if !path
-            .try_exists()
-            .with_context(|| format!("Could not inspect {}", path.display()))?
-        {
-            return Ok(None);
-        }
-        let canonical_root = project_root.canonicalize().with_context(|| {
-            format!("Could not resolve project root {}", project_root.display())
-        })?;
-        let canonical_path = path
-            .canonicalize()
-            .with_context(|| format!("Could not resolve {}", path.display()))?;
-        if !canonical_path.starts_with(&canonical_root) {
-            bail!(
-                "Project instructions {} resolve outside project root {}",
-                path.display(),
-                project_root.display()
-            );
-        }
-        let metadata = fs::metadata(&canonical_path)
-            .with_context(|| format!("Could not inspect {}", path.display()))?;
-        if !metadata.is_file() {
-            bail!("Project instructions path {} is not a file", path.display());
-        }
-        if metadata.len() > MAX_PROJECT_INSTRUCTIONS_BYTES {
-            bail!(
-                "Project instructions {} are {} bytes; the maximum is {} bytes",
-                path.display(),
-                metadata.len(),
-                MAX_PROJECT_INSTRUCTIONS_BYTES
-            );
-        }
-        let content = fs::read_to_string(&canonical_path)
-            .with_context(|| format!("Could not read project instructions {}", path.display()))?;
-        Ok(Some(ProjectInstructions {
-            path,
-            content: content.trim().to_string(),
-        }))
+    fn project_instructions(
+        &self,
+        project_root: &Path,
+    ) -> SfumatoResult<Option<ProjectInstructions>> {
+        let result: Result<Option<ProjectInstructions>> = (|| {
+            let path = project_root.join(PROJECT_INSTRUCTIONS_FILE);
+            if !path
+                .try_exists()
+                .with_context(|| format!("Could not inspect {}", path.display()))?
+            {
+                return Ok(None);
+            }
+            let canonical_root = project_root.canonicalize().with_context(|| {
+                format!("Could not resolve project root {}", project_root.display())
+            })?;
+            let canonical_path = path
+                .canonicalize()
+                .with_context(|| format!("Could not resolve {}", path.display()))?;
+            if !canonical_path.starts_with(&canonical_root) {
+                bail!(
+                    "Project instructions {} resolve outside project root {}",
+                    path.display(),
+                    project_root.display()
+                );
+            }
+            let metadata = fs::metadata(&canonical_path)
+                .with_context(|| format!("Could not inspect {}", path.display()))?;
+            if !metadata.is_file() {
+                bail!("Project instructions path {} is not a file", path.display());
+            }
+            if metadata.len() > MAX_PROJECT_INSTRUCTIONS_BYTES {
+                bail!(
+                    "Project instructions {} are {} bytes; the maximum is {} bytes",
+                    path.display(),
+                    metadata.len(),
+                    MAX_PROJECT_INSTRUCTIONS_BYTES
+                );
+            }
+            let content = fs::read_to_string(&canonical_path).with_context(|| {
+                format!("Could not read project instructions {}", path.display())
+            })?;
+            Ok(Some(ProjectInstructions {
+                path,
+                content: content.trim().to_string(),
+            }))
+        })();
+        source_result(result)
     }
+}
+
+fn source_result<T>(result: Result<T>) -> SfumatoResult<T> {
+    result.map_err(|error| {
+        SfumatoError::new(
+            sfumato_core::errors::ErrorCode::Validation,
+            ErrorClass::Permanent,
+            format!("{error:#}"),
+        )
+    })
 }
 
 fn push_source_file(

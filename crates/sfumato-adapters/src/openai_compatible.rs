@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use sfumato_core::{
     config::{Capability, EffectiveConfig, ModelProfile, OpenAiCompatibleConnectorConfig},
-    errors::OperationStage,
+    errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::OperationContext,
     providers::{
         AgentRunner, ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
@@ -67,39 +67,46 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
         &self,
         config: &EffectiveConfig,
         profile: &ModelProfile,
-    ) -> Result<Box<dyn TextGenerationProvider>> {
-        if !profile.capabilities.contains(&Capability::Text) {
-            bail!("Selected model profile does not support text generation");
-        }
-        let connector = config
-            .connectors
-            .get(&profile.connector)
-            .with_context(|| format!("Connector '{}' was not found", profile.connector))?;
-        let model = OpenAiCompatibleTextProvider::new(
-            profile.connector.clone(),
-            connector.clone(),
-            profile.clone(),
-        )?;
-        Ok(Box::new(AgentRunner::new(std::sync::Arc::new(model))))
+    ) -> SfumatoResult<Box<dyn TextGenerationProvider>> {
+        let result: Result<Box<dyn TextGenerationProvider>> = (|| {
+            if !profile.capabilities.contains(&Capability::Text) {
+                bail!("Selected model profile does not support text generation");
+            }
+            let connector = config
+                .connectors
+                .get(&profile.connector)
+                .with_context(|| format!("Connector '{}' was not found", profile.connector))?;
+            let model = OpenAiCompatibleTextProvider::new(
+                profile.connector.clone(),
+                connector.clone(),
+                profile.clone(),
+            )?;
+            Ok(Box::new(AgentRunner::new(std::sync::Arc::new(model)))
+                as Box<dyn TextGenerationProvider>)
+        })();
+        result.map_err(|error| SfumatoError::config(format_args!("{error:#}")))
     }
 
     fn image(
         &self,
         config: &EffectiveConfig,
         profile: &ModelProfile,
-    ) -> Result<Box<dyn ImageGenerationProvider>> {
-        if !profile.capabilities.contains(&Capability::Image) {
-            bail!("Selected model profile does not support image generation");
-        }
-        let connector = config
-            .connectors
-            .get(&profile.connector)
-            .with_context(|| format!("Connector '{}' was not found", profile.connector))?;
-        Ok(Box::new(OpenAiCompatibleImageProvider::new(
-            profile.connector.clone(),
-            connector.clone(),
-            profile.clone(),
-        )?))
+    ) -> SfumatoResult<Box<dyn ImageGenerationProvider>> {
+        let result: Result<Box<dyn ImageGenerationProvider>> = (|| {
+            if !profile.capabilities.contains(&Capability::Image) {
+                bail!("Selected model profile does not support image generation");
+            }
+            let connector = config
+                .connectors
+                .get(&profile.connector)
+                .with_context(|| format!("Connector '{}' was not found", profile.connector))?;
+            Ok(Box::new(OpenAiCompatibleImageProvider::new(
+                profile.connector.clone(),
+                connector.clone(),
+                profile.clone(),
+            )?) as Box<dyn ImageGenerationProvider>)
+        })();
+        result.map_err(|error| SfumatoError::config(format_args!("{error:#}")))
     }
 }
 
@@ -160,43 +167,51 @@ impl TextModel for OpenAiCompatibleTextProvider {
         request: TextModelRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<TextModelResponse> {
-        let messages = request
-            .messages
-            .into_iter()
-            .map(ChatMessage::from)
-            .collect();
-        let tools = (!request.tools.is_empty()).then_some(request.tools);
-        let parsed = self
-            .send_chat_completion(
-                &self.request_body_for_messages(messages, tools),
-                operation,
-                stage,
-            )
-            .await?;
-        let usage = parsed.usage;
-        let choice = parsed
-            .choices
-            .into_iter()
-            .next()
-            .context("Connector response did not include any choices")?;
-        let finish_reason = choice.finish_reason;
-        let assistant = choice.message;
-        if assistant.tool_calls.is_empty() {
-            let content = assistant.content.as_deref().unwrap_or_default().trim();
-            if content.is_empty() {
-                bail!(empty_content_error(
+    ) -> SfumatoResult<TextModelResponse> {
+        let result: Result<TextModelResponse> = async {
+            let messages = request
+                .messages
+                .into_iter()
+                .map(ChatMessage::from)
+                .collect();
+            let tools = (!request.tools.is_empty()).then_some(request.tools);
+            let parsed = self
+                .send_chat_completion(
+                    &self.request_body_for_messages(messages, tools),
+                    operation,
+                    stage,
+                )
+                .await?;
+            let usage = parsed.usage;
+            let choice = parsed
+                .choices
+                .into_iter()
+                .next()
+                .context("Connector response did not include any choices")?;
+            let finish_reason = choice.finish_reason;
+            let assistant = choice.message;
+            if assistant.tool_calls.is_empty() {
+                let content = assistant.content.as_deref().unwrap_or_default().trim();
+                if content.is_empty() {
+                    return Err(empty_content_error(
+                        &self.profile,
+                        finish_reason.as_deref(),
+                        usage.as_ref(),
+                    ));
+                }
+                ensure_text_response_complete(
                     &self.profile,
                     finish_reason.as_deref(),
-                    usage.as_ref()
-                ));
+                    usage.as_ref(),
+                )?;
             }
-            ensure_text_response_complete(&self.profile, finish_reason.as_deref(), usage.as_ref())?;
+            Ok(TextModelResponse {
+                content: assistant.content,
+                tool_calls: assistant.tool_calls,
+            })
         }
-        Ok(TextModelResponse {
-            content: assistant.content,
-            tool_calls: assistant.tool_calls,
-        })
+        .await;
+        result.map_err(|error| provider_error(error, stage))
     }
 }
 
@@ -253,50 +268,81 @@ impl ImageGenerationProvider for OpenAiCompatibleImageProvider {
         request: ImageGenerationRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<ImageGenerationResponse> {
-        let body = self.request_body(&request)?;
-        let response = await_operation(
-            operation,
-            stage,
-            self.connector.post("images")?.json(&body).send(),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "Could not reach OpenAI-compatible connector '{}' for image generation",
-                self.connector.name
+    ) -> SfumatoResult<ImageGenerationResponse> {
+        let result: Result<ImageGenerationResponse> = async {
+            let body = self.request_body(&request)?;
+            let response = await_operation(
+                operation,
+                stage,
+                self.connector.post("images")?.json(&body).send(),
             )
-        })?;
-        let status = response.status();
-        let text = await_operation(operation, stage, response.text())
             .await
-            .context("Could not read image generation response body")?;
-        if !status.is_success() {
-            bail!(
-                "OpenAI-compatible connector '{}' returned HTTP {}: {}",
-                self.connector.name,
-                status,
-                text
-            );
+            .with_context(|| {
+                format!(
+                    "Could not reach OpenAI-compatible connector '{}' for image generation",
+                    self.connector.name
+                )
+            })?;
+            let status = response.status();
+            let text = await_operation(operation, stage, response.text())
+                .await
+                .context("Could not read image generation response body")?;
+            if !status.is_success() {
+                bail!(
+                    "OpenAI-compatible connector '{}' returned HTTP {}: {}",
+                    self.connector.name,
+                    status,
+                    text
+                );
+            }
+            let parsed: ImageResponse =
+                serde_json::from_str(&text).context("Could not parse image generation response")?;
+            let image = parsed
+                .data
+                .into_iter()
+                .next()
+                .context("Image generation response did not include an image")?;
+            let bytes = STANDARD
+                .decode(&image.b64_json)
+                .context("Image generation response contained invalid base64")?;
+            if bytes.is_empty() {
+                bail!("Image generation response contained an empty image");
+            }
+            Ok(ImageGenerationResponse {
+                bytes,
+                media_type: image.media_type.unwrap_or_else(|| "image/png".to_string()),
+            })
         }
-        let parsed: ImageResponse =
-            serde_json::from_str(&text).context("Could not parse image generation response")?;
-        let image = parsed
-            .data
-            .into_iter()
-            .next()
-            .context("Image generation response did not include an image")?;
-        let bytes = STANDARD
-            .decode(&image.b64_json)
-            .context("Image generation response contained invalid base64")?;
-        if bytes.is_empty() {
-            bail!("Image generation response contained an empty image");
-        }
-        Ok(ImageGenerationResponse {
-            bytes,
-            media_type: image.media_type.unwrap_or_else(|| "image/png".to_string()),
-        })
+        .await;
+        result.map_err(|error| provider_error(error, stage))
     }
+}
+
+fn provider_error(error: anyhow::Error, stage: OperationStage) -> SfumatoError {
+    if let Some(error) = error.downcast_ref::<SfumatoError>() {
+        let mut error = error.clone();
+        if error.stage.is_none() {
+            error.stage = Some(stage);
+        }
+        return error;
+    }
+    if let Some(limit) = error.downcast_ref::<TextGenerationLimitError>() {
+        return SfumatoError::from(limit.clone()).at_stage(stage);
+    }
+
+    let message = format!("{error:#}");
+    let class = if message.contains("Could not reach")
+        || message.contains("HTTP 429")
+        || message.contains("HTTP 500")
+        || message.contains("HTTP 502")
+        || message.contains("HTTP 503")
+        || message.contains("HTTP 504")
+    {
+        ErrorClass::Retry
+    } else {
+        ErrorClass::Permanent
+    };
+    SfumatoError::provider(class, message).at_stage(stage)
 }
 
 #[derive(Debug, Serialize)]

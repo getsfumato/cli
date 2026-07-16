@@ -15,9 +15,16 @@ struct PublicationWorkspace {
 }
 
 impl WorkspaceFileSystem for PublicationWorkspace {
-    fn publish_atomic(&self, source: &Path, destination: &Path) -> anyhow::Result<PathBuf> {
+    fn publish_atomic(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> crate::errors::SfumatoResult<PathBuf> {
         if self.fail_publish {
-            anyhow::bail!("destination is read-only");
+            return Err(crate::errors::SfumatoError::artifact(
+                crate::errors::ErrorClass::Permanent,
+                "destination is read-only",
+            ));
         }
         self.published
             .lock()
@@ -26,42 +33,48 @@ impl WorkspaceFileSystem for PublicationWorkspace {
         Ok(destination.join(source.file_name().unwrap()))
     }
 
-    fn remove_file(&self, path: &Path) -> anyhow::Result<()> {
+    fn remove_file(&self, path: &Path) -> crate::errors::SfumatoResult<()> {
         self.removed.lock().unwrap().push(path.to_path_buf());
         if self.fail_remove {
-            anyhow::bail!("permission denied");
+            return Err(crate::errors::SfumatoError::artifact(
+                crate::errors::ErrorClass::Permanent,
+                "permission denied",
+            ));
         }
         Ok(())
     }
 
-    fn temporary_directory(&self, _: &str) -> anyhow::Result<Box<dyn TemporaryWorkspace>> {
+    fn temporary_directory(
+        &self,
+        _: &str,
+    ) -> crate::errors::SfumatoResult<Box<dyn TemporaryWorkspace>> {
         unreachable!()
     }
-    fn canonicalize(&self, _: &Path) -> anyhow::Result<PathBuf> {
+    fn canonicalize(&self, _: &Path) -> crate::errors::SfumatoResult<PathBuf> {
         unreachable!()
     }
-    fn read_text(&self, _: &Path) -> anyhow::Result<String> {
+    fn read_text(&self, _: &Path) -> crate::errors::SfumatoResult<String> {
         unreachable!()
     }
-    fn create_dir_all(&self, _: &Path) -> anyhow::Result<()> {
+    fn create_dir_all(&self, _: &Path) -> crate::errors::SfumatoResult<()> {
         unreachable!()
     }
-    fn write(&self, _: &Path, _: &[u8]) -> anyhow::Result<()> {
+    fn write(&self, _: &Path, _: &[u8]) -> crate::errors::SfumatoResult<()> {
         unreachable!()
     }
-    fn copy_file(&self, _: &Path, _: &Path) -> anyhow::Result<()> {
+    fn copy_file(&self, _: &Path, _: &Path) -> crate::errors::SfumatoResult<()> {
         unreachable!()
     }
     fn is_file(&self, _: &Path) -> bool {
         unreachable!()
     }
-    fn read_dir(&self, _: &Path) -> anyhow::Result<Vec<WorkspaceEntry>> {
+    fn read_dir(&self, _: &Path) -> crate::errors::SfumatoResult<Vec<WorkspaceEntry>> {
         unreachable!()
     }
-    fn copy_tree(&self, _: &Path, _: &Path, _: &[&str]) -> anyhow::Result<()> {
+    fn copy_tree(&self, _: &Path, _: &Path, _: &[&str]) -> crate::errors::SfumatoResult<()> {
         unreachable!()
     }
-    fn list_files(&self, _: &Path, _: &[&str]) -> anyhow::Result<Vec<PathBuf>> {
+    fn list_files(&self, _: &Path, _: &[&str]) -> crate::errors::SfumatoResult<Vec<PathBuf>> {
         unreachable!()
     }
 }

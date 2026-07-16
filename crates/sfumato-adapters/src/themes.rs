@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use sfumato_core::{
+    errors::{ErrorClass, ErrorCode, SfumatoError, SfumatoResult},
     repositories::ThemeRepository,
     themes::{
         DEFAULT_THEME, THEME_SCHEMA_VERSION, ThemeManifest, ThemePackage, ThemeSummary,
@@ -66,41 +67,62 @@ impl FilesystemThemeRepository {
 }
 
 impl ThemeRepository for FilesystemThemeRepository {
-    fn list(&self) -> Result<Vec<ThemeSummary>> {
-        Ok(self
-            .names()?
-            .into_iter()
-            .map(|name| ThemeSummary { name })
-            .collect())
+    fn list(&self) -> SfumatoResult<Vec<ThemeSummary>> {
+        theme_result((|| {
+            Ok(self
+                .names()?
+                .into_iter()
+                .map(|name| ThemeSummary { name })
+                .collect())
+        })())
     }
 
-    fn load(&self, name: &str) -> Result<ThemePackage> {
-        self.resolve(name)
+    fn load(&self, name: &str) -> SfumatoResult<ThemePackage> {
+        theme_result(self.resolve(name))
     }
 
-    fn create(&self, name: &str) -> Result<ThemePackage> {
-        validate_theme_name(name)?;
-        self.install_default()?;
-        let destination = self.themes_dir.join(name);
-        if destination.exists() {
-            bail!("Theme '{name}' already exists");
+    fn create(&self, name: &str) -> SfumatoResult<ThemePackage> {
+        theme_result((|| {
+            validate_theme_name(name)?;
+            self.install_default()?;
+            let destination = self.themes_dir.join(name);
+            if destination.exists() {
+                bail!("Theme '{name}' already exists");
+            }
+            copy_dir(&self.themes_dir.join(DEFAULT_THEME), &destination)?;
+            let mut manifest: ThemeManifest = read_toml(&destination.join("theme.toml"))?;
+            manifest.name = name.to_string();
+            manifest.description = format!("Custom Sfumato theme: {name}");
+            write_toml(&destination.join("theme.toml"), &manifest)?;
+            rewrite_marp_metadata(&destination.join(&manifest.adapters.marp_css), name)?;
+            self.resolve(name)
+        })())
+    }
+
+    fn install_default(&self) -> SfumatoResult<ThemePackage> {
+        theme_result((|| {
+            let root = self.themes_dir.join(DEFAULT_THEME);
+            if !root.exists() {
+                write_bundled_theme(&root)?;
+            }
+            self.resolve(DEFAULT_THEME)
+        })())
+    }
+}
+
+fn theme_result<T>(result: Result<T>) -> SfumatoResult<T> {
+    result.map_err(|error| {
+        if let Some(error) = error.downcast_ref::<SfumatoError>() {
+            return error.clone();
         }
-        copy_dir(&self.themes_dir.join(DEFAULT_THEME), &destination)?;
-        let mut manifest: ThemeManifest = read_toml(&destination.join("theme.toml"))?;
-        manifest.name = name.to_string();
-        manifest.description = format!("Custom Sfumato theme: {name}");
-        write_toml(&destination.join("theme.toml"), &manifest)?;
-        rewrite_marp_metadata(&destination.join(&manifest.adapters.marp_css), name)?;
-        self.resolve(name)
-    }
-
-    fn install_default(&self) -> Result<ThemePackage> {
-        let root = self.themes_dir.join(DEFAULT_THEME);
-        if !root.exists() {
-            write_bundled_theme(&root)?;
-        }
-        self.resolve(DEFAULT_THEME)
-    }
+        let message = format!("{error:#}");
+        let code = if message.contains("was not found") {
+            ErrorCode::NotFound
+        } else {
+            ErrorCode::Validation
+        };
+        SfumatoError::new(code, ErrorClass::Permanent, message)
+    })
 }
 
 fn validate_manifest(root: &Path, requested_name: &str, manifest: &ThemeManifest) -> Result<()> {

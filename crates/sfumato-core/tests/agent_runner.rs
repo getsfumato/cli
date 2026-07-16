@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
 use sfumato_core::providers::{
@@ -11,7 +10,10 @@ use sfumato_core::providers::{
     TextModel, TextModelRequest, TextModelResponse, ToolCall, ToolCallFunction,
     ToolExecutionRequest, ToolExecutor,
 };
-use sfumato_core::{errors::OperationStage, operation::OperationContext};
+use sfumato_core::{
+    errors::{ErrorClass, ErrorCode, OperationStage, SfumatoResult},
+    operation::OperationContext,
+};
 
 struct ScriptedModel {
     responses: Mutex<VecDeque<TextModelResponse>>,
@@ -25,7 +27,7 @@ impl TextModel for ScriptedModel {
         request: TextModelRequest,
         _operation: &OperationContext,
         _stage: OperationStage,
-    ) -> Result<TextModelResponse> {
+    ) -> SfumatoResult<TextModelResponse> {
         self.requests.lock().unwrap().push(request);
         Ok(self.responses.lock().unwrap().pop_front().unwrap())
     }
@@ -40,7 +42,7 @@ impl ToolExecutor for EchoTool {
         request: ToolExecutionRequest,
         _operation: &OperationContext,
         _stage: OperationStage,
-    ) -> Result<String> {
+    ) -> SfumatoResult<String> {
         Ok(json!({"tool": request.name, "arguments": request.arguments}).to_string())
     }
 }
@@ -161,9 +163,68 @@ async fn cancellation_stops_the_agent_before_a_provider_turn() {
         .await
         .unwrap_err();
 
-    let typed = error
-        .downcast_ref::<sfumato_core::errors::SfumatoError>()
-        .unwrap();
-    assert_eq!(typed.class, sfumato_core::errors::ErrorClass::Cancelled);
+    assert_eq!(error.class, ErrorClass::Cancelled);
     assert!(model.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn contract_turn_rejects_tool_calls_after_tools_are_disabled() {
+    let model = Arc::new(ScriptedModel {
+        responses: Mutex::new(VecDeque::from([
+            TextModelResponse {
+                content: None,
+                tool_calls: vec![call("call-1")],
+            },
+            TextModelResponse {
+                content: None,
+                tool_calls: vec![call("call-2")],
+            },
+        ])),
+        requests: Mutex::new(Vec::new()),
+    });
+    let runner = AgentRunner::new(model.clone());
+    let mut request = TextGenerationRequest::new("system".into(), "user".into());
+    request.max_tool_rounds = 1;
+    request.tool_executor = Some(Arc::new(EchoTool));
+    request.tool_exhausted_prompt = Some("Return the final output now.".to_string());
+
+    let error = runner
+        .generate_text(
+            request,
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::Provider);
+    assert_eq!(error.class, ErrorClass::InvalidOutput);
+    assert!(model.requests.lock().unwrap()[1].tools.is_empty());
+}
+
+#[tokio::test]
+async fn requested_tool_without_executor_is_a_typed_tool_failure() {
+    let model = Arc::new(ScriptedModel {
+        responses: Mutex::new(VecDeque::from([TextModelResponse {
+            content: None,
+            tool_calls: vec![call("call-1")],
+        }])),
+        requests: Mutex::new(Vec::new()),
+    });
+    let runner = AgentRunner::new(model);
+    let mut request = TextGenerationRequest::new("system".into(), "user".into());
+    request.max_tool_rounds = 1;
+
+    let error = runner
+        .generate_text(
+            request,
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::Tool);
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert_eq!(error.stage, Some(OperationStage::Draft));
 }

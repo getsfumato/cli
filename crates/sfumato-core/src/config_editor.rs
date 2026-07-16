@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use crate::errors::SfumatoResult;
 
 /// User-visible configuration scope.
 #[derive(Clone, Copy, Debug)]
@@ -19,7 +19,7 @@ pub trait ConfigEditor: Send + Sync {
         scope: ConfigTarget,
         project: Option<String>,
         key: Option<String>,
-    ) -> Result<String>;
+    ) -> SfumatoResult<String>;
 
     fn set(
         &self,
@@ -27,7 +27,12 @@ pub trait ConfigEditor: Send + Sync {
         project: Option<String>,
         key: &str,
         raw_value: &str,
-    ) -> Result<PathBuf>;
+    ) -> SfumatoResult<PathBuf>;
 
-    fn delete(&self, scope: ConfigTarget, project: Option<String>, key: &str) -> Result<PathBuf>;
+    fn delete(
+        &self,
+        scope: ConfigTarget,
+        project: Option<String>,
+        key: &str,
+    ) -> SfumatoResult<PathBuf>;
 }

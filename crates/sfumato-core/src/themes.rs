@@ -2,11 +2,12 @@
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::sfumato_bail as bail;
 use crate::{
     config::ProjectConfig,
+    errors::SfumatoResult as Result,
     repositories::{ProjectRepository, ThemeRepository},
 };
 
@@ -95,18 +96,18 @@ impl ThemeService {
 
     /// Installs the bundled default package when absent.
     pub fn install_default(&self) -> Result<ThemePackage> {
-        self.repository.install_default()
+        Ok(self.repository.install_default()?)
     }
 
     /// Creates a custom package from the bundled scaffold.
     pub fn create(&self, name: &str) -> Result<ThemePackage> {
         validate_theme_name(name)?;
-        self.repository.create(name)
+        Ok(self.repository.create(name)?)
     }
 
     /// Lists installed packages.
     pub fn list(&self) -> Result<Vec<ThemeSummary>> {
-        self.repository.list()
+        Ok(self.repository.list()?)
     }
 
     /// Lists installed package names.
@@ -132,7 +133,7 @@ impl ThemeService {
     /// Resolves one installed and validated package.
     pub fn resolve(&self, name: &str) -> Result<ThemePackage> {
         validate_theme_name(name)?;
-        self.repository.load(name)
+        Ok(self.repository.load(name)?)
     }
 }
 

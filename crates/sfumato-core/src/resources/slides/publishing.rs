@@ -2,9 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
-
-use crate::filesystem::WorkspaceFileSystem;
+use crate::{
+    errors::{ResultContext as Context, SfumatoResult as Result},
+    filesystem::WorkspaceFileSystem,
+};
 
 /// Result of publishing, or removing a stale copy of, a generated PDF.
 pub(super) struct PdfPublication {

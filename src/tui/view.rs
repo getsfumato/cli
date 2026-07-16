@@ -361,6 +361,7 @@ impl App {
     fn draw_stages(&self, frame: &mut Frame<'_>, area: Rect) {
         let generation_stages = [
             GenerationStage::Draft,
+            GenerationStage::ValidationRepair,
             GenerationStage::SemanticReview,
             GenerationStage::DiagramRepair,
             GenerationStage::LayoutCheck,
@@ -640,6 +641,7 @@ pub(super) fn stage_label(stage: GenerationStage) -> &'static str {
     match stage {
         GenerationStage::Draft => "Draft",
         GenerationStage::Edit => "Content edit",
+        GenerationStage::ValidationRepair => "Structure repair",
         GenerationStage::SemanticReview => "Content review",
         GenerationStage::DiagramRepair => "Diagram repair",
         GenerationStage::LayoutCheck => "Layout check",

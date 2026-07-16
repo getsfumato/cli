@@ -2,11 +2,14 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use anyhow::Result;
 use async_trait::async_trait;
 use serde::Serialize;
 
-use crate::{errors::OperationStage, generation::SlideLayoutIssue, operation::OperationContext};
+use crate::{
+    errors::{OperationStage, SfumatoResult},
+    generation::SlideLayoutIssue,
+    operation::OperationContext,
+};
 
 /// Semantic Mermaid styling derived from a Sfumato theme.
 #[derive(Clone, Debug, Serialize)]
@@ -37,7 +40,7 @@ pub trait DiagramRenderer: Send + Sync {
         theme: &MermaidThemeConfig,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<String>;
+    ) -> SfumatoResult<String>;
 }
 
 /// Port for Marp PDF rendering and browser-backed layout inspection.
@@ -51,7 +54,7 @@ pub trait SlideRenderer: Send + Sync {
         pdf_path: &Path,
         browser_path: Option<&Path>,
         operation: &OperationContext,
-    ) -> Result<()>;
+    ) -> SfumatoResult<()>;
 
     /// Measures horizontal and vertical overflow in a themed Marp deck.
     async fn inspect_layout(
@@ -61,5 +64,5 @@ pub trait SlideRenderer: Send + Sync {
         html_path: &Path,
         browser_path: Option<&Path>,
         operation: &OperationContext,
-    ) -> Result<Vec<SlideLayoutIssue>>;
+    ) -> SfumatoResult<Vec<SlideLayoutIssue>>;
 }

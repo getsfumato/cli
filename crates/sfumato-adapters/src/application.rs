@@ -9,6 +9,7 @@ use sfumato_core::{
         SfumatoApplicationDependencies,
     },
     config::{ConfigOverrides, EffectiveConfig},
+    errors::{SfumatoError, SfumatoResult},
     prompts::PromptCatalog,
     repositories::{GlobalConfigRepository, ProjectRepository},
 };
@@ -45,7 +46,7 @@ impl FilesystemConfigResolver {
 }
 
 impl EffectiveConfigResolver for FilesystemConfigResolver {
-    fn resolve(&self, overrides: ConfigOverrides) -> Result<EffectiveConfig> {
+    fn resolve(&self, overrides: ConfigOverrides) -> SfumatoResult<EffectiveConfig> {
         let global = self.global.load()?;
         let registry = self.projects.registry()?;
         let (selected_name, project_root) = registry.selected(overrides.project.as_deref())?;
@@ -59,8 +60,10 @@ impl EffectiveConfigResolver for FilesystemConfigResolver {
 pub struct LayeredPromptCatalogFactory;
 
 impl PromptCatalogFactory for LayeredPromptCatalogFactory {
-    fn for_project(&self, project_root: &Path) -> Result<Arc<dyn PromptCatalog>> {
-        Ok(Arc::new(LayeredPromptCatalog::for_project(project_root)?))
+    fn for_project(&self, project_root: &Path) -> SfumatoResult<Arc<dyn PromptCatalog>> {
+        LayeredPromptCatalog::for_project(project_root)
+            .map(|catalog| Arc::new(catalog) as Arc<dyn PromptCatalog>)
+            .map_err(|error| SfumatoError::config(format_args!("{error:#}")))
     }
 }
 

@@ -1,24 +1,14 @@
 # Sfumato v0.2 Architecture
 
-**Status:** v0.2 implementation reference.
+**Status:** implemented v0.2 reference.
 
-This directory documents the v0.2 workspace and records remaining boundary work
-explicitly in the traceability table.
+Sfumato separates pure resource rules, application orchestration, infrastructure,
+and terminal presentation. The diagrams and references in this directory map to
+the current Rust workspace rather than a future target.
 
-## Status Vocabulary
+## Workspace Shape
 
-| Label | Meaning |
-| --- | --- |
-| Implemented | Present in the v0.2 workspace with verification. |
-| In flight | Present but not yet routed through every public workflow. |
-| Proposed | Required by the approved v0.2 target and not yet integrated. |
-| Mixed | Existing behavior is retained behind a proposed boundary. |
-
-A row is implemented only when both its behavior and named verification exist.
-
-## Target Shape
-
-Dependencies point inward through the v0.2 workspace crates:
+Dependencies point inward:
 
 ```text
 sfumato presentation/composition -> sfumato-core application/ports -> sfumato-domain
@@ -27,50 +17,68 @@ sfumato presentation/composition -> sfumato-core application/ports -> sfumato-do
          sfumato-adapters ------------------+
 ```
 
-- **`sfumato-domain`** owns resource models, validated identifiers, manifests,
-  review invariants, and domain failures. It has no I/O or async runtime.
-- **`sfumato-core`** owns use cases and caller-owned ports, including prompt
-  catalog contracts, provider contracts, cancellation, and transaction decisions.
-- **`sfumato-adapters`** currently implements prompt templates,
-  OpenAI-compatible HTTP, and transactional artifact storage. Renderer and
-  configuration adapter extraction remains tracked work.
-- **`sfumato`** is the presentation and composition crate. It wires concrete
-  adapters and maps shared application DTOs to CLI, TUI, and JSON output.
+- **`sfumato-domain`** owns validated identifiers, capabilities, secret
+  references, deck parsing, review invariants, revisions, and artifact manifests.
+  It has no filesystem, HTTP, process, async-runtime, or terminal dependency.
+- **`sfumato-core`** owns `SfumatoApplication`, use cases, provider-neutral agent
+  execution, typed errors, cancellation, prompt contracts, repository ports, and
+  generation/edit decisions. It has no `anyhow`, Clap, Ratatui, Inquire,
+  Indicatif, Reqwest, or process dependency.
+- **`sfumato-adapters`** implements schema-v4 TOML persistence, layered
+  MiniJinja prompts, filesystem repositories, OpenAI-compatible transports,
+  source/tools, Marp, Mermaid, browser inspection, and artifact transactions.
+- **`sfumato`** is the composition and presentation package. CLI and TUI both
+  receive one production `SfumatoApplication` and translate typed DTOs/events to
+  human or JSON output.
 
-The crate dependency direction is enforced by Cargo workspace dependencies.
+Cargo workspace dependencies enforce this direction.
 
 ## Views
 
-- [Containers](containers.mmd): runtime boundaries and dependency direction.
-- [Domain model](domain-model.mmd): requests, documents, prompts, errors, and artifacts.
-- [Prompt resolution](prompt-resolution.mmd): deterministic layered template lookup and provenance.
-- [Generation sequence](generation-sequence.mmd): complete generation lifecycle.
-- [Edit sequence](edit-sequence.mmd): guarded content-only deck editing.
-- [Config lifecycle](config-lifecycle.mmd): strict v4 load, merge, and atomic mutation.
-- [Artifact transaction](artifact-transaction.mmd): staging, immutable commit, and publish.
-- [Traceability](traceability.md): requirements mapped to decisions and verification.
+- [Containers](containers.mmd): crate, frontend, port, and adapter boundaries.
+- [Domain model](domain-model.mmd): projects, models, decks, prompts, errors, and artifacts.
+- [Prompt resolution](prompt-resolution.mmd): project/user/bundled precedence and provenance.
+- [Generation sequence](generation-sequence.mmd): draft, repair, review, render, commit, and publish.
+- [Edit sequence](edit-sequence.mmd): revision-guarded content-only editing.
+- [Config lifecycle](config-lifecycle.mmd): strict v4 reads and atomic revision-aware writes.
+- [Artifact transaction](artifact-transaction.mmd): staging, validation, immutable commit, and publication.
+- [Traceability](traceability.md): requirements mapped to code and executable evidence.
 
-## Decisions And Contracts
+The [class diagram](../class-diagram.mmd) contains concrete Rust types and trait
+relationships. Accepted architectural decisions live under [`docs/adr`](../adr/),
+and operator/integrator contracts under [`docs/reference`](../reference/).
 
-The accepted decisions are in [`docs/adr`](../adr/). Operator and integrator
-contracts are in [`docs/reference`](../reference/). The
-[class diagram](../class-diagram.mmd) maps to concrete Rust types and ports.
-
-## Non-Negotiable Invariants
+## Invariants
 
 1. Domain and application behavior do not depend on terminal, HTTP, process, or
    filesystem implementations.
-2. Prompt templates may be overridden, but code-owned validation, patch policy,
-   path containment, and artifact rules cannot be overridden by prompt text.
-3. A cancellation observed before commit leaves no new final artifacts; a
-   cancellation observed after commit returns the committed manifest.
-4. Editing preserves title slide, frontmatter, deck title, slide IDs, and order.
-5. One immutable revision is committed by renaming its staging directory; the
-   `current.json` pointer changes only after revision validation.
-6. Public callers receive typed errors and stable result DTOs, not adapter errors
-   or internal orchestration types.
+2. Prompt text may change pedagogy, but cannot change validators, patch policy,
+   retry limits, path containment, tool policy, or artifact rules.
+3. Every core exit is a classified `SfumatoError` with stable code, class,
+   retryability, optional stage, sanitized message, and structured details.
+4. Cancellation and deadlines are checked between provider turns, tool calls,
+   renderers, retries, and artifact stages. Child processes are terminated by
+   adapter runtime guards.
+5. Review and edit changes are RFC 6902 patches guarded by document and slide
+   revisions. Editing cannot replace frontmatter, title, IDs, or slide order.
+6. Generation writes only to transaction staging. A revision becomes visible
+   after manifest validation and atomic commit; `current.json` changes last.
+7. Publication happens after commit. Publication failure is a warning and a run
+   without a PDF removes any stale published PDF.
+8. Prompt provenance records ID, origin, manifest version, and SHA-256 source
+   hash in the generation result and committed manifest metadata.
 
-## Integration Gate
+## Verification Gate
 
-Boundary cleanup is complete when every mixed or proposed traceability row has
-an implementation reference and its required verification passes.
+The implementation is accepted only when all of these commands pass:
+
+```text
+cargo fmt --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
+cargo doc --workspace --no-deps
+```
+
+Production renderer and network checks remain explicit end-to-end verification,
+not prerequisites for deterministic unit tests.

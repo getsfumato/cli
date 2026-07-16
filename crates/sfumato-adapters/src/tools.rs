@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sfumato_core::{
-    errors::OperationStage,
+    errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::OperationContext,
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
@@ -145,9 +145,9 @@ impl ToolExecutor for FilesystemToolExecutor {
         request: ToolExecutionRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<String> {
+    ) -> SfumatoResult<String> {
         operation.checkpoint(stage)?;
-        match request.name.as_str() {
+        let result: Result<String> = (|| match request.name.as_str() {
             "sfumato_list_directory" => {
                 let path = string_arg(&request.arguments, "path")?;
                 self.list_directory(&path)
@@ -157,7 +157,8 @@ impl ToolExecutor for FilesystemToolExecutor {
                 self.read_file(&path)
             }
             _ => bail!("Unknown Sfumato tool '{}'", request.name),
-        }
+        })();
+        result.map_err(|error| tool_error(error, stage))
     }
 }
 
@@ -261,68 +262,89 @@ impl ToolExecutor for GenerationToolExecutor {
         request: ToolExecutionRequest,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<String> {
+    ) -> SfumatoResult<String> {
         if request.name == "sfumato_image_gen" {
             return self
                 .image
                 .as_ref()
-                .context("No image model is configured for this project")?
+                .ok_or_else(|| {
+                    SfumatoError::tool(
+                        ErrorClass::Permanent,
+                        "No image model is configured for this project",
+                    )
+                    .at_stage(stage)
+                })?
                 .execute(&request.arguments, operation, stage)
-                .await;
+                .await
+                .map_err(|error| tool_error(error, stage));
         }
         self.filesystem.execute(request, operation, stage).await
     }
 }
 
-impl GenerationToolFactory for FilesystemGenerationToolFactory {
-    fn create(&self, request: GenerationToolsRequest) -> Result<ToolSet> {
-        let GenerationToolsRequest {
-            project_root,
-            sources,
-            image,
-            prompt_catalog,
-        } = request;
-        let mut roots = vec![project_root];
-        for source in sources {
-            if source.is_file() {
-                if let Some(parent) = source.parent() {
-                    roots.push(parent.to_path_buf());
-                }
-            } else {
-                roots.push(source);
-            }
+fn tool_error(error: anyhow::Error, stage: OperationStage) -> SfumatoError {
+    if let Some(error) = error.downcast_ref::<SfumatoError>() {
+        let mut error = error.clone();
+        if error.stage.is_none() {
+            error.stage = Some(stage);
         }
+        return error;
+    }
+    SfumatoError::tool(ErrorClass::Permanent, format_args!("{error:#}")).at_stage(stage)
+}
 
-        let artifacts = Arc::new(Mutex::new(Vec::new()));
-        let rendered_descriptions = prompt_catalog.render(PromptRenderRequest {
-            id: PromptId::ToolsGenerationDescriptions,
-            variables: PromptVariables::default(),
-        })?;
-        let descriptions: ToolDescriptions = serde_json::from_str(&rendered_descriptions.text)
-            .context("Generation tool description prompt must render a JSON object")?;
-        let prompts = Arc::new(Mutex::new(vec![rendered_descriptions.provenance]));
-        let mut definitions = vec![
-            list_directory_tool(&descriptions),
-            read_file_tool(&descriptions),
-        ];
-        let image = image.map(|config| {
-            definitions.push(image_generation_tool(&descriptions));
-            ImageGenerationTool {
-                config,
-                prompt_catalog: prompt_catalog.clone(),
-                artifacts: artifacts.clone(),
-                prompts: prompts.clone(),
-            }
-        });
-        Ok(ToolSet {
-            definitions,
-            executor: Arc::new(GenerationToolExecutor {
-                filesystem: FilesystemToolExecutor::new(roots)?,
+impl GenerationToolFactory for FilesystemGenerationToolFactory {
+    fn create(&self, request: GenerationToolsRequest) -> SfumatoResult<ToolSet> {
+        let result: Result<ToolSet> = (|| {
+            let GenerationToolsRequest {
+                project_root,
+                sources,
                 image,
-            }),
-            artifacts,
-            prompts,
-        })
+                prompt_catalog,
+            } = request;
+            let mut roots = vec![project_root];
+            for source in sources {
+                if source.is_file() {
+                    if let Some(parent) = source.parent() {
+                        roots.push(parent.to_path_buf());
+                    }
+                } else {
+                    roots.push(source);
+                }
+            }
+
+            let artifacts = Arc::new(Mutex::new(Vec::new()));
+            let rendered_descriptions = prompt_catalog.render(PromptRenderRequest {
+                id: PromptId::ToolsGenerationDescriptions,
+                variables: PromptVariables::default(),
+            })?;
+            let descriptions: ToolDescriptions = serde_json::from_str(&rendered_descriptions.text)
+                .context("Generation tool description prompt must render a JSON object")?;
+            let prompts = Arc::new(Mutex::new(vec![rendered_descriptions.provenance]));
+            let mut definitions = vec![
+                list_directory_tool(&descriptions),
+                read_file_tool(&descriptions),
+            ];
+            let image = image.map(|config| {
+                definitions.push(image_generation_tool(&descriptions));
+                ImageGenerationTool {
+                    config,
+                    prompt_catalog: prompt_catalog.clone(),
+                    artifacts: artifacts.clone(),
+                    prompts: prompts.clone(),
+                }
+            });
+            Ok(ToolSet {
+                definitions,
+                executor: Arc::new(GenerationToolExecutor {
+                    filesystem: FilesystemToolExecutor::new(roots)?,
+                    image,
+                }),
+                artifacts,
+                prompts,
+            })
+        })();
+        result.map_err(|error| SfumatoError::tool(ErrorClass::Permanent, format_args!("{error:#}")))
     }
 }
 

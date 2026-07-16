@@ -5,9 +5,9 @@ use std::{
 
 use crate::{
     config::GlobalConfig,
+    errors::SfumatoResult as Result,
     repositories::{GlobalConfigRepository, ThemeRepository},
 };
-use anyhow::Result;
 
 #[derive(Clone, Debug)]
 pub struct UserSetupRequest {

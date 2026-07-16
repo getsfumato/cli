@@ -5,9 +5,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
-
 use crate::{
+    errors::{SfumatoError, SfumatoResult},
     prompts::{PromptCatalog, PromptProvenance},
     providers::{ImageGenerationProvider, ToolDefinition, ToolExecutor},
     themes::ThemePackage,
@@ -28,19 +27,19 @@ pub struct ToolSet {
 
 impl ToolSet {
     /// Returns paths created by tools during this operation.
-    pub fn generated_artifacts(&self) -> Result<Vec<PathBuf>> {
+    pub fn generated_artifacts(&self) -> SfumatoResult<Vec<PathBuf>> {
         self.artifacts
             .lock()
             .map(|artifacts| artifacts.clone())
-            .map_err(|_| anyhow::anyhow!("Generated artifact registry is unavailable"))
+            .map_err(|_| SfumatoError::internal("Generated artifact registry is unavailable"))
     }
 
     /// Returns prompt provenance recorded by prompt-backed tools.
-    pub fn generated_prompts(&self) -> Result<Vec<PromptProvenance>> {
+    pub fn generated_prompts(&self) -> SfumatoResult<Vec<PromptProvenance>> {
         self.prompts
             .lock()
             .map(|prompts| prompts.clone())
-            .map_err(|_| anyhow::anyhow!("Generated prompt registry is unavailable"))
+            .map_err(|_| SfumatoError::internal("Generated prompt registry is unavailable"))
     }
 }
 
@@ -73,5 +72,5 @@ pub struct GenerationToolsRequest {
 /// Builds operation-scoped tools without exposing infrastructure to workflows.
 pub trait GenerationToolFactory: Send + Sync {
     /// Creates validated tool definitions and their sandboxed executor.
-    fn create(&self, request: GenerationToolsRequest) -> Result<ToolSet>;
+    fn create(&self, request: GenerationToolsRequest) -> SfumatoResult<ToolSet>;
 }

@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Serialize;
 use sfumato_core::{
-    errors::OperationStage,
+    errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::OperationContext,
     renderers::{DiagramRenderer, MermaidThemeConfig},
 };
@@ -28,48 +28,69 @@ impl DiagramRenderer for MermaidCliRenderer {
         theme: &MermaidThemeConfig,
         operation: &OperationContext,
         stage: OperationStage,
-    ) -> Result<String> {
-        let puppeteer_config = write_puppeteer_config(output_path)?;
-        let mermaid_config = write_mermaid_config(output_path, theme)?;
-        let mut command = Command::new("mmdc");
-        command.args(mermaid_cli_args(
-            input_path,
-            output_path,
-            puppeteer_config.as_deref(),
-            Some(&mermaid_config),
-        ));
-        let output = run_command(&mut command, operation, stage).await;
-        remove_config(puppeteer_config.as_deref());
-        remove_config(Some(&mermaid_config));
+    ) -> SfumatoResult<String> {
+        let result: Result<String> = async {
+            let puppeteer_config = write_puppeteer_config(output_path)?;
+            let mermaid_config = write_mermaid_config(output_path, theme)?;
+            let mut command = Command::new("mmdc");
+            command.args(mermaid_cli_args(
+                input_path,
+                output_path,
+                puppeteer_config.as_deref(),
+                Some(&mermaid_config),
+            ));
+            let output = run_command(&mut command, operation, stage).await;
+            remove_config(puppeteer_config.as_deref());
+            remove_config(Some(&mermaid_config));
 
-        let output = match output {
-            Ok(output) => output,
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
+            let output = match output {
+                Ok(output) => output,
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    bail!(
+                        "Mermaid CLI is not installed. Install @mermaid-js/mermaid-cli to render Mermaid diagrams."
+                    );
+                }
+                Err(error) => return Err(error).context("Could not run Mermaid CLI"),
+            };
+            if !output.status.success() {
                 bail!(
-                    "Mermaid CLI is not installed. Install @mermaid-js/mermaid-cli to render Mermaid diagrams."
+                    "Mermaid CLI exited with status {}{}{}",
+                    output.status,
+                    format_stream("stdout", String::from_utf8_lossy(&output.stdout).trim()),
+                    format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
                 );
             }
-            Err(error) => return Err(error).context("Could not run Mermaid CLI"),
-        };
-        if !output.status.success() {
-            bail!(
-                "Mermaid CLI exited with status {}{}{}",
-                output.status,
-                format_stream("stdout", String::from_utf8_lossy(&output.stdout).trim()),
-                format_stream("stderr", String::from_utf8_lossy(&output.stderr).trim())
-            );
-        }
 
-        let svg = std::fs::read_to_string(output_path).with_context(|| {
-            format!("Could not read rendered diagram {}", output_path.display())
-        })?;
-        validate_svg(&svg)?;
-        Ok(svg)
+            let svg = std::fs::read_to_string(output_path).with_context(|| {
+                format!("Could not read rendered diagram {}", output_path.display())
+            })?;
+            validate_svg(&svg)?;
+            Ok(svg)
+        }
+        .await;
+        result.map_err(|error| render_error(error, stage))
     }
+}
+
+fn render_error(error: anyhow::Error, stage: OperationStage) -> SfumatoError {
+    if let Some(error) = error.downcast_ref::<SfumatoError>() {
+        let mut error = error.clone();
+        if error.stage.is_none() {
+            error.stage = Some(stage);
+        }
+        return error;
+    }
+    let message = format!("{error:#}");
+    let class = if message.contains("is not installed") {
+        ErrorClass::Unavailable
+    } else {
+        ErrorClass::Permanent
+    };
+    SfumatoError::render(class, message).at_stage(stage)
 }
 
 fn validate_svg(svg: &str) -> Result<()> {

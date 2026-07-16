@@ -154,12 +154,21 @@ pub(super) fn request_chars(request: &TextGenerationRequest) -> usize {
     request.system_prompt.chars().count() + request.user_prompt.chars().count()
 }
 
-pub(super) fn generation_limit(error: &anyhow::Error) -> Option<&TextGenerationLimitError> {
-    error.downcast_ref::<TextGenerationLimitError>()
+pub(super) fn generation_limit(
+    error: &crate::errors::SfumatoError,
+) -> Option<&crate::errors::SfumatoError> {
+    matches!(
+        error.class,
+        crate::errors::ErrorClass::ContextLimit | crate::errors::ErrorClass::InvalidOutput
+    )
+    .then_some(error)
 }
 
-pub(super) fn compact_retry_failed(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<CompactRetryError>().is_some()
+pub(super) fn compact_retry_failed(error: &SfumatoError) -> bool {
+    error
+        .details
+        .get("compact_retry_failed")
+        .is_some_and(|value| value == "true")
 }
 
 pub(super) fn excerpt(content: &str, max_chars: usize) -> String {

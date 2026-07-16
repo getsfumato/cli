@@ -17,6 +17,11 @@ pub(super) const TITLE_REPAIR_PROMPTS: PromptPair = PromptPair {
     user: PromptId::SlidesTitleRepairUser,
     tool_exhausted: PromptId::SlidesDraftToolExhaustedUser,
 };
+pub(super) const VALIDATION_REPAIR_PROMPTS: PromptPair = PromptPair {
+    system: PromptId::SlidesValidationRepairSystem,
+    user: PromptId::SlidesValidationRepairUser,
+    tool_exhausted: PromptId::SlidesDraftToolExhaustedUser,
+};
 pub(super) const REVIEW_PROMPTS: PromptPair = PromptPair {
     system: PromptId::SlidesReviewSystem,
     user: PromptId::SlidesReviewUser,
@@ -59,6 +64,7 @@ pub(super) struct SlidePromptContext {
     pub(super) source_bundle: String,
     pub(super) tools: Vec<GenerationToolSummary>,
     pub(super) deck_snapshot: String,
+    pub(super) draft_markdown: String,
     pub(super) diagram_error: String,
     pub(super) validation_error: String,
     pub(super) headings: String,
@@ -249,6 +255,33 @@ pub(super) fn build_title_repair_request(
         ..Default::default()
     };
     render_prompt_request(catalog, TITLE_REPAIR_PROMPTS, &context)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_validation_repair_request(
+    catalog: &dyn PromptCatalog,
+    config: &EffectiveConfig,
+    theme: &ThemePackage,
+    instruction: &str,
+    title: &str,
+    draft: &str,
+    validation_error: &str,
+    project_instructions: &str,
+) -> Result<TextGenerationRequest> {
+    let context = SlidePromptContext {
+        project: config.project_name.clone(),
+        instruction: instruction.to_string(),
+        title: title.to_string(),
+        theme_name: theme.manifest.name.clone(),
+        theme_colors: format_tokens(&theme.manifest.tokens.colors),
+        theme_fonts: format_tokens(&theme.manifest.tokens.fonts),
+        project_instructions: excerpt(project_instructions, 4_000),
+        draft_markdown: excerpt(draft, 80_000),
+        validation_error: excerpt(validation_error, 6_000),
+        max_tool_rounds: 0,
+        ..Default::default()
+    };
+    render_prompt_request(catalog, VALIDATION_REPAIR_PROMPTS, &context)
 }
 
 pub(super) fn build_review_request(
