@@ -20,6 +20,7 @@ fn effective_config() -> EffectiveConfig {
         models: global.models,
         model_defaults: global.defaults.0,
         model_roles: global.model_roles,
+        plugins: Vec::new(),
         marp: global.marp,
     }
 }

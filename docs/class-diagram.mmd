@@ -116,6 +116,12 @@ classDiagram
             <<trait>>
             +list() PagePluginSummary
             +load(id) PagePluginPackage
+            +install(package) PagePluginPackage
+        }
+        class PagePluginSource {
+            <<trait>>
+            +registry(operation) PagePluginRegistry
+            +download(plugin, release, operation) DownloadedPagePluginPackage
         }
         class GenerationTemplateCatalog {
             <<trait>>
@@ -167,7 +173,8 @@ classDiagram
         class MarpCliRenderer
         class StandalonePageAssembler
         class ChromiumPageInspector
-        class BundledPagePluginCatalog
+        class FilesystemPagePluginCatalog
+        class CdnPagePluginSource
         class FilesystemGenerationTemplateCatalog
         class FilesystemProjectAssetCatalog
         class FilesystemArtifactStore
@@ -200,6 +207,7 @@ classDiagram
     PageAssembler --> AssembledPage
     SfumatoApplication --> PageInspector
     SfumatoApplication --> PagePluginCatalog
+    SfumatoApplication --> PagePluginSource
     SfumatoApplication --> GenerationTemplateCatalog
     SfumatoApplication --> ProjectAssetCatalog
     SfumatoApplication --> ArtifactStore
@@ -226,7 +234,8 @@ classDiagram
     MarpCliRenderer ..|> SlideRenderer
     StandalonePageAssembler ..|> PageAssembler
     ChromiumPageInspector ..|> PageInspector
-    BundledPagePluginCatalog ..|> PagePluginCatalog
+    FilesystemPagePluginCatalog ..|> PagePluginCatalog
+    CdnPagePluginSource ..|> PagePluginSource
     FilesystemGenerationTemplateCatalog ..|> GenerationTemplateCatalog
     FilesystemProjectAssetCatalog ..|> ProjectAssetCatalog
     FilesystemArtifactStore ..|> ArtifactStore

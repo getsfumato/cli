@@ -59,7 +59,8 @@ Tests do not mock private call graphs.
 - Project artifact integrity, passive SVG policy, revision staging, and model
   reference paths.
 - DESIGN.md token round trips and generated renderer adapters.
-- UI plugin dependency order and offline React component mounting.
+- CDN recipe validation, versioned installation, dependency order, and
+  feature-gated offline React component mounting.
 
 ### Cancellation and deadlines
 

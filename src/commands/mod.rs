@@ -165,26 +165,92 @@ fn template_kind(kind: TemplateKindArg) -> TemplateKind {
 impl RunnableCommand for PluginCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         match self {
-            Self::List => {
-                for plugin in application.list_page_plugins()? {
+            Self::List(args) => {
+                for status in application
+                    .list_page_plugins(args.project.as_deref(), &OperationContext::detached())
+                    .await?
+                {
+                    let installed = status
+                        .installed_version
+                        .as_deref()
+                        .unwrap_or("not installed");
+                    let enabled = if status.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
                     println!(
-                        "{}\t{}\t{}\t{}",
-                        plugin.id, plugin.name, plugin.version, plugin.runtime_hash
+                        "{}\t{}\tlatest {}\t{}\t{}",
+                        status.plugin.id,
+                        status.plugin.name,
+                        status.plugin.latest_version,
+                        installed,
+                        enabled,
                     );
                 }
                 Ok(())
             }
             Self::Show(args) => {
-                let plugin = application.show_page_plugin(&args.id)?;
+                let status = application
+                    .show_page_plugin_status(&args.id, None, &OperationContext::detached())
+                    .await?;
                 println!(
-                    "{} {}\nID: {}\nAPI: {}\nSHA-256: {}\nLicense: {}\n\n{}",
-                    plugin.summary.name,
-                    plugin.summary.version,
-                    plugin.summary.id,
-                    plugin.summary.api_global,
-                    plugin.summary.runtime_hash,
-                    plugin.summary.license,
-                    plugin.guidance,
+                    "{}\nID: {}\nLatest: {}\nInstalled: {}\nEnabled: {}\n\n{}",
+                    status.plugin.name,
+                    status.plugin.id,
+                    status.plugin.latest_version,
+                    status.installed_version.as_deref().unwrap_or("no"),
+                    if status.enabled { "yes" } else { "no" },
+                    status.plugin.description,
+                );
+                if let Ok(plugin) = application.show_page_plugin(&args.id) {
+                    println!(
+                        "\nAPI: {}\nSHA-256: {}\nLicense: {}\n\n{}",
+                        plugin.summary.api_global,
+                        plugin.summary.runtime_hash,
+                        plugin.summary.license,
+                        plugin.guidance,
+                    );
+                } else {
+                    println!(
+                        "\nInstall with: sfumato plugin install {}",
+                        status.plugin.id
+                    );
+                }
+                Ok(())
+            }
+            Self::Install(args) => {
+                let result = application
+                    .install_page_plugin(
+                        &args.id,
+                        args.version.as_deref(),
+                        &OperationContext::detached(),
+                    )
+                    .await?;
+                for package in result.packages {
+                    println!("Installed {} {}", package.id, package.version);
+                }
+                Ok(())
+            }
+            Self::Update(args) => {
+                let result = application
+                    .update_page_plugin(&args.id, &OperationContext::detached())
+                    .await?;
+                for package in result.packages {
+                    println!("Updated {} to {}", package.id, package.version);
+                }
+                Ok(())
+            }
+            Self::Enable(args) => {
+                let changed = application.enable_page_plugin(&args.id, args.project.as_deref())?;
+                println!("Enabled {} for project {}", changed.plugin, changed.project);
+                Ok(())
+            }
+            Self::Disable(args) => {
+                let changed = application.disable_page_plugin(&args.id, args.project.as_deref())?;
+                println!(
+                    "Disabled {} for project {}",
+                    changed.plugin, changed.project
                 );
                 Ok(())
             }
@@ -643,6 +709,10 @@ pub(crate) async fn execute_page(
         project: args.project,
         model_overrides,
     };
+    let mut plugins = args.plugins;
+    if args.shadcn {
+        plugins.push("shadcn".to_string());
+    }
     Ok(application
         .generate_page(GeneratePageCommand {
             operation,
@@ -650,7 +720,7 @@ pub(crate) async fn execute_page(
             request,
             title: args.title,
             template: args.template,
-            plugins: args.plugins,
+            plugins,
             dry_run: args.dry_run,
             review: !args.no_review,
             event_sink,

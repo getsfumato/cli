@@ -122,6 +122,7 @@ fn project(name: &str) -> ProjectConfig {
         publish_dir: None,
         model_defaults: Default::default(),
         model_roles: Default::default(),
+        plugins: Vec::new(),
         marp: None,
     }
 }

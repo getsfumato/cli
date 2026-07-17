@@ -88,6 +88,7 @@ fn parses_page_plugins_and_dedicated_generation_options() {
         "threejs",
         "--plugin",
         "motion",
+        "--shadcn",
         "--theme",
         "gruvbox",
         "--model",
@@ -103,6 +104,7 @@ fn parses_page_plugins_and_dedicated_generation_options() {
     };
     assert_eq!(args.inputs, vec![PathBuf::from("notes")]);
     assert_eq!(args.plugins, vec!["threejs", "motion"]);
+    assert!(args.shadcn);
     assert_eq!(args.theme.as_deref(), Some("gruvbox"));
     assert_eq!(args.model_overrides, vec!["text=cloud-draft"]);
 }
@@ -117,6 +119,64 @@ fn parses_page_plugin_discovery() {
         panic!("expected plugin show command");
     };
     assert_eq!(args.id, "threejs");
+}
+
+#[test]
+fn parses_plugin_install_update_and_project_enablement() {
+    let install = Cli::try_parse_from([
+        "sfumato",
+        "plugin",
+        "install",
+        "shadcn",
+        "--version",
+        "0.1.0",
+    ])
+    .unwrap();
+    let Some(Commands::Plugin {
+        command: PluginCommands::Install(args),
+    }) = install.command
+    else {
+        panic!("expected plugin install command");
+    };
+    assert_eq!(args.id, "shadcn");
+    assert_eq!(args.version.as_deref(), Some("0.1.0"));
+
+    let enable = Cli::try_parse_from([
+        "sfumato",
+        "plugin",
+        "enable",
+        "shadcn",
+        "--project",
+        "university",
+    ])
+    .unwrap();
+    let Some(Commands::Plugin {
+        command: PluginCommands::Enable(args),
+    }) = enable.command
+    else {
+        panic!("expected plugin enable command");
+    };
+    assert_eq!(args.project.as_deref(), Some("university"));
+}
+
+#[test]
+fn pages_alias_selects_the_page_generator() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "pages",
+        "--instruction",
+        "Explain Fourier series",
+        "--shadcn",
+    ])
+    .unwrap();
+    let Some(Commands::Generate {
+        command: GenerateCommands::Page(args),
+    }) = cli.command
+    else {
+        panic!("expected page generator");
+    };
+    assert!(args.shadcn);
 }
 
 #[test]

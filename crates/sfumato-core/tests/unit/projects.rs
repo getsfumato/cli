@@ -75,6 +75,7 @@ impl ProjectRepository for MemoryProjects {
             publish_dir: None,
             model_defaults: Default::default(),
             model_roles: Default::default(),
+            plugins: Vec::new(),
             marp: None,
         };
         projects.insert(name.clone(), (path, project.clone()));

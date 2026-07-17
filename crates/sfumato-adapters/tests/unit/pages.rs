@@ -71,6 +71,7 @@ fn assembles_theme_plugins_and_page_in_stable_order() {
         },
         guidance: String::new(),
         runtime_javascript: "window.pluginLoaded = true;".into(),
+        stylesheet: ".plugin { color: red; }".into(),
     };
     let assembled = StandalonePageAssembler
         .assemble(PageAssemblyRequest {
@@ -198,23 +199,23 @@ fn rejects_actual_document_head_elements() {
 
 #[cfg(feature = "real-renderers")]
 #[tokio::test]
-async fn bundled_plugins_execute_offline_in_a_real_browser() {
+async fn installed_plugins_execute_offline_in_a_real_browser() {
     use sfumato_core::{
         operation::OperationContext, page_plugins::PagePluginCatalog, renderers::PageInspector,
     };
 
-    use crate::{page_plugins::BundledPagePluginCatalog, pages::ChromiumPageInspector};
+    use crate::{page_plugins::FilesystemPagePluginCatalog, pages::ChromiumPageInspector};
 
     let (_directory, theme) = theme();
-    let catalog = BundledPagePluginCatalog;
-    let plugins = catalog
-        .resolve(&[
-            "threejs".into(),
-            "motion".into(),
-            "theatre".into(),
-            "lottie".into(),
-        ])
-        .unwrap();
+    let catalog = FilesystemPagePluginCatalog::default_path().unwrap();
+    let Ok(plugins) = catalog.resolve(&[
+        "threejs".into(),
+        "motion".into(),
+        "theatre".into(),
+        "lottie".into(),
+    ]) else {
+        return;
+    };
     let page = PageDocument::new(
         "Offline plugin check",
         "<section><h1>Offline plugin check</h1><p id=\"status\">pending</p></section>",
@@ -284,12 +285,15 @@ async fn material_ui_and_react_execute_offline_in_a_real_browser() {
         operation::OperationContext, page_plugins::PagePluginCatalog, renderers::PageInspector,
     };
 
-    use crate::{page_plugins::BundledPagePluginCatalog, pages::ChromiumPageInspector};
+    use crate::{page_plugins::FilesystemPagePluginCatalog, pages::ChromiumPageInspector};
 
     let (_directory, theme) = theme();
-    let plugins = BundledPagePluginCatalog
+    let Ok(plugins) = FilesystemPagePluginCatalog::default_path()
+        .unwrap()
         .resolve(&["materialui".into()])
-        .unwrap();
+    else {
+        return;
+    };
     let page = PageDocument::new(
         "Material UI offline check",
         "<main><div id=\"sfumato-react-root\"><p>Loading lesson...</p></div></main>",

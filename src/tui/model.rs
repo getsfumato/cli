@@ -452,6 +452,7 @@ impl GenerateForm {
             },
             review_model: optional(self.text("Reviewer")),
             plugins: self.selected_plugins(),
+            shadcn: false,
             no_review: !self.toggle("Review"),
             json: false,
         })

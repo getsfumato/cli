@@ -19,7 +19,10 @@ use crate::{
     generation::GenerationRequest,
     models::{ModelDefaultChanged, ModelService, ModelSummary},
     operation::OperationContext,
-    page_plugins::{PagePluginCatalog, PagePluginPackage, PagePluginSummary},
+    page_plugins::{
+        PagePluginCatalog, PagePluginDefaultChanged, PagePluginInstallResult, PagePluginPackage,
+        PagePluginService, PagePluginSource, PagePluginStatus,
+    },
     project_assets::{ProjectAsset, ProjectAssetCatalog},
     projects::{ProjectRemoved, ProjectService, ProjectSummary},
     prompts::{
@@ -87,7 +90,7 @@ pub struct GeneratePageCommand {
     pub title: Option<String>,
     /// Optional reusable structural template package.
     pub template: Option<String>,
-    /// Selected bundled page plugin identifiers.
+    /// Selected installed page plugin identifiers.
     pub plugins: Vec<String>,
     /// Resolves the request without invoking models or writing artifacts.
     pub dry_run: bool,
@@ -134,6 +137,8 @@ pub struct SfumatoApplicationDependencies {
     pub page_inspector: Arc<dyn PageInspector>,
     /// Offline page plugin catalog.
     pub page_plugins: Arc<dyn PagePluginCatalog>,
+    /// Supported-plugin metadata and public-CDN materializer.
+    pub page_plugin_source: Arc<dyn PagePluginSource>,
     /// Reusable generation-template catalog.
     pub templates: Arc<dyn GenerationTemplateCatalog>,
     /// Portable reusable project-asset catalog.
@@ -172,6 +177,7 @@ pub struct SfumatoApplication {
     page_assembler: Arc<dyn PageAssembler>,
     page_inspector: Arc<dyn PageInspector>,
     page_plugins: Arc<dyn PagePluginCatalog>,
+    page_plugin_source: Arc<dyn PagePluginSource>,
     templates: Arc<dyn GenerationTemplateCatalog>,
     project_assets: Arc<dyn ProjectAssetCatalog>,
     sources: Arc<dyn SourceReader>,
@@ -198,6 +204,7 @@ impl SfumatoApplication {
             page_assembler,
             page_inspector,
             page_plugins,
+            page_plugin_source,
             templates,
             project_assets,
             sources,
@@ -221,6 +228,7 @@ impl SfumatoApplication {
             page_assembler,
             page_inspector,
             page_plugins,
+            page_plugin_source,
             templates,
             project_assets,
             sources,
@@ -290,6 +298,10 @@ impl SfumatoApplication {
             .prompts
             .for_project(&config.project_root)
             .map_err(|error| error.at_stage(OperationStage::RenderPrompt))?;
+        let mut plugins = config.plugins.clone();
+        plugins.extend(command.plugins);
+        plugins.sort();
+        plugins.dedup();
         generate_page(
             config,
             command.request,
@@ -301,7 +313,7 @@ impl SfumatoApplication {
                     .map(|name| self.templates.load(&name, TemplateKind::Page))
                     .transpose()?,
                 project_asset_catalog: Arc::clone(&self.project_assets),
-                plugins: command.plugins,
+                plugins,
                 dry_run: command.dry_run,
                 review: command.review,
                 event_sink: command.event_sink,
@@ -320,14 +332,86 @@ impl SfumatoApplication {
         .await
     }
 
-    /// Lists bundled offline page plugins.
-    pub fn list_page_plugins(&self) -> SfumatoResult<Vec<PagePluginSummary>> {
+    /// Lists installed offline page plugins.
+    pub fn list_installed_page_plugins(
+        &self,
+    ) -> SfumatoResult<Vec<crate::page_plugins::PagePluginSummary>> {
         self.page_plugins.list()
     }
 
-    /// Resolves one bundled offline page plugin.
+    /// Resolves one installed offline page plugin.
     pub fn show_page_plugin(&self, id: &str) -> SfumatoResult<PagePluginPackage> {
         self.page_plugins.load(id)
+    }
+
+    fn page_plugin_service(&self) -> PagePluginService {
+        PagePluginService::new(
+            Arc::clone(&self.page_plugin_source),
+            Arc::clone(&self.page_plugins),
+            Arc::clone(&self.projects),
+        )
+    }
+
+    /// Lists every supported plugin with installation and project state.
+    pub async fn list_page_plugins(
+        &self,
+        project: Option<&str>,
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<PagePluginStatus>> {
+        self.page_plugin_service().list(project, operation).await
+    }
+
+    /// Shows one supported plugin with installation and project state.
+    pub async fn show_page_plugin_status(
+        &self,
+        id: &str,
+        project: Option<&str>,
+        operation: &OperationContext,
+    ) -> SfumatoResult<PagePluginStatus> {
+        self.list_page_plugins(project, operation)
+            .await?
+            .into_iter()
+            .find(|status| status.plugin.id == id)
+            .ok_or_else(|| SfumatoError::not_found(format!("Unknown page plugin '{id}'")))
+    }
+
+    /// Installs a supported plugin release and its dependencies.
+    pub async fn install_page_plugin(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        operation: &OperationContext,
+    ) -> SfumatoResult<PagePluginInstallResult> {
+        self.page_plugin_service()
+            .install(id, version, operation)
+            .await
+    }
+
+    /// Updates an installed plugin to its latest supported release.
+    pub async fn update_page_plugin(
+        &self,
+        id: &str,
+        operation: &OperationContext,
+    ) -> SfumatoResult<PagePluginInstallResult> {
+        self.page_plugin_service().update(id, operation).await
+    }
+
+    /// Enables an installed plugin for a project.
+    pub fn enable_page_plugin(
+        &self,
+        id: &str,
+        project: Option<&str>,
+    ) -> SfumatoResult<PagePluginDefaultChanged> {
+        self.page_plugin_service().enable(id, project)
+    }
+
+    /// Disables a plugin for a project.
+    pub fn disable_page_plugin(
+        &self,
+        id: &str,
+        project: Option<&str>,
+    ) -> SfumatoResult<PagePluginDefaultChanged> {
+        self.page_plugin_service().disable(id, project)
     }
 
     /// Lists installed reusable structural templates.

@@ -291,26 +291,39 @@ sfumato generate page ./notes \
   --out "/path/to/published/pages"
 ```
 
-Discover the bundled offline plugin catalog with `sfumato plugin list` and
-`sfumato plugin show <id>`. The initial exact packages are Three.js `0.184.0`,
-Motion `12.42.2`, Theatre.js Core `0.7.2`, and lottie-web `5.13.0`. Repeated
-`--plugin <id>` flags are deduplicated and resolved deterministically. Their
-hash-verified runtimes are inlined into the final document under
-`window.SfumatoPlugins`, so generation never runs npm or fetches a CDN.
+Discover every supported plugin with `sfumato plugin list`. Runtimes are not
+stored in any Sfumato repository or binary. `plugin install` downloads
+version-pinned assets directly from each project's public CDN, verifies their
+SHA-256 hashes, and stores the assembled offline version in
+`~/.sfumato/plugins`:
 
-Component libraries use the same generic catalog rather than one flag per
-framework. `--ui` is a readable alias for `--plugin`:
+```bash
+sfumato plugin install shadcn
+sfumato plugin enable shadcn --project university
+sfumato plugin update shadcn
+```
+
+Project-enabled plugins are used automatically. The full explicit enable form
+is `sfumato plugin enable <plugin> --project <project>`. Repeated
+`--plugin <id>` flags
+add plugins for one generation and are deduplicated with project defaults.
+Installed, hash-verified runtimes and styles are inlined into the final document
+under `window.SfumatoPlugins`, so generation remains offline and never runs npm.
+
+Component libraries use the generic catalog. `--ui` remains a readable alias
+for `--plugin`; Shadcn also has the convenience `--shadcn` flag:
 
 ```bash
 sfumato generate page \
   --instruction "Explain Fourier series in Spanish" \
-  --ui materialui
+  --shadcn
 ```
 
-Selecting Material UI `5.15.14` automatically resolves and inlines React and
-ReactDOM `18.3.1` before it. The model uses `React.createElement` rather than
-JSX, so no runtime compiler or npm project is needed and the result remains one
-offline HTML document (plus generated image sidecars when present).
+Material UI resolves and installs React dependencies first. Shadcn is different:
+it has no official browser bundle, so Sfumato downloads official component
+registry definitions and Tailwind's browser runtime. The model translates those
+source contracts into semantic HTML, Tailwind classes, and small page-owned
+interactions; it does not emit TSX or pretend that Shadcn is a UMD library.
 
 When page content contains TeX delimited by `\(...\)` or `\[...\]`, Sfumato
 automatically embeds the pinned MathJax `3.2.2` TeX-to-SVG runtime. Math is

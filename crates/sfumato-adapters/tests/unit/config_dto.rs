@@ -52,6 +52,7 @@ fn project_and_registry_versions_are_owned_by_persistence_dtos() {
         publish_dir: None,
         model_defaults: BTreeMap::new(),
         model_roles: BTreeMap::new(),
+        plugins: Vec::new(),
         marp: None,
     };
     let rendered = toml::to_string_pretty(&ProjectConfigDto::from_domain(&project)).unwrap();

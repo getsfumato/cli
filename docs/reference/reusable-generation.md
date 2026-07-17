@@ -50,11 +50,20 @@ creating a usable theme.
 
 ## React Component Libraries
 
-Page component libraries are ordinary manifest-driven page plugins. The
-catalog supports dependency graphs, integrity hashes, licenses, model guidance,
-and deterministic runtime ordering. `--ui <id>` aliases `--plugin <id>`.
+Page component libraries are ordinary CDN-installed page plugins. Supported
+metadata is discoverable with `sfumato plugin list`; downloaded versions live
+under `~/.sfumato/plugins`, outside every Sfumato repository and executable.
+The catalog records version-pinned public CDN URLs, dependency graphs, integrity
+hashes, licenses, model guidance, and deterministic runtime ordering.
 
-The bundled `materialui` entry resolves `react` and `react-dom` automatically.
-All runtimes are pinned and embedded before generated page JavaScript. Generated
-code uses browser globals and `React.createElement`; Sfumato never invokes npm,
-downloads a CDN asset, or emits a multi-file React build during generation.
+`sfumato plugin enable <id>` persists a project default. `--plugin <id>` (or its
+`--ui` alias) adds a plugin for one request. `--shadcn` is a convenience alias
+for adding the `shadcn` plugin. Dependencies such as `react` and `react-dom` are
+installed and loaded first. Installation contacts the declared public CDNs;
+generation itself remains offline and embeds only locally installed runtimes.
+
+Shadcn is source-distributed rather than a browser runtime. Its plugin therefore
+installs hash-pinned official registry definitions plus Tailwind's browser
+compiler. Generated pages translate those accessibility and styling contracts
+into semantic HTML and local JavaScript rather than emitting unusable TSX or
+Radix imports.

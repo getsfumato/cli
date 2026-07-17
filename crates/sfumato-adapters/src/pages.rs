@@ -23,7 +23,7 @@ use tokio::process::Command;
 use crate::{renderers::resolved_browser_path, runtime::run_command};
 
 const CONTENT_SLOT: &str = "<!-- SFUMATO_CONTENT -->";
-const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 const MATHJAX_RUNTIME: &str = include_str!("../assets/page-runtimes/mathjax/runtime.js");
 const MATHJAX_LICENSE: &str = include_str!("../assets/page-runtimes/mathjax/LICENSE");
 const MATHJAX_VERSION: &str = "3.2.2";
@@ -133,9 +133,17 @@ fn assemble_page(request: PageAssemblyRequest<'_>) -> Result<AssembledPage> {
         ""
     };
     let math_css = if uses_math { MATHJAX_CSS } else { "" };
+    let plugin_css = request
+        .plugins
+        .iter()
+        .map(|plugin| plugin.stylesheet.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    validate_css(&plugin_css, "page plugin CSS")?;
     let head = format!(
-        "<meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\n<style data-sfumato-theme>{}</style>\n<style data-sfumato-page>{}</style>\n<style data-sfumato-math>{math_css}</style>\n{inspection_bootstrap}",
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\n<style data-sfumato-theme>{}</style>\n<style data-sfumato-plugins>{}</style>\n<style data-sfumato-page>{}</style>\n<style data-sfumato-math>{math_css}</style>\n{inspection_bootstrap}",
         escape_style(&theme_css),
+        escape_style(&plugin_css),
         escape_style(request.document.css()),
     );
     shell = shell.replacen("</head>", &format!("{head}\n</head>"), 1);

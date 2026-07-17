@@ -13,7 +13,7 @@ remain separate concepts and outbound ports.
 - Templates own one validated content slot and no model policy.
 - Project artifacts are portable, integrity-checked media copied into each
   resource transaction.
-- Page plugins own pinned executable runtimes, dependency metadata, guidance,
+- Installed page plugins own pinned executable runtimes, dependency metadata, guidance,
   and licenses.
 
 The page plugin catalog resolves dependency graphs. Component libraries use

@@ -52,7 +52,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: PromptCommands,
     },
-    #[command(about = "Inspect bundled offline page plugins")]
+    #[command(about = "Install and configure offline page plugins")]
     Plugin {
         #[command(subcommand)]
         command: PluginCommands,
@@ -83,15 +83,44 @@ pub enum InitTarget {
 #[derive(Debug, Subcommand)]
 pub enum GenerateCommands {
     Slides(SlidesArgs),
+    #[command(visible_alias = "pages")]
     Page(PageArgs),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum PluginCommands {
-    #[command(about = "List bundled offline page plugins")]
-    List,
+    #[command(about = "List all supported page plugins")]
+    List(PluginProjectArgs),
     #[command(about = "Show metadata and model guidance for a page plugin")]
     Show(PluginNameArgs),
+    #[command(about = "Download and install a page plugin")]
+    Install(PluginInstallArgs),
+    #[command(about = "Update an installed page plugin")]
+    Update(PluginNameArgs),
+    #[command(about = "Enable an installed plugin for a project")]
+    Enable(PluginProjectNameArgs),
+    #[command(about = "Disable a plugin for a project")]
+    Disable(PluginProjectNameArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PluginProjectArgs {
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PluginInstallArgs {
+    pub id: String,
+    #[arg(long)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PluginProjectNameArgs {
+    pub id: String,
+    #[arg(long)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -504,6 +533,9 @@ pub struct PageArgs {
 
     #[arg(long = "plugin", visible_alias = "ui", value_name = "ID")]
     pub plugins: Vec<String>,
+
+    #[arg(long, help = "Use the installed Shadcn UI plugin")]
+    pub shadcn: bool,
 
     #[arg(long)]
     pub no_review: bool,

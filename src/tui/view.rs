@@ -657,7 +657,7 @@ fn multi_select_line(
 ) -> Line<'static> {
     if options.is_empty() {
         return Line::from(Span::styled(
-            "No bundled plugins",
+            "No installed plugins",
             Style::default().fg(MUTED),
         ));
     }

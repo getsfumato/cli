@@ -82,7 +82,7 @@ impl App {
     pub(super) fn new(picker: Picker, application: Arc<SfumatoApplication>) -> Self {
         let (sender, messages) = channel(256);
         let page_plugins = application
-            .list_page_plugins()
+            .list_installed_page_plugins()
             .unwrap_or_default()
             .into_iter()
             .filter(|plugin| {

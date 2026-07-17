@@ -1,0 +1,322 @@
+{
+  "schema_version": 2,
+  "plugins": [
+    {
+      "id": "lottie",
+      "name": "Lottie Web",
+      "description": "Offline vector animations from inline Lottie data.",
+      "category": "utility",
+      "latest_version": "5.13.0",
+      "releases": [
+        {
+          "version": "5.13.0",
+          "api_global": "window.SfumatoPlugins.lottie",
+          "guidance": "Use `window.SfumatoPlugins.lottie` for lottie-web. Keep animation data inline and pass it through `animationData`; never reference a remote JSON path. Provide an accessible static explanation beside every animation.",
+          "install": {
+            "kind": "classic_global",
+            "runtime": {
+              "name": "lottie.min.js",
+              "url": "https://cdn.jsdelivr.net/npm/lottie-web@5.13.0/build/player/lottie.min.js",
+              "sha256": "2eb762973aec914d981f426123040bfac9d26217239605e225ddc7cee17618ac"
+            },
+            "source_global": "window.lottie"
+          },
+          "licenses": [
+            {
+              "name": "Lottie LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/lottie-web@5.13.0/LICENSE.md",
+              "sha256": "9d8d4d8b4bb99572ee8b51025a30b8493d949798cac465c6c15b1b29420bcb06"
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "materialui",
+      "name": "Material UI",
+      "description": "Offline React components using Material UI.",
+      "category": "ui",
+      "latest_version": "5.15.14",
+      "releases": [
+        {
+          "version": "5.15.14",
+          "api_global": "window.MaterialUI",
+          "guidance": "Material UI is available as `window.MaterialUI`; React and ReactDOM are installed first. Use `React.createElement`, never JSX or imports. Mount into `#sfumato-react-root` with `ReactDOM.createRoot`, and derive the Material UI theme from the Sfumato theme tokens.",
+          "install": {
+            "kind": "classic_global",
+            "runtime": {
+              "name": "material-ui.production.min.js",
+              "url": "https://cdn.jsdelivr.net/npm/@mui/material@5.15.14/umd/material-ui.production.min.js",
+              "sha256": "57ea6921e62da4fe6aad1b50241d72700ae95f611f9e6932ee9d11a5f45e6df0"
+            },
+            "source_global": "window.MaterialUI"
+          },
+          "licenses": [
+            {
+              "name": "Material UI LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/@mui/material@5.15.14/LICENSE",
+              "sha256": "f776953f07d3086635fd33953bcde47ba66fedaeb9a7cbc6ece2d4cb03cc56f8"
+            }
+          ],
+          "dependencies": [
+            "react-dom"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "motion",
+      "name": "Motion",
+      "description": "Offline browser animation primitives.",
+      "category": "utility",
+      "latest_version": "12.42.2",
+      "releases": [
+        {
+          "version": "12.42.2",
+          "api_global": "window.SfumatoPlugins.motion",
+          "guidance": "Use `window.SfumatoPlugins.motion` for Motion's browser API, including `animate`, `scroll`, `stagger`, and `inView`. Respect reduced-motion preferences and keep content readable before JavaScript runs.",
+          "install": {
+            "kind": "classic_global",
+            "runtime": {
+              "name": "motion.js",
+              "url": "https://cdn.jsdelivr.net/npm/motion@12.42.2/dist/motion.js",
+              "sha256": "3a87f9a05922df2b36582155001fd8e9da3ab5edee10cd07112571cb2d9c94a5"
+            },
+            "source_global": "window.Motion"
+          },
+          "licenses": [
+            {
+              "name": "Motion LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/motion@12.42.2/LICENSE.md",
+              "sha256": "1bf0dc3f7727723e5a032ed12164a47cf92c05204cb1a3485f123c24e2833ed1"
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "react",
+      "name": "React",
+      "description": "Offline React runtime dependency.",
+      "category": "runtime",
+      "latest_version": "18.3.1",
+      "releases": [
+        {
+          "version": "18.3.1",
+          "api_global": "window.React",
+          "guidance": "React is available as `window.React`. Use `React.createElement`; JSX and module imports are unavailable in generated standalone pages.",
+          "install": {
+            "kind": "classic_global",
+            "runtime": {
+              "name": "react.production.min.js",
+              "url": "https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js",
+              "sha256": "d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd"
+            },
+            "source_global": "window.React"
+          },
+          "licenses": [
+            {
+              "name": "React LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/react@18.3.1/LICENSE",
+              "sha256": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85"
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "react-dom",
+      "name": "ReactDOM",
+      "description": "Offline React DOM runtime dependency.",
+      "category": "runtime",
+      "latest_version": "18.3.1",
+      "releases": [
+        {
+          "version": "18.3.1",
+          "api_global": "window.ReactDOM",
+          "guidance": "ReactDOM is available as `window.ReactDOM`. Mount generated React content with `ReactDOM.createRoot`.",
+          "install": {
+            "kind": "classic_global",
+            "runtime": {
+              "name": "react-dom.production.min.js",
+              "url": "https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js",
+              "sha256": "35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d"
+            },
+            "source_global": "window.ReactDOM"
+          },
+          "licenses": [
+            {
+              "name": "React LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/react@18.3.1/LICENSE",
+              "sha256": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85"
+            }
+          ],
+          "dependencies": [
+            "react"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "theatre",
+      "name": "Theatre.js Core",
+      "description": "Offline deterministic animation sequencing.",
+      "category": "utility",
+      "latest_version": "0.7.2",
+      "releases": [
+        {
+          "version": "0.7.2",
+          "api_global": "window.SfumatoPlugins.theatre",
+          "guidance": "Theatre.js Core is loaded as an ES-module promise. Start generated JavaScript with `const theatre = (await window.SfumatoPlugins.theatre).default;` inside an async function. Studio is not installed. Keep project state inline.",
+          "install": {
+            "kind": "esm_namespace",
+            "entry": {
+              "name": "core.bundle.mjs",
+              "url": "https://esm.sh/@theatre/core@0.7.2/es2022/core.bundle.mjs",
+              "sha256": "03db221c817a2694b0caed1e291f86602282618b964dcb32b2e427e4adf8c611"
+            },
+            "imports": []
+          },
+          "licenses": [
+            {
+              "name": "Theatre.js LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/@theatre/core@0.7.2/LICENSE",
+              "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac"
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "threejs",
+      "name": "Three.js",
+      "description": "Offline WebGL and 3D visualization runtime.",
+      "category": "utility",
+      "latest_version": "0.184.0",
+      "releases": [
+        {
+          "version": "0.184.0",
+          "api_global": "window.SfumatoPlugins.threejs",
+          "guidance": "Three.js is loaded as an ES-module promise. Start generated JavaScript inside an async function with `const THREE = await window.SfumatoPlugins.threejs;`. Create responsive canvases, cap device pixel ratio at 2, and dispose animation frames and WebGL resources.",
+          "install": {
+            "kind": "esm_namespace",
+            "entry": {
+              "name": "three.module.min.js",
+              "url": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js",
+              "sha256": "36a60b0120335f89a80a0dab70292292b0ec414b3d05e83cd09a3ea428c6712a"
+            },
+            "imports": [
+              {
+                "specifier": "./three.core.min.js",
+                "asset": {
+                  "name": "three.core.min.js",
+                  "url": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.core.min.js",
+                  "sha256": "6486aa0d719cfa87ec88dc47223b59b1fb8417a1a407fc0e52467c943e2f8cc9"
+                }
+              }
+            ]
+          },
+          "licenses": [
+            {
+              "name": "Three.js LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/three@0.184.0/LICENSE",
+              "sha256": "8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc"
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": "shadcn",
+      "name": "Shadcn UI",
+      "description": "Official Shadcn component source patterns compiled locally with Tailwind's browser runtime.",
+      "category": "ui",
+      "latest_version": "new-york-v4-2026.07.17",
+      "releases": [
+        {
+          "version": "new-york-v4-2026.07.17",
+          "api_global": "window.SfumatoPlugins.shadcn",
+          "guidance": "Use the installed official Shadcn registry definitions as design and accessibility contracts. Generate semantic HTML using their Tailwind classes; do not emit TSX, React imports, Radix imports, or package-manager instructions. Recreate interactions with small page-owned JavaScript. The offline Tailwind browser runtime compiles the classes, and Sfumato maps its active theme variables into Shadcn semantic colors.",
+          "install": {
+            "kind": "tailwind_source",
+            "runtime": {
+              "name": "tailwind-browser.min.js",
+              "url": "https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.16/dist/index.global.min.js",
+              "sha256": "b5dc758ac22ee38a026e617f0c58f4d0b35e40bce33783adbad3ccb2ce90c080"
+            },
+            "sources": [
+              {
+                "name": "new-york-v4/index",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/index.json",
+                "sha256": "35d282ea3537f1d08413fbda9dd83d89d680f31c7f24c9701e8847ad6404918b"
+              },
+              {
+                "name": "new-york-v4/button",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/button.json",
+                "sha256": "9f7f226ca4f52ad6c9ea420e82ec1ca4e236cfa69e8d0b0ac3096a3133cfc465"
+              },
+              {
+                "name": "new-york-v4/card",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/card.json",
+                "sha256": "7f044f92e31b6b6fc50c088f12fd9ce181acf14cd12bf1c85b2f969a97929f17"
+              },
+              {
+                "name": "new-york-v4/tabs",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/tabs.json",
+                "sha256": "e003361d7847425c62bbe6609870a89a722a059ae658e0e0b7fb865eb0ede3a8"
+              },
+              {
+                "name": "new-york-v4/slider",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/slider.json",
+                "sha256": "143883e592402e7b710ba2cfe563db4eaeab62ed85a6073a07d336533f1430f4"
+              },
+              {
+                "name": "new-york-v4/input",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/input.json",
+                "sha256": "9f3fa74d6744e2106878db7d6a7d7c7f1a1d2650ee9bc04ec981c7e78a132d9e"
+              },
+              {
+                "name": "new-york-v4/label",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/label.json",
+                "sha256": "11851fa86fcaaa70050086b42f3457627a6a98230789d216ad627068ddee9c57"
+              },
+              {
+                "name": "new-york-v4/badge",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/badge.json",
+                "sha256": "0bb0fe8c8c1fa512fe84e960416c6585f129a0e579287b660e3d6ec4c42abdcf"
+              },
+              {
+                "name": "new-york-v4/alert",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/alert.json",
+                "sha256": "530f99d6b5cf6d3182f5dca4809577e2ce31de6a07dd0bb1245fc6b306456804"
+              },
+              {
+                "name": "new-york-v4/separator",
+                "url": "https://ui.shadcn.com/r/styles/new-york-v4/separator.json",
+                "sha256": "cf1802f2c1f2fa4e1e853142a5dbd68a763756afe365520b1b33e44696e983c3"
+              }
+            ]
+          },
+          "licenses": [
+            {
+              "name": "Shadcn LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/shadcn@4.0.8/LICENSE.md",
+              "sha256": "1564074e13439397221ffd522e2e504d56561994a23d371aa5e3ad43e4f5423f"
+            },
+            {
+              "name": "Tailwind CSS LICENSE",
+              "url": "https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.16/LICENSE",
+              "sha256": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985"
+            }
+          ],
+          "dependencies": []
+        }
+      ]
+    }
+  ]
+}

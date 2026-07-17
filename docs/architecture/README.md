@@ -74,13 +74,14 @@ and operator/integrator contracts under [`docs/reference`](../reference/).
    intrinsic SVG dimensions cannot create undetected overflow.
 10. Page models return structured fragments rather than complete documents.
     The adapter parses HTML, CSS, and JavaScript, applies an offline CSP, and
-    inlines only hash-verified bundled plugin runtimes before browser inspection.
+    inlines only installed, hash-verified plugin runtimes before browser inspection.
 11. Structural templates contain one validated content marker. Models generate
     marker content and never own package assembly.
 12. Reusable project artifacts are integrity-checked and copied into every
     revision that references them; generated resources never depend on the
     mutable catalog copy.
-13. Page-plugin dependencies are resolved deterministically. Selecting a UI
+13. Page-plugin dependencies are installed under `~/.sfumato/plugins` and
+    resolved deterministically. Selecting a UI
     component library automatically includes its pinned runtime dependencies.
 
 ## Verification Gate

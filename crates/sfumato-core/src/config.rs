@@ -60,6 +60,9 @@ pub struct ProjectConfig {
     pub model_defaults: BTreeMap<Capability, String>,
     #[serde(default)]
     pub model_roles: BTreeMap<ModelRole, String>,
+    /// Page plugins enabled by default for this project.
+    #[serde(default)]
+    pub plugins: Vec<String>,
     #[serde(default)]
     pub marp: Option<MarpConfig>,
 }
@@ -213,6 +216,8 @@ pub struct EffectiveConfig {
     pub models: BTreeMap<String, ModelProfile>,
     pub model_defaults: BTreeMap<Capability, String>,
     pub model_roles: BTreeMap<ModelRole, String>,
+    /// Page plugins enabled by the selected project.
+    pub plugins: Vec<String>,
     pub marp: MarpConfig,
 }
 
@@ -375,6 +380,13 @@ impl ProjectConfig {
         if self.theme.trim().is_empty() {
             bail!("Project theme cannot be empty");
         }
+        let mut plugins = std::collections::BTreeSet::new();
+        for plugin in &self.plugins {
+            crate::page_plugins::validate_plugin_id(plugin)?;
+            if !plugins.insert(plugin) {
+                bail!("Project contains duplicate page plugin '{plugin}'");
+            }
+        }
         Ok(())
     }
 }
@@ -437,6 +449,7 @@ impl EffectiveConfig {
             models: global.models,
             model_defaults,
             model_roles,
+            plugins: project.plugins,
             marp,
         })
     }

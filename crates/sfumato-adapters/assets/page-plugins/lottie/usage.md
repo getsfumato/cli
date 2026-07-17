@@ -1,1 +1,0 @@
-Use `window.SfumatoPlugins.lottie` for lottie-web. Keep animation data inline as a JavaScript object and pass it through `animationData`; do not reference a remote JSON path. Provide an accessible static label or explanation beside every animation.

@@ -233,6 +233,7 @@ impl ProjectRepository for FilesystemProjectRepository {
                 publish_dir: None,
                 model_defaults: Default::default(),
                 model_roles: Default::default(),
+                plugins: Vec::new(),
                 marp: None,
             };
             self.edit_registry(|registry| {

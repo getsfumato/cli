@@ -115,6 +115,8 @@ pub(crate) struct ProjectConfigDto {
     #[serde(default)]
     model_roles: BTreeMap<ModelRole, String>,
     #[serde(default)]
+    plugins: Vec<String>,
+    #[serde(default)]
     marp: Option<MarpConfigDto>,
 }
 
@@ -248,6 +250,7 @@ impl ProjectConfigDto {
             publish_dir: self.publish_dir,
             model_defaults: self.model_defaults,
             model_roles: self.model_roles,
+            plugins: self.plugins,
             marp: self.marp.map(Into::into),
         };
         project.validate()?;
@@ -262,6 +265,7 @@ impl ProjectConfigDto {
             publish_dir: project.publish_dir.clone(),
             model_defaults: project.model_defaults.clone(),
             model_roles: project.model_roles.clone(),
+            plugins: project.plugins.clone(),
             marp: project.marp.as_ref().map(MarpConfigDto::from),
         }
     }

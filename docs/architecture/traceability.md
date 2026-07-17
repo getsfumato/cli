@@ -20,14 +20,14 @@
 | V02-014 | Prompt overrides cannot weaken code-owned invariants. | Prompt adapter plus deck/patch/path/artifact validators. | Invalid overrides fail before providers; invalid model output cannot commit. |
 | V02-015 | Invalid drafts receive bounded focused recovery. | Validation and Mermaid repair prompt pairs and slide orchestration. | One structural repair test, focused Mermaid JSON Patch test, and negative output-contract transcripts. |
 | V02-016 | Standalone pages use typed fragments and constrained review. | `PageDocument`, `GeneratePage`, `PageAssembler`, page prompts. | Domain patch tests, strict prompt fixtures, assembler policy tests, and CLI/TUI parsing tests. |
-| V02-017 | Page plugins are pinned, offline, and manifest-driven. | `BundledPagePluginCatalog`, `assets/page-plugins`. | Hash/catalog tests and the feature-gated four-plugin Chrome execution test. |
+| V02-017 | Page plugins are CDN-installed, hash-pinned, and offline during generation. | `PagePluginService`, `CdnPagePluginSource`, and `FilesystemPagePluginCatalog`. | Recipe validation, CDN hash, version-store, dependency-order, and feature-gated browser tests. |
 | V02-018 | Pages are inspected responsively before commit. | `ChromiumPageInspector` and browser repair stage. | Desktop/mobile report parsing, static assembler tests, and opt-in real-browser execution. |
 | V02-019 | Page publication is explicit and Obsidian-navigable. | `publish_page`, `obsidian_page_index`, `publish_tree_atomic`. | Stable `_sfumato/pages/<slug>` path, generated index, atomic replacement, and stale legacy cleanup tests. |
 | V02-020 | Page mathematics renders offline before layout validation. | `StandalonePageAssembler`, bundled MathJax runtime, `ChromiumPageInspector`. | Runtime hash/version checks, conditional embedding, SVG browser execution, and unrendered-TeX failure tests. |
 | V02-021 | Structural templates keep reusable scaffolds out of model output. | `GenerationTemplateCatalog`, `GenerationTemplate`, slide/page prompt contexts. | Marker/name/path validation, package catalog tests, strict prompt rendering, CLI/TUI argument tests. |
 | V02-022 | Project artifacts are portable and immutable per revision. | `ProjectAssetCatalog`, `.sfumato/assets`, generation staging. | Digest, symlink, SVG-policy, add/list/load/remove, prompt-path, and transaction manifest tests. |
 | V02-023 | Themes exchange Google DESIGN.md tokens. | `FilesystemThemeRepository::{import_design,export_design}`. | Round-trip, adapter generation, invalid color/version, and duplicate-section tests. |
-| V02-024 | React UI libraries remain offline and catalog-driven. | `PagePluginCatalog` dependency resolution and bundled React/Material UI runtimes. | Dependency-order/hash tests and feature-gated real Chromium mounting test. |
+| V02-024 | React UI libraries remain offline during generation and catalog-driven. | `PagePluginCatalog` dependency resolution and user-installed React/UI runtimes. | Dependency-order/hash tests and feature-gated real Chromium mounting test. |
 
 Material contract changes require an ADR amendment, a traceability update, and a
 test that fails against the previous behavior.

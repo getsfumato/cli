@@ -27,7 +27,7 @@ let result = application
 
 `generate_slides` returns `SfumatoResult<GenerateSlidesResult>` and
 `generate_page` returns `SfumatoResult<GeneratePageResult>`. Page commands carry
-generic bundled plugin IDs and return the resolved versions and runtime hashes.
+generic installed plugin IDs and return the resolved versions and runtime hashes.
 `edit_slides` returns `SfumatoResult<EditSlidesResult>`. The same facade also
 owns project, model, connector, theme, prompt, setup, and configuration use
 cases. CLI and TUI construct the same command DTOs.

@@ -1,1 +1,0 @@
-ReactDOM is loaded as `window.ReactDOM`. Put one `<div id="sfumato-react-root"></div>` in `body_html`, then mount with `ReactDOM.createRoot(document.getElementById("sfumato-react-root")).render(...)` in `javascript`.
