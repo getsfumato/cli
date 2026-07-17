@@ -227,8 +227,73 @@ contains semantic color/font tokens and renderer adapters:
     └── script.js
 ```
 
-The HTML adapter defines the contract for future HTML resources. Its shell must
+The HTML adapter provides the shell, CSS, and optional JavaScript used by standalone pages. Its shell must
 contain exactly one `<!-- SFUMATO_CONTENT -->` placeholder.
+
+## Generate Pages
+
+Generate a themed standalone learning page from an instruction and optional
+text sources:
+
+```bash
+sfumato generate page \
+  --instruction "Explain Fourier series interactively"
+
+sfumato generate page ./notes \
+  --instruction "Build a revision explorer" \
+  --plugin threejs \
+  --plugin motion \
+  --theme gruvbox \
+  --out "/path/to/published/pages"
+```
+
+Discover the bundled offline plugin catalog with `sfumato plugin list` and
+`sfumato plugin show <id>`. The initial exact packages are Three.js `0.184.0`,
+Motion `12.42.2`, Theatre.js Core `0.7.2`, and lottie-web `5.13.0`. Repeated
+`--plugin <id>` flags are deduplicated and resolved deterministically. Their
+hash-verified runtimes are inlined into the final document under
+`window.SfumatoPlugins`, so generation never runs npm or fetches a CDN.
+
+When page content contains TeX delimited by `\(...\)` or `\[...\]`, Sfumato
+automatically embeds the pinned MathJax `3.2.2` TeX-to-SVG runtime. Math is
+rendered offline before browser layout measurements, and unprocessed TeX is a
+generation error rather than a silently broken artifact.
+
+The model returns structured `title`, `body_html`, `css`, and `javascript`
+fragments. Sfumato validates them with HTML, CSS, and JavaScript parsers,
+assembles the selected theme's HTML adapter, applies an offline CSP, and checks
+the result in a local Chromium browser at desktop and mobile sizes. Semantic
+and browser fixes are revision-guarded RFC 6902 patches rather than full-page
+regeneration.
+
+Managed page revisions live at:
+
+```text
+~/.sfumato/Projects/<project>/resources/pages/<resource-id>/
+├── current.json
+└── revisions/<revision-id>/
+    ├── manifest.json
+    ├── index.md
+    ├── index.html
+    └── assets/
+        └── images/
+```
+
+`--out <folder>` always publishes one predictable Obsidian-facing tree:
+
+```text
+<folder>/_sfumato/pages/<slug>/
+├── index.md
+├── index.html
+└── assets/images/
+```
+
+The generated `index.md` identifies the resource as Sfumato-managed and links
+to the interactive HTML. Publication atomically replaces the complete page
+directory and removes stale legacy `<slug>.html` or `<slug>/` outputs only after
+the new tree succeeds. Use `--dry-run`, `--json`, `--no-review`,
+`--review-model`, `--model text=<profile>`, and the normal project/theme options
+the same way as slide generation.
 
 ## Generate Slides
 
@@ -286,14 +351,28 @@ marp --theme <revision>/themes/<theme-name>.css <revision>/deck.md -o <revision>
 If Marp CLI is not installed, Sfumato keeps the Markdown and theme CSS artifacts
 and prints a clear PDF export warning.
 
-Use `--out` to publish only the processed PDF to another folder while retaining
-the complete generation workspace centrally:
+Use `--out` to publish the processed PDF and a small Obsidian index while
+retaining the complete generation workspace centrally:
 
 ```bash
 cargo run -- generate slides \
   --instruction "Explain Fourier series visually" \
   --out "/path/to/Obsidian/Published Slides"
 ```
+
+The published resource uses the same visible namespace as generated pages:
+
+```text
+<out>/_sfumato/slides/<slug>/
+├── index.md
+└── <slug>.pdf
+```
+
+`index.md` links to and embeds the PDF in Obsidian. Regeneration atomically
+replaces this published folder; immutable Markdown, diagrams, images, themes,
+and revision history remain under Sfumato's central artifact workspace. After
+the new folder commits successfully, Sfumato removes the legacy loose
+`<out>/<slug>.pdf` publication.
 
 A persistent project publication destination can be configured with
 `publish_dir`. Relative values are resolved from the registered project root.

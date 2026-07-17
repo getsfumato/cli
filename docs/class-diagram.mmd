@@ -12,6 +12,7 @@ classDiagram
             Model
             Theme
             Prompt
+            Plugin
             Generate
             Edit
         }
@@ -34,6 +35,7 @@ classDiagram
 
     namespace Domain {
         class DeckDocument
+        class PageDocument
         class ReviewableDocument {
             <<trait>>
             +snapshot() ReviewSnapshot
@@ -50,6 +52,7 @@ classDiagram
     namespace Core {
         class SfumatoApplication {
             +generate_slides(command) GenerateSlidesResult
+            +generate_page(command) GeneratePageResult
             +edit_slides(command) EditSlidesResult
             +list_projects()
             +list_models()
@@ -58,6 +61,7 @@ classDiagram
         }
         class SfumatoApplicationDependencies
         class GenerateSlidesCommand
+        class GeneratePageCommand
         class EditSlidesCommand
         class AgentRunner {
             +run(model, request, tools, operation) TextModelResponse
@@ -91,6 +95,23 @@ classDiagram
         }
         class SlideRenderer {
             <<trait>>
+        }
+        class PageAssembler {
+            <<trait>>
+            +assemble(request) AssembledPage
+        }
+        class AssembledPage {
+            +html String
+            +runtimes PageRuntimeSelection[]
+        }
+        class PageInspector {
+            <<trait>>
+            +inspect(path, browser, operation) PageInspectionIssue
+        }
+        class PagePluginCatalog {
+            <<trait>>
+            +list() PagePluginSummary
+            +load(id) PagePluginPackage
         }
         class ArtifactStore {
             <<trait>>
@@ -128,6 +149,9 @@ classDiagram
         class FilesystemGenerationToolFactory
         class MermaidCliRenderer
         class MarpCliRenderer
+        class StandalonePageAssembler
+        class ChromiumPageInspector
+        class BundledPagePluginCatalog
         class FilesystemArtifactStore
         class FilesystemGlobalConfigRepository
         class FilesystemProjectRepository
@@ -140,9 +164,11 @@ classDiagram
     App --> SfumatoApplication
 
     DeckDocument ..|> ReviewableDocument
+    PageDocument ..|> ReviewableDocument
     ArtifactManifest --> RevisionId
     SfumatoApplication *-- SfumatoApplicationDependencies
     SfumatoApplication --> GenerateSlidesCommand
+    SfumatoApplication --> GeneratePageCommand
     SfumatoApplication --> EditSlidesCommand
     SfumatoApplication --> AgentRunner
     SfumatoApplication --> ProviderFactory
@@ -152,6 +178,10 @@ classDiagram
     SfumatoApplication --> GenerationToolFactory
     SfumatoApplication --> DiagramRenderer
     SfumatoApplication --> SlideRenderer
+    SfumatoApplication --> PageAssembler
+    PageAssembler --> AssembledPage
+    SfumatoApplication --> PageInspector
+    SfumatoApplication --> PagePluginCatalog
     SfumatoApplication --> ArtifactStore
     SfumatoApplication --> GlobalConfigRepository
     SfumatoApplication --> ProjectRepository
@@ -159,6 +189,7 @@ classDiagram
     SfumatoApplication --> WorkspaceFileSystem
     SfumatoApplication --> SfumatoError
     GenerateSlidesCommand --> OperationContext
+    GeneratePageCommand --> OperationContext
     EditSlidesCommand --> OperationContext
     AgentRunner --> TextModel
     ArtifactStore --> ArtifactTransaction
@@ -173,6 +204,9 @@ classDiagram
     FilesystemGenerationToolFactory ..|> GenerationToolFactory
     MermaidCliRenderer ..|> DiagramRenderer
     MarpCliRenderer ..|> SlideRenderer
+    StandalonePageAssembler ..|> PageAssembler
+    ChromiumPageInspector ..|> PageInspector
+    BundledPagePluginCatalog ..|> PagePluginCatalog
     FilesystemArtifactStore ..|> ArtifactStore
     FilesystemGlobalConfigRepository ..|> GlobalConfigRepository
     FilesystemProjectRepository ..|> ProjectRepository

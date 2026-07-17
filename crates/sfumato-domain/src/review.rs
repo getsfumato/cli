@@ -45,6 +45,10 @@ pub enum ReviewConstraint {
     StructuralChangesWhenNecessary,
     /// Only existing slide Markdown may be replaced.
     ReplaceSlideMarkdownOnly,
+    /// A mutation must first test the document revision.
+    TestDocumentRevision,
+    /// Only the declared page content fields may be replaced.
+    PageFieldsOnly,
 }
 
 /// A serializable, immutable view of a document that a reviewer may patch.
@@ -105,6 +109,9 @@ pub enum ReviewError {
     /// A deck violates a structural or content invariant.
     #[error("invalid deck: {0}")]
     InvalidDeck(String),
+    /// A page violates a structural or content invariant.
+    #[error("invalid page: {0}")]
+    InvalidPage(String),
     /// JSON serialization of a review DTO failed.
     #[error("could not encode review document: {source}")]
     DocumentEncoding {
@@ -122,6 +129,13 @@ pub enum ReviewError {
     /// The patched JSON no longer has the expected DTO shape.
     #[error("reviewer patch produced an invalid deck structure: {source}")]
     InvalidPatchedStructure {
+        /// DTO deserialization error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// A patch no longer has the expected page DTO shape.
+    #[error("reviewer patch produced an invalid page structure: {source}")]
+    InvalidPatchedPage {
         /// DTO deserialization error.
         #[source]
         source: serde_json::Error,

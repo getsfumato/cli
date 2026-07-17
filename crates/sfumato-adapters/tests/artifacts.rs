@@ -25,6 +25,8 @@ fn manifest(
         files,
         models: BTreeMap::from([("text".to_string(), "draft".to_string())]),
         prompts: Vec::<PromptProvenance>::new(),
+        plugins: Vec::new(),
+        runtimes: Vec::new(),
         warnings: Vec::new(),
     }
 }

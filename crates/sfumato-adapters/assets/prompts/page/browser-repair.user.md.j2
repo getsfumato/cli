@@ -1,0 +1,17 @@
+Instruction: {{ instruction }}
+Theme: {{ theme_name }}
+Plugin APIs: {% for plugin in plugins %}`{{ plugin.api_global }}`{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}
+
+Browser findings:
+
+```json
+{{ issue_report }}
+```
+
+Document snapshot:
+
+```json
+{{ page_snapshot }}
+```
+
+Correct runtime errors, missing assets, and any unrendered TeX. Keep mathematics in `body_html` using `\(...\)` inline or `\[...\]` for display; the renderer is provided automatically. For horizontal overflow, make media and fixed-width content responsive instead of globally shrinking typography. Return only the focused RFC 6902 JSON Patch array.

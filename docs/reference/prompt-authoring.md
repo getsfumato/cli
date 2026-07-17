@@ -46,6 +46,11 @@ macOS or `$XDG_CONFIG_HOME` on Linux.
 | Compact layout repair | `slides.compact-layout-repair.system` | `slides.compact-layout-repair.user` |
 | Edit | `slides.edit.system` | `slides.edit.user` |
 | Compact edit | `slides.compact-edit.system` | `slides.compact-edit.user` |
+| Page draft | `page.draft.system` | `page.draft.user` |
+| Compact page draft | `page.compact-draft.system` | `page.compact-draft.user` |
+| Page validation repair | `page.validation-repair.system` | `page.validation-repair.user` |
+| Page review | `page.review.system` | `page.review.user` |
+| Page browser repair | `page.browser-repair.system` | `page.browser-repair.user` |
 
 Image generation uses the user template `image.generation.user`. The image tool
 renders it with the requested visual, selected theme tokens, and project
@@ -56,6 +61,7 @@ Tool exhaustion uses user-message IDs
 `slides.review.tool-exhausted.user`,
 `slides.edit.tool-exhausted.user`, and
 `slides.layout-repair.tool-exhausted.user`.
+Page generation uses `page.tool-exhausted.user`.
 
 The manifest and `PromptId::all()` must contain exactly the same IDs. Adding or
 renaming an ID is a reviewed prompt-schema change.
@@ -92,6 +98,10 @@ The manifest is authoritative. Common required values are:
 | Layout repair | `instruction`, `title`, `project`, `theme_name`, `project_instructions`, `issue_report`, retry values, and `slide_markdown`. |
 | Edit | `project`, `instruction`, theme values, `project_instructions`, retry values, and `deck_snapshot`. |
 | Tool exhausted | `max_tool_rounds`. |
+| Page draft | Project, theme, instruction, project guidance, sources, selected plugin guides, optional title, and image-generation availability. |
+| Page validation repair | Instruction, theme, selected plugins, rejected draft response, and static validation error. |
+| Page review | Instruction, project/theme context, project guidance, sources, and `page_snapshot`. |
+| Page browser repair | Instruction, theme, selected plugins, `page_snapshot`, and structured desktop/mobile `issue_report`. |
 
 Compact variants use compact source/snapshot values selected by the use case.
 Retry variables are always present and indicate whether corrective feedback is
@@ -107,6 +117,14 @@ change code-owned acceptance rules. In particular:
 - title/frontmatter/ID/order protection is enforced after rendering;
 - filesystem tools and artifact paths remain contained;
 - incomplete or invalid model output never commits.
+- page drafts remain structured JSON fragments; semantic review may patch the
+  four content fields, while browser repair cannot patch the title;
+- page templates cannot enable remote scripts, imports, network calls, path
+  traversal, unregistered assets, or weaken the adapter-owned offline CSP.
+- page mathematics uses `\(...\)` for inline TeX and `\[...\]` for display
+  TeX; templates must not request CDN scripts or model-authored math renderers;
+- generated page images must preserve the exact `assets/images/...` reference
+  returned by `sfumato_image_gen`.
 
 Authors should preserve clear delimiters around source documents, deck
 snapshots, rejected responses, and tool results because those values are data.

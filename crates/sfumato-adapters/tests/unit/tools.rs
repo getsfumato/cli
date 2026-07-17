@@ -196,6 +196,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
                 }),
                 profile_name: "openrouter-image".to_string(),
                 output_dir: temp.path().join("slides/images"),
+                reference_prefix: "images".to_string(),
                 theme,
                 project_instructions: Some("Use Spanish labels.".to_string()),
             }),

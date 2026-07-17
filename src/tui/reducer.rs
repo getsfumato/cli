@@ -81,6 +81,12 @@ pub(super) fn reduce_message(app: &mut App, message: UiMessage) {
 impl App {
     pub(super) fn new(picker: Picker, application: Arc<SfumatoApplication>) -> Self {
         let (sender, messages) = channel(256);
+        let page_plugins = application
+            .list_page_plugins()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|plugin| plugin.id)
+            .collect();
         Self {
             application,
             screen: Screen::Home,
@@ -91,7 +97,7 @@ impl App {
             browse_action_index: 0,
             browse_detail_scroll: 0,
             operation: None,
-            form: GenerateForm::default(),
+            form: GenerateForm::with_plugins(page_plugins),
             edit_form: EditForm::default(),
             resource_operation: ResourceOperation::Generate,
             activities: Vec::new(),
@@ -566,10 +572,14 @@ impl App {
                 self.form.selected = (self.form.selected + 1).min(self.form.fields.len() - 1)
             }
             KeyCode::BackTab => self.form.selected = self.form.selected.saturating_sub(1),
+            KeyCode::Left => self.move_form_choice(false),
+            KeyCode::Right => self.move_form_choice(true),
             KeyCode::Enter => {
                 let selected = self.form.selected;
                 match self.form.fields.get(selected) {
                     Some(FormField::Toggle { .. }) => self.toggle_form_field(),
+                    Some(FormField::Select { .. }) => self.move_form_choice(true),
+                    Some(FormField::MultiSelect { .. }) => self.toggle_form_field(),
                     Some(FormField::Submit { .. }) => self.start_generation(),
                     Some(FormField::Text {
                         multiline: true, ..
@@ -583,7 +593,7 @@ impl App {
             KeyCode::Char(' ')
                 if matches!(
                     self.form.fields.get(self.form.selected),
-                    Some(FormField::Toggle { .. })
+                    Some(FormField::Toggle { .. } | FormField::MultiSelect { .. })
                 ) =>
             {
                 self.toggle_form_field();
@@ -655,15 +665,60 @@ impl App {
     }
 
     pub(super) fn toggle_form_field(&mut self) {
-        if let Some(FormField::Toggle { value, .. }) = self.form.fields.get_mut(self.form.selected)
-        {
-            *value = !*value;
+        match self.form.fields.get_mut(self.form.selected) {
+            Some(FormField::Toggle { value, .. }) => *value = !*value,
+            Some(FormField::MultiSelect {
+                cursor,
+                selected,
+                options,
+                ..
+            }) if !options.is_empty() => {
+                let was_selected = !selected.insert(*cursor);
+                if was_selected {
+                    selected.remove(cursor);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn move_form_choice(&mut self, forward: bool) {
+        match self.form.fields.get_mut(self.form.selected) {
+            Some(FormField::Select {
+                options, selected, ..
+            }) if !options.is_empty() => {
+                *selected = if forward {
+                    (*selected + 1) % options.len()
+                } else {
+                    selected.checked_sub(1).unwrap_or(options.len() - 1)
+                };
+            }
+            Some(FormField::MultiSelect {
+                options, cursor, ..
+            }) if !options.is_empty() => {
+                *cursor = if forward {
+                    (*cursor + 1) % options.len()
+                } else {
+                    cursor.checked_sub(1).unwrap_or(options.len() - 1)
+                };
+            }
+            _ => {}
         }
     }
 
     pub(super) fn start_generation(&mut self) {
-        let args = match self.form.to_args() {
-            Ok(args) => args,
+        let is_page = self.form.is_page();
+        enum PreparedGeneration {
+            Slides(SlidesArgs),
+            Page(PageArgs),
+        }
+        let prepared = if is_page {
+            self.form.to_page_args().map(PreparedGeneration::Page)
+        } else {
+            self.form.to_args().map(PreparedGeneration::Slides)
+        };
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => {
                 self.status = Some((error.to_string(), true));
                 return;
@@ -676,21 +731,25 @@ impl App {
         self.result = None;
         self.image = None;
         self.status = None;
-        self.resource_operation = ResourceOperation::Generate;
+        self.resource_operation = if is_page {
+            ResourceOperation::GeneratePage
+        } else {
+            ResourceOperation::Generate
+        };
         self.transition(Screen::Running);
 
         let (job_id, operation) = self.begin_job();
         let sender = self.sender.clone();
         let application = Arc::clone(&self.application);
         let sink = effects::generation_event_sink(job_id, sender.clone());
-        self.active_task = Some(effects::spawn_generation(
-            job_id,
-            application,
-            args,
-            sink,
-            operation,
-            sender,
-        ));
+        self.active_task = Some(match prepared {
+            PreparedGeneration::Page(args) => {
+                effects::spawn_page_generation(job_id, application, args, sink, operation, sender)
+            }
+            PreparedGeneration::Slides(args) => {
+                effects::spawn_generation(job_id, application, args, sink, operation, sender)
+            }
+        });
     }
 
     pub(super) fn start_edit(&mut self) {
@@ -766,7 +825,7 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Backspace => self.transition(Screen::Home),
             KeyCode::Enter => self.transition(match self.resource_operation {
-                ResourceOperation::Generate => Screen::Generate,
+                ResourceOperation::Generate | ResourceOperation::GeneratePage => Screen::Generate,
                 ResourceOperation::Edit => Screen::Edit,
             }),
             KeyCode::Up | KeyCode::Char('k') => {

@@ -1,0 +1,17 @@
+Instruction: {{ instruction }}
+Theme: {{ theme_name }}
+Available plugin APIs: {% for plugin in plugins %}`{{ plugin.api_global }}`{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}
+
+Validation error:
+
+```text
+{{ validation_error }}
+```
+
+Invalid response:
+
+```text
+{{ draft_response }}
+```
+
+Correct only what is necessary to resolve the validation error. Keep `body_html` as an embeddable semantic fragment: no document shell, metadata, styles, or scripts. Keep all styling in `css` and all executable code in `javascript`. Preserve local `images/...` references and use only the listed plugin APIs. Return only the complete JSON object.

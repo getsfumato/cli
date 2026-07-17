@@ -47,6 +47,33 @@ fn representative_variables() -> PromptVariables {
         ("slide_markdown", json!("## Dense\n\nContent")),
         ("max_tool_rounds", json!(8)),
         (
+            "plugins",
+            json!([{
+                "id": "threejs",
+                "name": "Three.js",
+                "version": "0.184.0",
+                "api_global": "window.SfumatoPlugins.threejs",
+                "guidance": "Use a responsive canvas."
+            }]),
+        ),
+        (
+            "page_snapshot",
+            json!({
+                "schema_version": 1,
+                "revision": "page-r1",
+                "title": "Fourier Explorer",
+                "body_html": "<section>Fourier</section>",
+                "css": "section { display: grid; }",
+                "javascript": ""
+            }),
+        ),
+        (
+            "draft_response",
+            json!(
+                "{\"title\":\"Fourier\",\"body_html\":\"<section>\",\"css\":\"\",\"javascript\":\"\"}"
+            ),
+        ),
+        (
             "requested_prompt",
             json!("A visual comparison of even and odd functions"),
         ),
@@ -77,6 +104,27 @@ fn renders_every_bundled_prompt_with_strict_fixture_values() {
 }
 
 #[test]
+fn page_validation_repair_restates_fragment_boundaries() {
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::PageValidationRepairSystem,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    assert!(rendered.text.contains("semantic fragment"));
+    for forbidden in ["<html>", "<head>", "<body>", "<style>", "<script>"] {
+        assert!(rendered.text.contains(forbidden));
+    }
+    assert!(rendered.text.contains("Put CSS only in `css`"));
+    assert!(rendered.text.contains("JavaScript only in `javascript`"));
+    assert!(rendered.text.contains("offline renderer"));
+    assert!(rendered.text.contains("\\(...\\)"));
+    assert!(rendered.text.contains("\\[...\\]"));
+}
+
+#[test]
 fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
     let catalog = LayeredPromptCatalog::new(None, None);
     let mut aggregate = String::new();
@@ -95,7 +143,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "8b61d8e3dfdc579d97813b9bc754a9851e999544df0766b1ef88ea0404994122"
+        "aa12a73ae7719f07ddb255c233595b87d82f073cd85be8683e10dcff40e8933a"
     );
 }
 

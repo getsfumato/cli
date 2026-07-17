@@ -202,6 +202,10 @@ pub enum GenerationStage {
     LayoutCheck,
     LayoutRepair,
     Rendering,
+    PageDraft,
+    PageReview,
+    PageRepair,
+    PageRendering,
 }
 
 impl GenerationStage {
@@ -215,6 +219,10 @@ impl GenerationStage {
             Self::LayoutCheck => "checking layout",
             Self::LayoutRepair => "repairing layout",
             Self::Rendering => "rendering artifacts",
+            Self::PageDraft => "drafting page",
+            Self::PageReview => "reviewing page content",
+            Self::PageRepair => "repairing page",
+            Self::PageRendering => "assembling page artifacts",
         }
     }
 }

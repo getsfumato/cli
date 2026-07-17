@@ -46,7 +46,7 @@ pub struct ThemeAdapters {
     pub html: Option<HtmlThemeAdapter>,
 }
 
-/// Files used by the future HTML resource renderer.
+/// Files used by the standalone HTML page renderer.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HtmlThemeAdapter {

@@ -152,7 +152,7 @@ impl ProjectRepository for FilesystemProjectRepository {
             .projects
             .into_iter()
             .map(|(name, project)| {
-                let active = registry.active.as_deref() == Some(&name);
+                let active = registry.active.as_deref() == Some(name.as_str());
                 (name, project, active)
             })
             .collect())

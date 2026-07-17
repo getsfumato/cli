@@ -1,0 +1,20 @@
+Instruction: {{ instruction }}
+Project: {{ project }}
+Theme: {{ theme_name }}; colors {{ theme_colors }}; fonts {{ theme_fonts }}.
+
+Project guidance:
+{{ project_instructions or "none" }}
+
+Grounding sources:
+{{ source_bundle }}
+
+Review factual accuracy, explanatory sequence, accessibility, duplication, and whether interactions support the learning objective. Preserve grounded claims and the existing structure where it works.
+Preserve valid TeX delimiters: `\(...\)` for inline expressions and `\[...\]` for display expressions. Do not add external math scripts or move TeX into JavaScript.
+
+Document snapshot:
+
+```json
+{{ page_snapshot }}
+```
+
+Return only the RFC 6902 JSON Patch array. Return only the revision test operation when no content change is needed.

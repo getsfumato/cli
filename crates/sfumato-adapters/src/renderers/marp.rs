@@ -265,7 +265,7 @@ fn command_args(
     Ok(args)
 }
 
-fn resolved_browser_path(configured: Option<&Path>) -> Result<Option<PathBuf>> {
+pub(crate) fn resolved_browser_path(configured: Option<&Path>) -> Result<Option<PathBuf>> {
     if let Some(path) = configured {
         if !path.is_file() {
             bail!(

@@ -7,9 +7,12 @@ use serde::Serialize;
 
 use crate::{
     errors::{OperationStage, SfumatoResult},
-    generation::SlideLayoutIssue,
+    generation::{PageInspectionIssue, PageRuntimeSelection, SlideLayoutIssue},
     operation::OperationContext,
+    page_plugins::PagePluginPackage,
+    themes::ThemePackage,
 };
+use sfumato_domain::PageDocument;
 
 /// Semantic Mermaid styling derived from a Sfumato theme.
 #[derive(Clone, Debug, Serialize)]
@@ -65,4 +68,45 @@ pub trait SlideRenderer: Send + Sync {
         browser_path: Option<&Path>,
         operation: &OperationContext,
     ) -> SfumatoResult<Vec<SlideLayoutIssue>>;
+}
+
+/// Complete inputs for assembling a validated standalone page.
+pub struct PageAssemblyRequest<'a> {
+    /// Structured page fragments supplied by the model workflow.
+    pub document: &'a PageDocument,
+    /// Selected visual theme package.
+    pub theme: &'a ThemePackage,
+    /// Offline plugin runtimes selected for this page.
+    pub plugins: &'a [PagePluginPackage],
+    /// Generated assets that page markup may reference.
+    pub allowed_assets: &'a [std::path::PathBuf],
+    /// Whether browser diagnostics should be embedded in the output.
+    pub inspection: bool,
+}
+
+/// Validated standalone page plus the built-in runtimes embedded into it.
+#[derive(Debug)]
+pub struct AssembledPage {
+    /// Complete standalone HTML document.
+    pub html: String,
+    /// Automatically selected renderer runtimes and integrity metadata.
+    pub runtimes: Vec<PageRuntimeSelection>,
+}
+
+/// Deterministic HTML compiler and static validator for page fragments.
+pub trait PageAssembler: Send + Sync {
+    /// Validates fragments and assembles one standalone HTML document.
+    fn assemble(&self, request: PageAssemblyRequest<'_>) -> SfumatoResult<AssembledPage>;
+}
+
+/// Browser-backed runtime and responsive-layout inspection for generated pages.
+#[async_trait]
+pub trait PageInspector: Send + Sync {
+    /// Runs responsive browser inspection against one assembled page.
+    async fn inspect(
+        &self,
+        html_path: &Path,
+        browser_path: Option<&Path>,
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<PageInspectionIssue>>;
 }

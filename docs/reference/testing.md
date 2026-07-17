@@ -50,6 +50,11 @@ Tests do not mock private call graphs.
 - Edit patch allowlist, title/frontmatter/ID/order protection, no-op patch,
   stale revision, stale destination, and unrelated-content preservation.
 - Complete response enforcement; truncated model output never commits.
+- Structured page parsing, constrained semantic/browser patches, static HTML,
+  CSS, and JavaScript validation, offline CSP assembly, image allowlists, and
+  desktop/mobile browser issue scoring.
+- Plugin manifest ordering, exact versions, runtime hashes, license presence,
+  and opt-in offline Chrome execution for every bundled runtime.
 
 ### Cancellation and deadlines
 
@@ -64,6 +69,10 @@ external-call adapters must add the same checkpoint and process-reaping cases.
 and concurrent-commit failures. Slide publication tests verify warning semantics
 and stale-PDF removal. New transaction implementations must preserve the same
 rollback and immutable-revision contract.
+Page publication additionally tests atomic directory replacement, the stable
+`_sfumato/pages/<slug>/` namespace, generated Obsidian indexes, and stale legacy
+shape cleanup. Page renderer tests verify conditional MathJax integrity,
+offline SVG typesetting, and fatal reporting for unprocessed TeX.
 
 ### Public API and presentation
 

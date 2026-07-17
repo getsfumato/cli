@@ -25,6 +25,8 @@ let result = application
 ```
 
 `generate_slides` returns `SfumatoResult<GenerateSlidesResult>` and
+`generate_page` returns `SfumatoResult<GeneratePageResult>`. Page commands carry
+generic bundled plugin IDs and return the resolved versions and runtime hashes.
 `edit_slides` returns `SfumatoResult<EditSlidesResult>`. The same facade also
 owns project, model, connector, theme, prompt, setup, and configuration use
 cases. CLI and TUI construct the same command DTOs.
@@ -38,6 +40,7 @@ cases. CLI and TUI construct the same command DTOs.
 - `ArtifactStore`, repositories, and `WorkspaceFileSystem`;
 - `ProviderFactory`, `TextModel`, and `ImageGenerationProvider`;
 - `DiagramRenderer`, `SlideRenderer`, `SourceReader`, and `GenerationToolFactory`.
+- `PageAssembler`, `PageInspector`, and `PagePluginCatalog` for standalone pages.
 
 Every core port returns a typed result. Adapters may use implementation-specific
 diagnostics internally, but classify and sanitize failures before crossing the
@@ -47,6 +50,8 @@ port boundary.
 
 - `ReviewableDocument` and `DeckDocument` expose revision-guarded RFC 6902
   snapshots and transactional patch application.
+- `PageDocument` exposes the same revision-guarded contract over `title`,
+  `body_html`, `css`, and `javascript`; browser repair cannot change its title.
 - `TextModel::complete` performs one provider turn only.
 - `AgentRunner` owns transcripts, tools, tool-round limits, the final no-tools
   output-contract turn, and cancellation checkpoints.
@@ -83,11 +88,15 @@ are sanitized before presentation.
 Generation results identify the selected project and model profiles, declared
 tools, committed and published paths, review/layout state, warnings, project
 instruction path, and every contributing prompt's ID, origin, version, and
-SHA-256 hash. Edit results additionally report changed slide IDs, patch count,
+SHA-256 hash. Page results also report automatically embedded runtimes such as
+MathJax with their pinned version and integrity hash. Edit results additionally report changed slide IDs, patch count,
 context compaction, and parent-linked revision artifacts.
 
 The committed `manifest.json` and `current.json` pointer are authoritative.
-Published PDFs are convenience copies and never supersede the managed revision.
+Published PDFs and HTML pages are convenience copies and never supersede the
+managed revision. Page publication uses
+`<out>/_sfumato/pages/<slug>/{index.md,index.html,assets/}` so generated content
+is explicit and navigable from Obsidian.
 
 ## Public Surface Policy
 

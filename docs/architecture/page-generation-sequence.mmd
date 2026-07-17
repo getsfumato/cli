@@ -1,0 +1,44 @@
+sequenceDiagram
+    actor User
+    participant UI as CLI or TUI
+    participant App as SfumatoApplication
+    participant Page as GeneratePage
+    participant Prompts as PromptCatalog
+    participant Plugins as PagePluginCatalog
+    participant Draft as Text provider
+    participant Review as Reviewer provider
+    participant Assemble as PageAssembler
+    participant Math as Bundled MathJax
+    participant Browser as PageInspector
+    participant Store as ArtifactStore
+    participant Publish as WorkspaceFileSystem
+
+    User->>UI: generate page --instruction ... --plugin ...
+    UI->>App: GeneratePageCommand
+    App->>Page: effective config and outbound ports
+    Page->>Plugins: resolve and verify selected runtimes
+    Page->>Prompts: render page draft templates
+    Page->>Draft: structured draft plus bounded tools
+    Draft-->>Page: title, body_html, css, javascript
+    Page->>Assemble: parse and statically validate fragments
+    opt body contains TeX delimiters
+        Assemble->>Math: verify and embed pinned tex-svg runtime
+        Math-->>Assemble: runtime version and SHA-256 provenance
+    end
+    opt semantic review enabled
+        Page->>Review: revision snapshot and sources
+        Review-->>Page: RFC 6902 patch
+        Page->>Assemble: validate patched document
+    end
+    Page->>Assemble: inspection document with offline CSP
+    Page->>Browser: await math and inspect desktop/mobile viewports
+    opt issues and review enabled
+        Page->>Review: snapshot and focused issue report
+        Review-->>Page: constrained RFC 6902 patch
+        Page->>Browser: measure candidate again
+    end
+    Page->>Store: commit immutable page revision
+    opt output directory selected
+        Page->>Publish: atomically publish _sfumato/pages/slug tree
+    end
+    Page-->>UI: paths, models, plugins, runtimes, review, prompts, warnings

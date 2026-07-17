@@ -1,0 +1,42 @@
+# Page request
+
+Project: {{ project }}
+Working directory: {{ project_root }}
+Instruction: {{ instruction }}
+{% if title_provided %}Required title: {{ title }}{% else %}Choose a concise, descriptive title that names the subject rather than repeating the instruction.{% endif %}
+
+## Project guidance
+
+{{ project_instructions or "No SFUMATO.md guidance was provided." }}
+
+## Theme
+
+Name: {{ theme_name }}
+Colors: {{ theme_colors }}
+Fonts: {{ theme_fonts }}
+
+Use the semantic theme variables and create a clear visual hierarchy. Do not redefine the whole theme or force a one-color palette.
+
+## Offline plugins
+
+{% if plugins %}
+{% for plugin in plugins %}
+### {{ plugin.name }} {{ plugin.version }}
+
+API: `{{ plugin.api_global }}`
+
+{{ plugin.guidance }}
+{% endfor %}
+{% else %}
+No JavaScript plugins were selected. Use standard browser APIs only.
+{% endif %}
+
+{% if image_generation_available %}
+You may call `sfumato_image_gen` for an image that materially improves learning. Use the returned artifact path exactly in an `<img>` element with useful alt text.
+{% endif %}
+
+## Grounding sources
+
+{{ source_bundle }}
+
+Return only the strict JSON object.

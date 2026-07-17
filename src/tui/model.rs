@@ -95,6 +95,7 @@ pub(super) enum Screen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ResourceOperation {
     Generate,
+    GeneratePage,
     Edit,
 }
 
@@ -118,6 +119,17 @@ pub(super) enum FormField {
         label: &'static str,
         value: bool,
     },
+    Select {
+        label: &'static str,
+        options: Vec<String>,
+        selected: usize,
+    },
+    MultiSelect {
+        label: &'static str,
+        options: Vec<String>,
+        cursor: usize,
+        selected: BTreeSet<usize>,
+    },
     Submit {
         label: &'static str,
     },
@@ -126,7 +138,10 @@ pub(super) enum FormField {
 impl FormField {
     pub(super) fn label(&self) -> &'static str {
         match self {
-            Self::Text { label, .. } | Self::Toggle { label, .. } => label,
+            Self::Text { label, .. }
+            | Self::Toggle { label, .. }
+            | Self::Select { label, .. }
+            | Self::MultiSelect { label, .. } => label,
             Self::Submit { label } => label,
         }
     }
@@ -223,8 +238,19 @@ impl EditForm {
 
 impl Default for GenerateForm {
     fn default() -> Self {
+        Self::with_plugins(Vec::new())
+    }
+}
+
+impl GenerateForm {
+    pub(super) fn with_plugins(plugins: Vec<String>) -> Self {
         Self {
             fields: vec![
+                FormField::Select {
+                    label: "Resource",
+                    options: vec!["Slides".into(), "Page".into()],
+                    selected: 0,
+                },
                 FormField::Text {
                     label: "Instruction",
                     value: String::new(),
@@ -273,6 +299,12 @@ impl Default for GenerateForm {
                     placeholder: "project or user reviewer",
                     multiline: false,
                 },
+                FormField::MultiSelect {
+                    label: "Page plugins",
+                    options: plugins,
+                    cursor: 0,
+                    selected: BTreeSet::new(),
+                },
                 FormField::Toggle {
                     label: "Review",
                     value: true,
@@ -291,6 +323,39 @@ impl Default for GenerateForm {
 }
 
 impl GenerateForm {
+    pub(super) fn is_page(&self) -> bool {
+        self.fields.iter().any(|field| {
+            matches!(
+                field,
+                FormField::Select {
+                    label: "Resource",
+                    selected: 1,
+                    ..
+                }
+            )
+        })
+    }
+
+    pub(super) fn selected_plugins(&self) -> Vec<String> {
+        self.fields
+            .iter()
+            .find_map(|field| match field {
+                FormField::MultiSelect {
+                    label: "Page plugins",
+                    options,
+                    selected,
+                    ..
+                } => Some(
+                    selected
+                        .iter()
+                        .filter_map(|index| options.get(*index).cloned())
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     pub(super) fn text(&self, label: &str) -> String {
         self.fields
             .iter()
@@ -344,6 +409,37 @@ impl GenerateForm {
                 vec![format!("text={text_model}")]
             },
             review_model: optional(self.text("Reviewer")),
+            no_review: !self.toggle("Review"),
+            json: false,
+        })
+    }
+
+    pub(super) fn to_page_args(&self) -> Result<PageArgs> {
+        let instruction = self.text("Instruction");
+        if instruction.is_empty() {
+            anyhow::bail!("Instruction cannot be empty");
+        }
+        let optional = |value: String| (!value.is_empty()).then_some(value);
+        let inputs = split_values(&self.text("Sources"))
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let text_model = self.text("Text model");
+        Ok(PageArgs {
+            inputs,
+            instruction,
+            title: optional(self.text("Title")),
+            out: optional(self.text("Publish PDF")).map(PathBuf::from),
+            dry_run: self.toggle("Dry run"),
+            project: optional(self.text("Project")),
+            theme: optional(self.text("Theme")),
+            model_overrides: if text_model.is_empty() {
+                Vec::new()
+            } else {
+                vec![format!("text={text_model}")]
+            },
+            review_model: optional(self.text("Reviewer")),
+            plugins: self.selected_plugins(),
             no_review: !self.toggle("Review"),
             json: false,
         })
@@ -645,6 +741,7 @@ pub(super) enum UiMessage {
 
 pub(super) enum ResourceResult {
     Generated(GenerateSlidesResult),
+    GeneratedPage(GeneratePageResult),
     Edited(EditSlidesResult),
 }
 
@@ -652,6 +749,7 @@ impl ResourceResult {
     pub(super) fn markdown_path(&self) -> &std::path::Path {
         match self {
             Self::Generated(result) => &result.markdown_path,
+            Self::GeneratedPage(result) => &result.html_path,
             Self::Edited(result) => &result.markdown_path,
         }
     }
@@ -659,6 +757,7 @@ impl ResourceResult {
     pub(super) fn warnings(&self) -> &[String] {
         match self {
             Self::Generated(result) => &result.warnings,
+            Self::GeneratedPage(result) => &result.warnings,
             Self::Edited(result) => &result.warnings,
         }
     }
@@ -666,6 +765,7 @@ impl ResourceResult {
     pub(super) fn completion_message(&self) -> &'static str {
         match self {
             Self::Generated(_) => "Generation complete",
+            Self::GeneratedPage(_) => "Page generation complete",
             Self::Edited(_) => "Slide edit complete",
         }
     }

@@ -9,14 +9,16 @@ use crate::{
         Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs, ConfigShowArgs,
         ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, EditCommands, EditSlidesArgs,
         GenerateCommands, InitProjectArgs, InitTarget, ModelAddArgs, ModelCommands, ModelEditArgs,
-        ModelNameArgs, ModelUseArgs, ProjectCommands, ProjectNameArgs, ProjectShowArgs,
-        PromptCommands, PromptCustomizeArgs, PromptProjectArgs, PromptScope, PromptShowArgs,
-        SlidesArgs, ThemeCommands, ThemeUseArgs,
+        ModelNameArgs, ModelUseArgs, PageArgs, PluginCommands, ProjectCommands, ProjectNameArgs,
+        ProjectShowArgs, PromptCommands, PromptCustomizeArgs, PromptProjectArgs, PromptScope,
+        PromptShowArgs, SlidesArgs, ThemeCommands, ThemeUseArgs,
     },
     init::InitService,
 };
 use sfumato_core::{
-    application::{EditSlidesCommand, GenerateSlidesCommand, SfumatoApplication},
+    application::{
+        EditSlidesCommand, GeneratePageCommand, GenerateSlidesCommand, SfumatoApplication,
+    },
     config::{Capability, ConfigOverrides},
     config_editor::ConfigTarget,
     connectors::ConnectorPreset as CoreConnectorPreset,
@@ -24,6 +26,7 @@ use sfumato_core::{
     operation::OperationContext,
     prompts::{PromptId, PromptOrigin, PromptOverrideScope},
     providers::TextGenerationEvent,
+    resources::pages::GeneratePageResult,
     resources::slides::{EditSlidesRequest, EditSlidesResult, GenerateSlidesResult},
 };
 
@@ -43,8 +46,40 @@ impl RunnableCommand for Commands {
             Self::Model { command } => command.run(application).await,
             Self::Theme { command } => command.run(application).await,
             Self::Prompt { command } => command.run(application).await,
+            Self::Plugin { command } => command.run(application).await,
             Self::Generate { command } => command.run(application).await,
             Self::Edit { command } => command.run(application).await,
+        }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for PluginCommands {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        match self {
+            Self::List => {
+                for plugin in application.list_page_plugins()? {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        plugin.id, plugin.name, plugin.version, plugin.runtime_hash
+                    );
+                }
+                Ok(())
+            }
+            Self::Show(args) => {
+                let plugin = application.show_page_plugin(&args.id)?;
+                println!(
+                    "{} {}\nID: {}\nAPI: {}\nSHA-256: {}\nLicense: {}\n\n{}",
+                    plugin.summary.name,
+                    plugin.summary.version,
+                    plugin.summary.id,
+                    plugin.summary.api_global,
+                    plugin.summary.runtime_hash,
+                    plugin.summary.license,
+                    plugin.guidance,
+                );
+                Ok(())
+            }
         }
     }
 }
@@ -437,8 +472,103 @@ impl RunnableCommand for GenerateCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         match self {
             Self::Slides(args) => args.run(application).await,
+            Self::Page(args) => args.run(application).await,
         }
     }
+}
+
+#[async_trait]
+impl RunnableCommand for PageArgs {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        let json = self.json;
+        let dry_run = self.dry_run;
+        let event_sink = (!json && !dry_run)
+            .then_some(std::sync::Arc::new(render_generation_event)
+                as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
+        match execute_page(&application, self, event_sink, OperationContext::detached()).await {
+            Ok(result) => render_page_result(result, json, dry_run),
+            Err(error) if json => {
+                println!("{}", json_operation_error(&error));
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+pub(crate) async fn execute_page(
+    application: &SfumatoApplication,
+    args: PageArgs,
+    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    operation: OperationContext,
+) -> Result<GeneratePageResult> {
+    if args.instruction.trim().is_empty() {
+        bail!("Instruction cannot be empty");
+    }
+    let model_overrides = parse_model_overrides(&args.model_overrides)?;
+    let config = ConfigOverrides {
+        project: args.project.clone(),
+        theme: args.theme,
+        model_overrides: model_overrides.clone(),
+        reviewer_model: args.review_model,
+        publish_dir: args.out,
+        pdf: false,
+    };
+    let request = GenerationRequest {
+        instruction: args.instruction,
+        sources: args.inputs,
+        resource_kind: ResourceKind::Page,
+        project: args.project,
+        model_overrides,
+    };
+    Ok(application
+        .generate_page(GeneratePageCommand {
+            operation,
+            config,
+            request,
+            title: args.title,
+            plugins: args.plugins,
+            dry_run: args.dry_run,
+            review: !args.no_review,
+            event_sink,
+        })
+        .await?)
+}
+
+fn render_page_result(result: GeneratePageResult, json: bool, dry_run: bool) -> Result<()> {
+    for warning in &result.warnings {
+        eprintln!("{warning}");
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result.output)?);
+    } else if dry_run {
+        println!("Project: {}", result.output.project);
+        println!("Planned HTML: {}", result.html_path.display());
+        if result.output.plugins.is_empty() {
+            println!("Plugins: none");
+        } else {
+            println!("Plugins:");
+            for plugin in &result.output.plugins {
+                println!("- {} {} ({})", plugin.name, plugin.version, plugin.id);
+            }
+        }
+        if !result.tool_summaries.is_empty() {
+            println!("Injected tools:");
+            for tool in &result.tool_summaries {
+                println!("- {}: {}", tool.name, tool.description);
+            }
+        }
+        if let Some(prompt) = &result.prompt_preview {
+            println!("\n{prompt}");
+        }
+        println!("Dry run complete; no model or browser was called and no files were written.");
+    } else {
+        println!("Wrote {}", result.html_path.display());
+        for path in &result.published_paths {
+            println!("Published {}", path.display());
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]

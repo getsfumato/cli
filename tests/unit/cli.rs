@@ -74,3 +74,47 @@ fn parses_focused_slide_edit_command() {
     assert_eq!(args.project.as_deref(), Some("university"));
     assert_eq!(args.model_overrides, vec!["text=cloud-draft"]);
 }
+
+#[test]
+fn parses_page_plugins_and_dedicated_generation_options() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "page",
+        "notes",
+        "--instruction",
+        "Explain Fourier series interactively",
+        "--plugin",
+        "threejs",
+        "--plugin",
+        "motion",
+        "--theme",
+        "gruvbox",
+        "--model",
+        "text=cloud-draft",
+    ])
+    .unwrap();
+
+    let Some(Commands::Generate {
+        command: GenerateCommands::Page(args),
+    }) = cli.command
+    else {
+        panic!("expected generate page command");
+    };
+    assert_eq!(args.inputs, vec![PathBuf::from("notes")]);
+    assert_eq!(args.plugins, vec!["threejs", "motion"]);
+    assert_eq!(args.theme.as_deref(), Some("gruvbox"));
+    assert_eq!(args.model_overrides, vec!["text=cloud-draft"]);
+}
+
+#[test]
+fn parses_page_plugin_discovery() {
+    let cli = Cli::try_parse_from(["sfumato", "plugin", "show", "threejs"]).unwrap();
+    let Some(Commands::Plugin {
+        command: PluginCommands::Show(args),
+    }) = cli.command
+    else {
+        panic!("expected plugin show command");
+    };
+    assert_eq!(args.id, "threejs");
+}

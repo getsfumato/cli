@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, env, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env,
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -37,7 +44,10 @@ use sfumato_core::{
     operation::{EventSink, EventSinkError, OperationContext, OperationEvent, OperationEventKind},
     prompts::{PromptId, PromptOrigin, PromptOverrideScope},
     providers::{GenerationStage, TextGenerationEvent},
-    resources::slides::{EditSlidesResult, GenerateSlidesResult},
+    resources::{
+        pages::GeneratePageResult,
+        slides::{EditSlidesResult, GenerateSlidesResult},
+    },
 };
 use tachyonfx::{EffectManager, fx};
 use tokio::{
@@ -47,13 +57,13 @@ use tokio::{
 use tui_widgets::big_text::{BigText, PixelSize};
 
 use crate::{
-    cli::{EditSlidesArgs, SlidesArgs},
-    commands::{execute_edit_slides, execute_slides},
+    cli::{EditSlidesArgs, PageArgs, SlidesArgs},
+    commands::{execute_edit_slides, execute_page, execute_slides},
 };
 
 const TICK_RATE: Duration = Duration::from_millis(80);
 const NAV_ITEMS: &[(&str, &str)] = &[
-    ("Generate", "Build a reviewed Marp deck"),
+    ("Generate", "Build reviewed slides or an interactive page"),
     ("Edit", "Update an existing generated deck"),
     ("Projects", "Project working directories"),
     ("Models", "Profiles, capabilities, defaults"),

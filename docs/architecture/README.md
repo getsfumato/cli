@@ -39,6 +39,7 @@ Cargo workspace dependencies enforce this direction.
 - [Domain model](domain-model.mmd): projects, models, decks, prompts, errors, and artifacts.
 - [Prompt resolution](prompt-resolution.mmd): project/user/bundled precedence and provenance.
 - [Generation sequence](generation-sequence.mmd): draft, repair, review, render, commit, and publish.
+- [Page generation sequence](page-generation-sequence.mmd): structured fragments, offline plugins and MathJax, browser repair, commit, and namespaced Obsidian publication.
 - [Edit sequence](edit-sequence.mmd): revision-guarded content-only editing.
 - [Config lifecycle](config-lifecycle.mmd): strict v4 reads and atomic revision-aware writes.
 - [Artifact transaction](artifact-transaction.mmd): staging, validation, immutable commit, and publication.
@@ -64,12 +65,15 @@ and operator/integrator contracts under [`docs/reference`](../reference/).
 6. Generation writes only to transaction staging. A revision becomes visible
    after manifest validation and atomic commit; `current.json` changes last.
 7. Publication happens after commit. Publication failure is a warning and a run
-   without a PDF removes any stale published PDF.
+   without a PDF removes any stale published slide resource folder.
 8. Prompt provenance records ID, origin, manifest version, and SHA-256 source
    hash in the generation result and committed manifest metadata.
 9. Mermaid fences are rendered with project theme tokens and embedded at a
    bounded 300 px Marp height in both layout previews and final artifacts, so
    intrinsic SVG dimensions cannot create undetected overflow.
+10. Page models return structured fragments rather than complete documents.
+    The adapter parses HTML, CSS, and JavaScript, applies an offline CSP, and
+    inlines only hash-verified bundled plugin runtimes before browser inspection.
 
 ## Verification Gate
 

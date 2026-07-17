@@ -54,6 +54,39 @@ fn generation_form_builds_capability_override_and_sources() {
 }
 
 #[test]
+fn generation_form_builds_a_page_with_multiple_catalog_plugins() {
+    let mut form =
+        GenerateForm::with_plugins(vec!["lottie".into(), "motion".into(), "threejs".into()]);
+    for field in &mut form.fields {
+        match field {
+            FormField::Select {
+                label: "Resource",
+                selected,
+                ..
+            } => *selected = 1,
+            FormField::Text {
+                label: "Instruction",
+                value,
+                ..
+            } => *value = "Build an interactive transform explorer".into(),
+            FormField::MultiSelect {
+                label: "Page plugins",
+                selected,
+                ..
+            } => {
+                selected.insert(1);
+                selected.insert(2);
+            }
+            _ => {}
+        }
+    }
+
+    assert!(form.is_page());
+    let args = form.to_page_args().unwrap();
+    assert_eq!(args.plugins, vec!["motion", "threejs"]);
+}
+
+#[test]
 fn cli_and_tui_build_equivalent_generation_arguments() {
     let cli_args = SlidesCliHarness::try_parse_from([
         "slides",

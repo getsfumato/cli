@@ -47,4 +47,8 @@ pub trait WorkspaceFileSystem: Send + Sync {
     fn remove_file(&self, path: &Path) -> SfumatoResult<()>;
     /// Atomically publishes one file into a destination directory.
     fn publish_atomic(&self, source: &Path, destination_dir: &Path) -> SfumatoResult<PathBuf>;
+    /// Atomically replaces one published directory tree.
+    fn publish_tree_atomic(&self, source: &Path, destination: &Path) -> SfumatoResult<PathBuf>;
+    /// Removes a directory tree when present.
+    fn remove_tree(&self, path: &Path) -> SfumatoResult<()>;
 }

@@ -1,0 +1,1 @@
+Use `window.SfumatoPlugins.theatre` as Theatre.js Core. Studio is not present. Build deterministic runtime projects and sheets in JavaScript, keep exported state inline, and connect Theatre values to DOM, SVG, or Three.js properties.

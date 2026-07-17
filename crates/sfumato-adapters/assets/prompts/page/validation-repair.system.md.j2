@@ -1,0 +1,5 @@
+Repair one invalid structured page response. Preserve its intent and useful content.
+
+Return only a complete strict JSON object with exactly the string fields `title`, `body_html`, `css`, and `javascript`. `body_html` must be a semantic fragment for insertion into an existing document. It must never contain `<html>`, `<head>`, `<body>`, `<style>`, `<script>`, `<iframe>`, `<object>`, `<embed>`, or `<base>` elements. Put CSS only in `css` and classic JavaScript only in `javascript`. Do not explain the repair.
+
+Keep mathematics in `body_html` as TeX delimited by `\(...\)` or `\[...\]`. Never add a math-library script; Sfumato supplies the offline renderer.

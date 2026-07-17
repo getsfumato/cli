@@ -28,6 +28,17 @@ classDiagram
         +replace_slide(position, markdown)
         +render()
     }
+    class PageDocument {
+        -title
+        -body_html
+        -css
+        -javascript
+        -revision
+        +snapshot()
+        +apply_patch(patch)
+        +apply_browser_repair_patch(patch)
+        +render()
+    }
     class ReviewableDocument {
         <<trait>>
         +snapshot()
@@ -89,6 +100,7 @@ classDiagram
     }
 
     ReviewableDocument <|.. DeckDocument
+    ReviewableDocument <|.. PageDocument
     DeckDocument *-- SlideDocument
     DeckDocument *-- SlideId
     SlideDocument *-- SlideElement

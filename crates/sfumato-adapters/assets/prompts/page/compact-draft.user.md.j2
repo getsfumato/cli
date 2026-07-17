@@ -1,0 +1,10 @@
+Instruction: {{ instruction }}
+Project: {{ project }}
+Theme: {{ theme_name }}; colors {{ theme_colors }}; fonts {{ theme_fonts }}.
+{% if title_provided %}Title: {{ title }}{% else %}Choose a concise subject title.{% endif %}
+Project guidance: {{ project_instructions or "none" }}
+Selected plugin APIs:
+{% for plugin in plugins %}- `{{ plugin.api_global }}`: {{ plugin.guidance }}
+{% else %}- none
+{% endfor %}
+Return only the strict JSON object and keep the page focused enough for the available context.

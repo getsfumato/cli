@@ -19,14 +19,16 @@ use crate::{
     generation::GenerationRequest,
     models::{ModelDefaultChanged, ModelService, ModelSummary},
     operation::OperationContext,
+    page_plugins::{PagePluginCatalog, PagePluginPackage, PagePluginSummary},
     projects::{ProjectRemoved, ProjectService, ProjectSummary},
     prompts::{
         PromptCatalog, PromptError, PromptId, PromptManager, PromptOverrideScope, PromptProvenance,
         PromptTemplateSource, PromptTemplateSummary,
     },
     providers::{ProviderFactory, TextGenerationEvent},
-    renderers::{DiagramRenderer, SlideRenderer},
+    renderers::{DiagramRenderer, PageAssembler, PageInspector, SlideRenderer},
     repositories::{GlobalConfigRepository, ProjectRepository, ThemeRepository},
+    resources::pages::{GeneratePageOptions, GeneratePageResult, generate_page},
     resources::slides::{
         EditSlidesOptions, EditSlidesRequest, EditSlidesResult, GenerateSlidesOptions,
         GenerateSlidesResult, edit_slides, generate_slides,
@@ -67,6 +69,26 @@ pub struct GenerateSlidesCommand {
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
 }
 
+/// Complete request for the standalone page-generation use case.
+pub struct GeneratePageCommand {
+    /// Cancellation, deadline, and event context.
+    pub operation: OperationContext,
+    /// Project, theme, model, and output overrides.
+    pub config: ConfigOverrides,
+    /// Instruction and optional grounding sources.
+    pub request: GenerationRequest,
+    /// Optional explicit page title.
+    pub title: Option<String>,
+    /// Selected bundled page plugin identifiers.
+    pub plugins: Vec<String>,
+    /// Resolves the request without invoking models or writing artifacts.
+    pub dry_run: bool,
+    /// Enables semantic and browser-focused model repair.
+    pub review: bool,
+    /// Optional frontend observer for provider progress events.
+    pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+}
+
 /// Complete request for the focused slide-editing use case.
 pub struct EditSlidesCommand {
     /// Job lifecycle, cancellation, deadline, and event context.
@@ -98,6 +120,12 @@ pub struct SfumatoApplicationDependencies {
     pub diagrams: Arc<dyn DiagramRenderer>,
     /// Slide renderer.
     pub slides: Arc<dyn SlideRenderer>,
+    /// Standalone page compiler and validator.
+    pub page_assembler: Arc<dyn PageAssembler>,
+    /// Browser-backed page inspector.
+    pub page_inspector: Arc<dyn PageInspector>,
+    /// Offline page plugin catalog.
+    pub page_plugins: Arc<dyn PagePluginCatalog>,
     /// Source material reader.
     pub sources: Arc<dyn SourceReader>,
     /// Generation tool factory.
@@ -129,6 +157,9 @@ pub struct SfumatoApplication {
     providers: Arc<dyn ProviderFactory>,
     diagrams: Arc<dyn DiagramRenderer>,
     slides: Arc<dyn SlideRenderer>,
+    page_assembler: Arc<dyn PageAssembler>,
+    page_inspector: Arc<dyn PageInspector>,
+    page_plugins: Arc<dyn PagePluginCatalog>,
     sources: Arc<dyn SourceReader>,
     tools: Arc<dyn GenerationToolFactory>,
     themes: Arc<dyn ThemeRepository>,
@@ -150,6 +181,9 @@ impl SfumatoApplication {
             providers,
             diagrams,
             slides,
+            page_assembler,
+            page_inspector,
+            page_plugins,
             sources,
             tools,
             themes,
@@ -168,6 +202,9 @@ impl SfumatoApplication {
             providers,
             diagrams,
             slides,
+            page_assembler,
+            page_inspector,
+            page_plugins,
             sources,
             tools,
             themes,
@@ -214,6 +251,55 @@ impl SfumatoApplication {
             },
         )
         .await
+    }
+
+    /// Generates and transactionally commits a standalone HTML page.
+    pub async fn generate_page(
+        &self,
+        command: GeneratePageCommand,
+    ) -> SfumatoResult<GeneratePageResult> {
+        command.operation.checkpoint(OperationStage::Resolve)?;
+        let config = self
+            .config
+            .resolve(command.config)
+            .map_err(|error| error.at_stage(OperationStage::Resolve))?;
+        let prompt_catalog = self
+            .prompts
+            .for_project(&config.project_root)
+            .map_err(|error| error.at_stage(OperationStage::RenderPrompt))?;
+        generate_page(
+            config,
+            command.request,
+            GeneratePageOptions {
+                operation: command.operation,
+                title: command.title,
+                plugins: command.plugins,
+                dry_run: command.dry_run,
+                review: command.review,
+                event_sink: command.event_sink,
+                prompt_catalog,
+                artifact_store: Arc::clone(&self.artifacts),
+                provider_factory: Arc::clone(&self.providers),
+                source_reader: Arc::clone(&self.sources),
+                tool_factory: Arc::clone(&self.tools),
+                theme_repository: Arc::clone(&self.themes),
+                plugin_catalog: Arc::clone(&self.page_plugins),
+                page_assembler: Arc::clone(&self.page_assembler),
+                page_inspector: Arc::clone(&self.page_inspector),
+                workspace: Arc::clone(&self.workspace),
+            },
+        )
+        .await
+    }
+
+    /// Lists bundled offline page plugins.
+    pub fn list_page_plugins(&self) -> SfumatoResult<Vec<PagePluginSummary>> {
+        self.page_plugins.list()
+    }
+
+    /// Resolves one bundled offline page plugin.
+    pub fn show_page_plugin(&self, id: &str) -> SfumatoResult<PagePluginPackage> {
+        self.page_plugins.load(id)
     }
 
     /// Applies focused content patches and commits a new deck revision.

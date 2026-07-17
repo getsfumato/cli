@@ -7,6 +7,7 @@
 
 mod artifact;
 mod deck;
+mod page;
 mod primitives;
 mod review;
 
@@ -17,6 +18,7 @@ pub use artifact::{
 pub use deck::{
     DECK_SCHEMA_VERSION, DeckDocument, SlideDocument, SlideElement, SlideId, SlideKind,
 };
+pub use page::{PAGE_SCHEMA_VERSION, PageDocument};
 pub use primitives::{
     ArtifactId, Capability, CapabilityParseError, JobId, ModelProfileName, ProjectName, RevisionId,
     SecretRef, ThemeName, ValueError,

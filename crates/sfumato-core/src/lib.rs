@@ -25,6 +25,8 @@ pub mod generation;
 #[allow(missing_docs)]
 pub mod models;
 pub mod operation;
+/// Offline JavaScript plugin packages available to generated pages.
+pub mod page_plugins;
 /// Registered-project application services.
 #[allow(missing_docs)]
 pub mod projects;

@@ -241,7 +241,7 @@ impl ImageGenerationTool {
             .push(path.clone());
         Ok(json!({
             "path": path,
-            "markdown_path": format!("images/{filename}"),
+            "markdown_path": format!("{}/{filename}", self.config.reference_prefix),
             "alt_text": alt_text,
             "media_type": response.media_type,
             "model_profile": self.config.profile_name,

@@ -34,3 +34,25 @@ fn publishes_a_file_atomically() {
 
     assert_eq!(fs::read_to_string(published).unwrap(), "pdf");
 }
+
+#[test]
+fn atomically_replaces_a_published_page_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("published/fourier");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(source.join("index.html"), "new page").unwrap();
+    fs::write(destination.join("index.html"), "old page").unwrap();
+    fs::write(destination.join("stale.png"), "stale").unwrap();
+
+    let published = LocalWorkspaceFileSystem
+        .publish_tree_atomic(&source, &destination)
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(published.join("index.html")).unwrap(),
+        "new page"
+    );
+    assert!(!published.join("stale.png").exists());
+}

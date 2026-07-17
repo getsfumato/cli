@@ -42,6 +42,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: PromptCommands,
     },
+    #[command(about = "Inspect bundled offline page plugins")]
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommands,
+    },
     Generate {
         #[command(subcommand)]
         command: GenerateCommands,
@@ -68,6 +73,20 @@ pub enum InitTarget {
 #[derive(Debug, Subcommand)]
 pub enum GenerateCommands {
     Slides(SlidesArgs),
+    Page(PageArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PluginCommands {
+    #[command(about = "List bundled offline page plugins")]
+    List,
+    #[command(about = "Show metadata and model guidance for a page plugin")]
+    Show(PluginNameArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PluginNameArgs {
+    pub id: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -336,6 +355,47 @@ pub struct SlidesArgs {
 
     #[arg(long, value_name = "PROFILE")]
     pub review_model: Option<String>,
+
+    #[arg(long)]
+    pub no_review: bool,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct PageArgs {
+    pub inputs: Vec<PathBuf>,
+
+    #[arg(long, required = true)]
+    pub instruction: String,
+
+    #[arg(long)]
+    pub title: Option<String>,
+
+    #[arg(
+        long,
+        help = "Publish the page to this folder; managed revisions remain in Sfumato's project workspace"
+    )]
+    pub out: Option<PathBuf>,
+
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub project: Option<String>,
+
+    #[arg(long)]
+    pub theme: Option<String>,
+
+    #[arg(long = "model", value_name = "CAPABILITY=PROFILE")]
+    pub model_overrides: Vec<String>,
+
+    #[arg(long, value_name = "PROFILE")]
+    pub review_model: Option<String>,
+
+    #[arg(long = "plugin", value_name = "ID")]
+    pub plugins: Vec<String>,
 
     #[arg(long)]
     pub no_review: bool,

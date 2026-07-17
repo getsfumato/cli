@@ -66,14 +66,23 @@ impl App {
         match self.screen {
             Screen::Home => "Workspace".to_string(),
             Screen::Browse(section) => section.title().to_string(),
-            Screen::Generate => "Generate / Slides".to_string(),
+            Screen::Generate => format!(
+                "Generate / {}",
+                if self.form.is_page() {
+                    "Page"
+                } else {
+                    "Slides"
+                }
+            ),
             Screen::Edit => "Edit / Slides".to_string(),
             Screen::Running => match self.resource_operation {
                 ResourceOperation::Generate => "Generate / In progress".to_string(),
+                ResourceOperation::GeneratePage => "Generate page / In progress".to_string(),
                 ResourceOperation::Edit => "Edit / In progress".to_string(),
             },
             Screen::Complete => match self.resource_operation {
                 ResourceOperation::Generate => "Generate / Result".to_string(),
+                ResourceOperation::GeneratePage => "Generate page / Result".to_string(),
                 ResourceOperation::Edit => "Edit / Result".to_string(),
             },
         }
@@ -298,6 +307,29 @@ impl App {
                         *row,
                     );
                 }
+                FormField::Select {
+                    label,
+                    options,
+                    selected: choice,
+                } => {
+                    frame.render_widget(
+                        Paragraph::new(select_line(options, *choice))
+                            .block(field_block(label, selected)),
+                        *row,
+                    );
+                }
+                FormField::MultiSelect {
+                    label,
+                    options,
+                    cursor,
+                    selected: choices,
+                } => {
+                    frame.render_widget(
+                        Paragraph::new(multi_select_line(options, *cursor, choices))
+                            .block(field_block(label, selected)),
+                        *row,
+                    );
+                }
                 FormField::Submit { label } => {
                     frame.render_widget(
                         Paragraph::new(Span::styled(
@@ -373,8 +405,16 @@ impl App {
             GenerationStage::LayoutCheck,
             GenerationStage::Rendering,
         ];
+        let page_stages = [
+            GenerationStage::PageDraft,
+            GenerationStage::PageReview,
+            GenerationStage::LayoutCheck,
+            GenerationStage::PageRepair,
+            GenerationStage::PageRendering,
+        ];
         let stages: &[GenerationStage] = match self.resource_operation {
             ResourceOperation::Generate => &generation_stages,
+            ResourceOperation::GeneratePage => &page_stages,
             ResourceOperation::Edit => &edit_stages,
         };
         let current = self
@@ -534,6 +574,29 @@ fn draw_resource_form(
                     *row,
                 );
             }
+            FormField::Select {
+                label,
+                options,
+                selected: choice,
+            } => {
+                frame.render_widget(
+                    Paragraph::new(select_line(options, *choice))
+                        .block(field_block(label, selected)),
+                    *row,
+                );
+            }
+            FormField::MultiSelect {
+                label,
+                options,
+                cursor,
+                selected: choices,
+            } => {
+                frame.render_widget(
+                    Paragraph::new(multi_select_line(options, *cursor, choices))
+                        .block(field_block(label, selected)),
+                    *row,
+                );
+            }
             FormField::Submit { .. } => {
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
@@ -565,6 +628,60 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         width: width.min(area.width),
         height: height.min(area.height),
     }
+}
+
+fn select_line(options: &[String], selected: usize) -> Line<'static> {
+    Line::from(
+        options
+            .iter()
+            .enumerate()
+            .flat_map(|(index, option)| {
+                let active = index == selected;
+                vec![
+                    Span::styled(
+                        if active { "[x] " } else { "[ ] " },
+                        Style::default().fg(if active { GREEN } else { MUTED }),
+                    ),
+                    Span::styled(option.clone(), Style::default().fg(TEXT)),
+                    Span::raw("  "),
+                ]
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn multi_select_line(
+    options: &[String],
+    cursor: usize,
+    selected: &BTreeSet<usize>,
+) -> Line<'static> {
+    if options.is_empty() {
+        return Line::from(Span::styled(
+            "No bundled plugins",
+            Style::default().fg(MUTED),
+        ));
+    }
+    Line::from(
+        options
+            .iter()
+            .enumerate()
+            .flat_map(|(index, option)| {
+                let enabled = selected.contains(&index);
+                vec![
+                    Span::styled(
+                        if index == cursor { ">" } else { " " },
+                        Style::default().fg(ACCENT),
+                    ),
+                    Span::styled(
+                        if enabled { "[x] " } else { "[ ] " },
+                        Style::default().fg(if enabled { GREEN } else { MUTED }),
+                    ),
+                    Span::styled(option.clone(), Style::default().fg(TEXT)),
+                    Span::raw("  "),
+                ]
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn field_height(field: &FormField) -> u16 {
@@ -647,6 +764,10 @@ pub(super) fn stage_label(stage: GenerationStage) -> &'static str {
         GenerationStage::LayoutCheck => "Layout check",
         GenerationStage::LayoutRepair => "Layout repair",
         GenerationStage::Rendering => "Rendering",
+        GenerationStage::PageDraft => "Page draft",
+        GenerationStage::PageReview => "Page review",
+        GenerationStage::PageRepair => "Page repair",
+        GenerationStage::PageRendering => "Page rendering",
     }
 }
 

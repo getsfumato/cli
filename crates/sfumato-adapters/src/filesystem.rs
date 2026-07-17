@@ -210,6 +210,86 @@ impl WorkspaceFileSystem for LocalWorkspaceFileSystem {
             Ok(destination)
         })())
     }
+
+    fn publish_tree_atomic(&self, source: &Path, destination: &Path) -> SfumatoResult<PathBuf> {
+        workspace_result((|| {
+            if !source.is_dir() {
+                bail!(
+                    "Published page payload is not a directory: {}",
+                    source.display()
+                );
+            }
+            let parent = destination
+                .parent()
+                .context("Published directory must have a parent")?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Could not create {}", parent.display()))?;
+            let temporary = tempfile::Builder::new()
+                .prefix(".sfumato-publish-")
+                .tempdir_in(parent)
+                .with_context(|| format!("Could not stage publication in {}", parent.display()))?;
+            let staged = temporary.path().join("payload");
+            self.copy_tree(source, &staged, &[])
+                .map_err(anyhow::Error::from)?;
+            let backup = parent.join(format!(
+                ".{}.sfumato-backup-{}",
+                destination
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("page"),
+                std::process::id()
+            ));
+            if backup.exists() {
+                fs::remove_dir_all(&backup)
+                    .with_context(|| format!("Could not remove stale {}", backup.display()))?;
+            }
+            let had_destination = destination.exists();
+            if had_destination {
+                if !destination.is_dir() {
+                    bail!(
+                        "Published page destination is not a directory: {}",
+                        destination.display()
+                    );
+                }
+                fs::rename(destination, &backup).with_context(|| {
+                    format!(
+                        "Could not stage existing publication {}",
+                        destination.display()
+                    )
+                })?;
+            }
+            if let Err(error) = fs::rename(&staged, destination) {
+                if had_destination {
+                    let _ = fs::rename(&backup, destination);
+                }
+                return Err(error).with_context(|| {
+                    format!("Could not atomically publish {}", destination.display())
+                });
+            }
+            if had_destination {
+                fs::remove_dir_all(&backup)
+                    .with_context(|| format!("Could not remove {}", backup.display()))?;
+            }
+            Ok(destination.to_path_buf())
+        })())
+    }
+
+    fn remove_tree(&self, path: &Path) -> SfumatoResult<()> {
+        workspace_result((|| {
+            if !path.exists() {
+                return Ok(());
+            }
+            let metadata = fs::symlink_metadata(path)
+                .with_context(|| format!("Could not inspect {}", path.display()))?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                bail!(
+                    "Refusing to remove non-directory publication {}",
+                    path.display()
+                );
+            }
+            fs::remove_dir_all(path).with_context(|| format!("Could not remove {}", path.display()))
+        })())
+    }
 }
 
 fn workspace_result<T>(result: Result<T>) -> SfumatoResult<T> {

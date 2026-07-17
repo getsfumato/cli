@@ -73,6 +73,28 @@ pub enum PromptId {
     ImageGenerationUser,
     /// Model-facing descriptions for the generation tool registry.
     ToolsGenerationDescriptions,
+    /// System prompt for a standalone page draft.
+    PageDraftSystem,
+    /// User prompt for a standalone page draft.
+    PageDraftUser,
+    /// System prompt for a compact standalone page draft.
+    PageCompactDraftSystem,
+    /// User prompt for a compact standalone page draft.
+    PageCompactDraftUser,
+    /// System prompt for repairing invalid page fragments.
+    PageValidationRepairSystem,
+    /// User prompt for repairing invalid page fragments.
+    PageValidationRepairUser,
+    /// System prompt for semantic page review.
+    PageReviewSystem,
+    /// User prompt for semantic page review.
+    PageReviewUser,
+    /// System prompt for browser-detected page repair.
+    PageBrowserRepairSystem,
+    /// User prompt for browser-detected page repair.
+    PageBrowserRepairUser,
+    /// Final user message when page tools are exhausted.
+    PageToolExhaustedUser,
 }
 
 impl PromptId {
@@ -107,6 +129,17 @@ impl PromptId {
             Self::SlidesLayoutRepairToolExhaustedUser,
             Self::ImageGenerationUser,
             Self::ToolsGenerationDescriptions,
+            Self::PageDraftSystem,
+            Self::PageDraftUser,
+            Self::PageCompactDraftSystem,
+            Self::PageCompactDraftUser,
+            Self::PageValidationRepairSystem,
+            Self::PageValidationRepairUser,
+            Self::PageReviewSystem,
+            Self::PageReviewUser,
+            Self::PageBrowserRepairSystem,
+            Self::PageBrowserRepairUser,
+            Self::PageToolExhaustedUser,
         ]
     }
 
@@ -141,6 +174,17 @@ impl PromptId {
             Self::SlidesLayoutRepairToolExhaustedUser => "slides.layout-repair.tool-exhausted.user",
             Self::ImageGenerationUser => "image.generation.user",
             Self::ToolsGenerationDescriptions => "tools.generation.descriptions",
+            Self::PageDraftSystem => "page.draft.system",
+            Self::PageDraftUser => "page.draft.user",
+            Self::PageCompactDraftSystem => "page.compact-draft.system",
+            Self::PageCompactDraftUser => "page.compact-draft.user",
+            Self::PageValidationRepairSystem => "page.validation-repair.system",
+            Self::PageValidationRepairUser => "page.validation-repair.user",
+            Self::PageReviewSystem => "page.review.system",
+            Self::PageReviewUser => "page.review.user",
+            Self::PageBrowserRepairSystem => "page.browser-repair.system",
+            Self::PageBrowserRepairUser => "page.browser-repair.user",
+            Self::PageToolExhaustedUser => "page.tool-exhausted.user",
         }
     }
 }

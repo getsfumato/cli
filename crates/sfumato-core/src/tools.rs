@@ -51,6 +51,8 @@ pub struct ImageToolConfig {
     pub profile_name: String,
     /// Transaction staging directory for generated images.
     pub output_dir: PathBuf,
+    /// Relative artifact directory returned to the text model.
+    pub reference_prefix: String,
     /// Resolved project theme used to style image prompts.
     pub theme: ThemePackage,
     /// Optional project-local instructions.

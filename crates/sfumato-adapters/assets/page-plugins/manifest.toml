@@ -1,0 +1,41 @@
+schema_version = 1
+
+[[plugins]]
+id = "threejs"
+name = "Three.js"
+version = "0.184.0"
+api_global = "window.SfumatoPlugins.threejs"
+runtime = "threejs/runtime.js"
+guidance = "threejs/usage.md"
+license = "threejs/LICENSE"
+runtime_hash = "996a42047a27414eac7ee29e7b79752cbe209cab5a6496dad50ec8973a5353c7"
+
+[[plugins]]
+id = "motion"
+name = "Motion"
+version = "12.42.2"
+api_global = "window.SfumatoPlugins.motion"
+runtime = "motion/runtime.js"
+guidance = "motion/usage.md"
+license = "motion/LICENSE"
+runtime_hash = "5f3c65c6e12ced46599d323e554f6745e25a90874aa570b65b83e6158054c426"
+
+[[plugins]]
+id = "theatre"
+name = "Theatre.js Core"
+version = "0.7.2"
+api_global = "window.SfumatoPlugins.theatre"
+runtime = "theatre/runtime.js"
+guidance = "theatre/usage.md"
+license = "theatre/LICENSE"
+runtime_hash = "4f5a279adc60862a716eca41b06436d61db98cd5bec39255b828da914f02bde6"
+
+[[plugins]]
+id = "lottie"
+name = "Lottie Web"
+version = "5.13.0"
+api_global = "window.SfumatoPlugins.lottie"
+runtime = "lottie/runtime.js"
+guidance = "lottie/usage.md"
+license = "lottie/LICENSE"
+runtime_hash = "c1692e2d55306d3ecaee85885327e0af5155e08c6a30e15236f91d6972d22ade"

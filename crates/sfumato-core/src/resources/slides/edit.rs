@@ -290,6 +290,8 @@ pub(crate) async fn edit_slides(
         files,
         models: std::collections::BTreeMap::from([("text".to_string(), model_name.clone())]),
         prompts: edit.prompts.clone(),
+        plugins: Vec::new(),
+        runtimes: Vec::new(),
         warnings: warnings.clone(),
     };
     let staging_root = transaction.staging_root().to_path_buf();

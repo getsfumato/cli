@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 pub use sfumato_domain::{ArtifactId, ArtifactKind, JobId, ProjectName, RevisionId};
 use thiserror::Error;
 
-use crate::prompts::PromptProvenance;
+use crate::{
+    generation::{PagePluginSelection, PageRuntimeSelection},
+    prompts::PromptProvenance,
+};
 
 /// Resource kinds currently persisted by Sfumato.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -14,6 +17,8 @@ use crate::prompts::PromptProvenance;
 pub enum ArtifactResourceKind {
     /// A Marp slide deck and its rendered sidecars.
     Slides,
+    /// A standalone HTML page and optional generated image assets.
+    Pages,
 }
 
 impl ArtifactResourceKind {
@@ -21,6 +26,7 @@ impl ArtifactResourceKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Slides => "slides",
+            Self::Pages => "pages",
         }
     }
 }
@@ -63,6 +69,12 @@ pub struct ResourceArtifactManifest {
     pub models: std::collections::BTreeMap<String, String>,
     /// Prompt templates used by this run.
     pub prompts: Vec<PromptProvenance>,
+    /// Offline page plugins embedded in this revision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<PagePluginSelection>,
+    /// Built-in page runtimes embedded automatically by the assembler.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtimes: Vec<PageRuntimeSelection>,
     /// Non-fatal workflow warnings.
     pub warnings: Vec<String>,
 }

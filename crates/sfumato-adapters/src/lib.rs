@@ -8,6 +8,8 @@ pub mod config_editor;
 pub mod config_files;
 pub mod filesystem;
 pub(crate) mod openai_compatible;
+pub mod page_plugins;
+pub mod pages;
 pub mod prompts;
 pub mod renderers;
 pub mod repositories;

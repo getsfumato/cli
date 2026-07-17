@@ -1,0 +1,1 @@
+Use `window.SfumatoPlugins.threejs` as the complete `THREE` namespace. Create responsive canvases inside page-owned containers, cap device pixel ratio at 2, resize the renderer with its container, and dispose animation frames and WebGL resources when no longer needed.

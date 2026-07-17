@@ -60,7 +60,7 @@ use mermaid::{extract_mermaid_blocks, render_mermaid_diagrams};
 #[cfg(test)]
 use mermaid::{mermaid_theme_config, normalize_mermaid_source};
 use prompting::*;
-use publishing::publish_pdf;
+use publishing::publish_slides;
 use source_bundle::{build_compact_source_bundle, build_source_bundle};
 
 const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
@@ -181,6 +181,7 @@ pub(crate) async fn generate_slides(
                 provider,
                 profile_name: profile_name.to_string(),
                 output_dir: images_dir.clone(),
+                reference_prefix: "images".into(),
                 theme: theme.clone(),
                 project_instructions: project_instructions
                     .as_ref()
@@ -927,6 +928,8 @@ pub(crate) async fn generate_slides(
         files,
         models: selected_models.clone(),
         prompts: used_prompts.clone(),
+        plugins: Vec::new(),
+        runtimes: Vec::new(),
         warnings: warnings.clone(),
     };
     let committed_revision = transaction.revision_id().to_string();
@@ -934,7 +937,7 @@ pub(crate) async fn generate_slides(
     operation.emit(
         OperationStage::CommitArtifacts,
         OperationEventKind::Completed,
-        BTreeMap::from([("revision".to_string(), committed_revision)]),
+        BTreeMap::from([("revision".to_string(), committed_revision.clone())]),
     );
     let remap = |path: &Path| -> Result<PathBuf> {
         Ok(committed.root.join(
@@ -955,13 +958,16 @@ pub(crate) async fn generate_slides(
         OperationEventKind::Started,
         BTreeMap::new(),
     );
-    let publication = publish_pdf(
+    let publication = publish_slides(
         workspace.as_ref(),
         publish_root.as_deref(),
         committed_pdf.as_deref(),
         &pdf_path,
+        &title,
+        &config.project_name,
+        &committed_revision,
     )?;
-    let published_pdf_path = publication.path;
+    let published_pdf_path = publication.pdf_path;
     if let Some(warning) = publication.warning {
         warnings.push(warning);
     }
@@ -970,7 +976,7 @@ pub(crate) async fn generate_slides(
         OperationEventKind::Completed,
         BTreeMap::from([("pdf".to_string(), published_pdf_path.is_some().to_string())]),
     );
-    let published_artifacts = published_pdf_path.iter().cloned().collect();
+    let published_artifacts = publication.artifacts;
 
     Ok(GenerateSlidesResult {
         markdown_path: committed_markdown,

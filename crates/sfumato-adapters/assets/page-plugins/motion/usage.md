@@ -1,0 +1,1 @@
+Use `window.SfumatoPlugins.motion` for Motion's browser API, including `animate`, `scroll`, `stagger`, and `inView`. Respect reduced-motion preferences and avoid animations that prevent the content from being readable before JavaScript runs.
