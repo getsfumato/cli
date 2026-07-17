@@ -83,4 +83,8 @@ pub trait ThemeRepository: Send + Sync {
     fn create(&self, name: &str) -> SfumatoResult<ThemePackage>;
     /// Installs or loads the bundled default theme.
     fn install_default(&self) -> SfumatoResult<ThemePackage>;
+    /// Imports a Google DESIGN.md document as a reusable theme package.
+    fn import_design(&self, path: PathBuf, name: Option<&str>) -> SfumatoResult<ThemePackage>;
+    /// Exports a theme package using the Google DESIGN.md interchange format.
+    fn export_design(&self, name: &str, path: PathBuf) -> SfumatoResult<PathBuf>;
 }

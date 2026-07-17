@@ -65,6 +65,8 @@ so a rendering failure preserves the original pair.
 - **User:** one global learning profile.
 - **Projects:** many registered study/work contexts, with one active project.
 - **Themes:** globally reusable design packages selected by projects.
+- **Templates:** globally reusable page or slide structures filled by generators.
+- **Project artifacts:** portable logos, icons, and visual files available to every generation.
 - **Connectors:** named OpenAI-compatible API connections such as Ollama and
   OpenRouter.
 - **Model profiles:** named connector models with capabilities such as `text`,
@@ -106,6 +108,10 @@ Reusable themes live in:
 ```text
 ~/.config/sfumato/themes/<theme-name>/
 ```
+
+Reusable structural templates live in `~/.config/sfumato/templates/<name>/`.
+Project artifacts live in `<project-root>/.sfumato/assets/` and are copied into
+each immutable generated revision that uses them.
 
 ## OpenAI-Compatible Connectors
 
@@ -212,6 +218,8 @@ cargo run -- theme list
 cargo run -- theme show gruvbox
 cargo run -- theme use gruvbox
 cargo run -- theme use gruvbox --project university
+cargo run -- theme export gruvbox --out ./DESIGN.md
+cargo run -- theme import ./DESIGN.md --name imported-gruvbox
 ```
 
 `sfumato init user` installs the bundled `sfumato-default` theme. A custom theme
@@ -229,6 +237,42 @@ contains semantic color/font tokens and renderer adapters:
 
 The HTML adapter provides the shell, CSS, and optional JavaScript used by standalone pages. Its shell must
 contain exactly one `<!-- SFUMATO_CONTENT -->` placeholder.
+
+Theme import/export follows Google's alpha
+[`DESIGN.md` specification](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md).
+Import preserves the source document, validates its normative YAML color and
+typography tokens, and regenerates both HTML and Marp adapters. Export emits a
+self-contained DESIGN.md with normative tokens and readable guidance.
+
+## Templates And Project Artifacts
+
+Create a scaffolded template or import a structure containing exactly one
+`<!-- SFUMATO_CONTENT -->` marker:
+
+```bash
+sfumato template create lecture --kind slides
+sfumato template create explorer --kind page --from ./explorer.html
+sfumato template list
+sfumato template show lecture --kind slides
+```
+
+Select it with `--template lecture`. The drafter sees the structure but returns
+only marker content; Sfumato performs the merge before validation and review.
+
+Register reusable visual files for the active or selected project:
+
+```bash
+sfumato artifact add ./branding/logo.png \
+  --name university-logo \
+  --description "University logo for title and closing sections" \
+  --project university
+sfumato artifact list --project university
+sfumato artifact show university-logo --project university
+```
+
+PNG, JPEG, WebP, GIF, and passive SVG files are copied into the portable
+project catalog. Their exact staged paths and intended use are injected into
+page and slide prompts, and their hashes are included in generation output.
 
 ## Generate Pages
 
@@ -253,6 +297,20 @@ Motion `12.42.2`, Theatre.js Core `0.7.2`, and lottie-web `5.13.0`. Repeated
 `--plugin <id>` flags are deduplicated and resolved deterministically. Their
 hash-verified runtimes are inlined into the final document under
 `window.SfumatoPlugins`, so generation never runs npm or fetches a CDN.
+
+Component libraries use the same generic catalog rather than one flag per
+framework. `--ui` is a readable alias for `--plugin`:
+
+```bash
+sfumato generate page \
+  --instruction "Explain Fourier series in Spanish" \
+  --ui materialui
+```
+
+Selecting Material UI `5.15.14` automatically resolves and inlines React and
+ReactDOM `18.3.1` before it. The model uses `React.createElement` rather than
+JSX, so no runtime compiler or npm project is needed and the result remains one
+offline HTML document (plus generated image sidecars when present).
 
 When page content contains TeX delimited by `\(...\)` or `\[...\]`, Sfumato
 automatically embeds the pinned MathJax `3.2.2` TeX-to-SVG runtime. Math is

@@ -43,6 +43,7 @@ Cargo workspace dependencies enforce this direction.
 - [Edit sequence](edit-sequence.mmd): revision-guarded content-only editing.
 - [Config lifecycle](config-lifecycle.mmd): strict v4 reads and atomic revision-aware writes.
 - [Artifact transaction](artifact-transaction.mmd): staging, validation, immutable commit, and publication.
+- [Reusable generation inputs](../reference/reusable-generation.md): themes, templates, project artifacts, and UI catalogs.
 - [Traceability](traceability.md): requirements mapped to code and executable evidence.
 
 The [class diagram](../class-diagram.mmd) contains concrete Rust types and trait
@@ -74,6 +75,13 @@ and operator/integrator contracts under [`docs/reference`](../reference/).
 10. Page models return structured fragments rather than complete documents.
     The adapter parses HTML, CSS, and JavaScript, applies an offline CSP, and
     inlines only hash-verified bundled plugin runtimes before browser inspection.
+11. Structural templates contain one validated content marker. Models generate
+    marker content and never own package assembly.
+12. Reusable project artifacts are integrity-checked and copied into every
+    revision that references them; generated resources never depend on the
+    mutable catalog copy.
+13. Page-plugin dependencies are resolved deterministically. Selecting a UI
+    component library automatically includes its pinned runtime dependencies.
 
 ## Verification Gate
 

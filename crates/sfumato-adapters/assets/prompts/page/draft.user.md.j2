@@ -17,6 +17,18 @@ Fonts: {{ theme_fonts }}
 
 Use the semantic theme variables and create a clear visual hierarchy. Do not redefine the whole theme or force a one-color palette.
 
+{% if template_enabled %}
+## Structural template
+
+Template: {{ template_name }}
+
+```html
+{{ template_source }}
+```
+
+Return only the content that belongs in the marker through the `body_html` JSON field. Do not copy the scaffold.
+{% endif %}
+
 ## Offline plugins
 
 {% if plugins %}
@@ -33,6 +45,15 @@ No JavaScript plugins were selected. Use standard browser APIs only.
 
 {% if image_generation_available %}
 You may call `sfumato_image_gen` for an image that materially improves learning. Use the returned artifact path exactly in an `<img>` element with useful alt text.
+{% endif %}
+
+{% if reusable_assets %}
+## Reusable project assets
+
+These files are already staged. Use their exact paths when they improve the page:
+{% for asset in reusable_assets %}
+- `{{ asset.name }}` ({{ asset.media_type }}): `{{ asset.reference }}` — {{ asset.description }}
+{% endfor %}
 {% endif %}
 
 ## Grounding sources

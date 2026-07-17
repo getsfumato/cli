@@ -27,6 +27,7 @@ use crate::{
     },
     operation::{OperationContext, OperationEventKind},
     page_plugins::{PagePluginCatalog, PagePluginPackage},
+    project_assets::{ProjectAssetCatalog, ProjectAssetReference},
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
         GenerationStage, ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
@@ -35,6 +36,7 @@ use crate::{
     renderers::{AssembledPage, PageAssembler, PageAssemblyRequest, PageInspector},
     repositories::ThemeRepository,
     sources::{SourceDocument, SourceReader},
+    templates::GenerationTemplate,
     themes::ThemePackage,
     tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
@@ -53,6 +55,7 @@ pub struct GeneratePageResult {
 pub(crate) struct GeneratePageOptions {
     pub operation: OperationContext,
     pub title: Option<String>,
+    pub template: Option<GenerationTemplate>,
     pub plugins: Vec<String>,
     pub dry_run: bool,
     pub review: bool,
@@ -67,6 +70,7 @@ pub(crate) struct GeneratePageOptions {
     pub page_assembler: Arc<dyn PageAssembler>,
     pub page_inspector: Arc<dyn PageInspector>,
     pub workspace: Arc<dyn WorkspaceFileSystem>,
+    pub project_asset_catalog: Arc<dyn ProjectAssetCatalog>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +104,10 @@ struct PagePromptContext {
     validation_error: String,
     issue_report: String,
     max_tool_rounds: usize,
+    template_enabled: bool,
+    template_name: String,
+    template_source: String,
+    reusable_assets: Vec<ProjectAssetReference>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -121,6 +129,8 @@ struct PageContextInput<'a> {
     image_generation_available: bool,
     plugins: &'a [PagePluginPackage],
     max_tool_rounds: usize,
+    template: Option<&'a GenerationTemplate>,
+    reusable_assets: &'a [ProjectAssetReference],
 }
 
 struct DryRunImageProvider;
@@ -148,6 +158,7 @@ pub(crate) async fn generate_page(
     let GeneratePageOptions {
         operation,
         title: title_override,
+        template,
         plugins: plugin_ids,
         dry_run,
         review,
@@ -162,6 +173,7 @@ pub(crate) async fn generate_page(
         page_assembler,
         page_inspector,
         workspace,
+        project_asset_catalog,
     } = options;
     operation.checkpoint(OperationStage::Resolve)?;
     let publish_root = config.publish_root()?;
@@ -190,6 +202,27 @@ pub(crate) async fn generate_page(
                 .join("resources/pages/dry-run")
         });
     let images_dir = staging_root.join("assets/images");
+    let reusable_assets = project_asset_catalog.list(&config.project_root)?;
+    let mut reusable_asset_paths = Vec::new();
+    let reusable_asset_references = reusable_assets
+        .iter()
+        .map(|asset| {
+            let destination = images_dir.join(&asset.filename);
+            reusable_asset_paths.push(destination);
+            ProjectAssetReference {
+                name: asset.name.clone(),
+                description: asset.description.clone(),
+                media_type: asset.media_type.clone(),
+                reference: format!("assets/images/{}", asset.filename),
+                content_hash: asset.content_hash.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    if !dry_run {
+        for (asset, destination) in reusable_assets.iter().zip(&reusable_asset_paths) {
+            workspace.copy_file(&asset.path, destination)?;
+        }
+    }
 
     operation.emit(
         OperationStage::ReadSources,
@@ -269,6 +302,8 @@ pub(crate) async fn generate_page(
         image_generation_available: image_selection.is_some(),
         plugins: &plugins,
         max_tool_rounds,
+        template: template.as_ref(),
+        reusable_assets: &reusable_asset_references,
     });
     let mut draft_request = render_page_request(
         prompt_catalog.as_ref(),
@@ -305,6 +340,8 @@ pub(crate) async fn generate_page(
                 project_instructions: project_instructions_path,
                 models,
                 plugins: plugin_selections,
+                template: template.as_ref().map(|value| value.manifest.name.clone()),
+                project_assets: reusable_asset_references.clone(),
                 runtimes: Vec::new(),
                 tools: tool_summaries.clone(),
                 artifacts: Vec::new(),
@@ -339,12 +376,16 @@ pub(crate) async fn generate_page(
         }
         Err(error) => return Err(error),
     };
-    let generated_assets = tool_set.generated_artifacts()?;
+    let mut generated_assets = reusable_asset_paths;
+    generated_assets.extend(tool_set.generated_artifacts()?);
     prompts.extend(tool_set.generated_prompts()?);
     let mut page =
-        parse_page_document(&response.text, title_override.as_deref()).and_then(|page| {
-            validate_page(&page_assembler, &page, &theme, &plugins, &generated_assets).map(|_| page)
-        });
+        parse_page_document(&response.text, title_override.as_deref(), template.as_ref()).and_then(
+            |page| {
+                validate_page(&page_assembler, &page, &theme, &plugins, &generated_assets)
+                    .map(|_| page)
+            },
+        );
     if let Err(validation_error) = &page {
         emit_stage(&event_sink, GenerationStage::PageRepair, Some(draft_name));
         let mut repair_context = base_context.clone();
@@ -361,9 +402,11 @@ pub(crate) async fn generate_page(
         let repaired = provider
             .generate_text(repair_request, &operation, OperationStage::Repair)
             .await?;
-        page = parse_page_document(&repaired.text, title_override.as_deref()).and_then(|page| {
-            validate_page(&page_assembler, &page, &theme, &plugins, &generated_assets).map(|_| page)
-        });
+        page = parse_page_document(&repaired.text, title_override.as_deref(), template.as_ref())
+            .and_then(|page| {
+                validate_page(&page_assembler, &page, &theme, &plugins, &generated_assets)
+                    .map(|_| page)
+            });
     }
     let mut page =
         page.map_err(|error| error.context("Generated page remained invalid after repair"))?;
@@ -628,6 +671,8 @@ pub(crate) async fn generate_page(
             project_instructions: project_instructions_path,
             models,
             plugins: plugin_selections,
+            template: template.as_ref().map(|value| value.manifest.name.clone()),
+            project_assets: reusable_asset_references,
             runtimes,
             tools: tool_summaries.clone(),
             artifacts,
@@ -652,6 +697,8 @@ fn page_context(input: PageContextInput<'_>) -> PagePromptContext {
         image_generation_available,
         plugins,
         max_tool_rounds,
+        template,
+        reusable_assets,
     } = input;
     PagePromptContext {
         learning_style: if config.user.learning_style.is_empty() {
@@ -681,6 +728,14 @@ fn page_context(input: PageContextInput<'_>) -> PagePromptContext {
             })
             .collect(),
         max_tool_rounds,
+        template_enabled: template.is_some(),
+        template_name: template
+            .map(|template| template.manifest.name.clone())
+            .unwrap_or_default(),
+        template_source: template
+            .map(|template| template.source.clone())
+            .unwrap_or_default(),
+        reusable_assets: reusable_assets.to_vec(),
         ..Default::default()
     }
 }
@@ -711,7 +766,11 @@ fn render_page_request(
     Ok(request)
 }
 
-fn parse_page_document(response: &str, title_override: Option<&str>) -> Result<PageDocument> {
+fn parse_page_document(
+    response: &str,
+    title_override: Option<&str>,
+    template: Option<&GenerationTemplate>,
+) -> Result<PageDocument> {
     let raw = strip_json_fence(response.trim());
     let draft: PageDraft = serde_json::from_str(raw).map_err(|error| {
         SfumatoError::provider(
@@ -719,9 +778,13 @@ fn parse_page_document(response: &str, title_override: Option<&str>) -> Result<P
             format!("Page response must be strict JSON: {error}"),
         )
     })?;
+    let body_html = template
+        .map(|template| template.compose(&draft.body_html))
+        .transpose()?
+        .unwrap_or(draft.body_html);
     PageDocument::new(
         title_override.unwrap_or(&draft.title),
-        draft.body_html,
+        body_html,
         draft.css,
         draft.javascript,
     )

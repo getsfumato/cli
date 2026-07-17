@@ -27,6 +27,7 @@ pub mod models;
 pub mod operation;
 /// Offline JavaScript plugin packages available to generated pages.
 pub mod page_plugins;
+pub mod project_assets;
 /// Registered-project application services.
 #[allow(missing_docs)]
 pub mod projects;
@@ -44,6 +45,7 @@ pub mod review;
 #[allow(missing_docs)]
 pub mod setup;
 pub mod sources;
+pub mod templates;
 /// Theme package entities and application services.
 #[allow(missing_docs)]
 pub mod themes;

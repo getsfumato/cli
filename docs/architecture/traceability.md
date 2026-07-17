@@ -24,6 +24,10 @@
 | V02-018 | Pages are inspected responsively before commit. | `ChromiumPageInspector` and browser repair stage. | Desktop/mobile report parsing, static assembler tests, and opt-in real-browser execution. |
 | V02-019 | Page publication is explicit and Obsidian-navigable. | `publish_page`, `obsidian_page_index`, `publish_tree_atomic`. | Stable `_sfumato/pages/<slug>` path, generated index, atomic replacement, and stale legacy cleanup tests. |
 | V02-020 | Page mathematics renders offline before layout validation. | `StandalonePageAssembler`, bundled MathJax runtime, `ChromiumPageInspector`. | Runtime hash/version checks, conditional embedding, SVG browser execution, and unrendered-TeX failure tests. |
+| V02-021 | Structural templates keep reusable scaffolds out of model output. | `GenerationTemplateCatalog`, `GenerationTemplate`, slide/page prompt contexts. | Marker/name/path validation, package catalog tests, strict prompt rendering, CLI/TUI argument tests. |
+| V02-022 | Project artifacts are portable and immutable per revision. | `ProjectAssetCatalog`, `.sfumato/assets`, generation staging. | Digest, symlink, SVG-policy, add/list/load/remove, prompt-path, and transaction manifest tests. |
+| V02-023 | Themes exchange Google DESIGN.md tokens. | `FilesystemThemeRepository::{import_design,export_design}`. | Round-trip, adapter generation, invalid color/version, and duplicate-section tests. |
+| V02-024 | React UI libraries remain offline and catalog-driven. | `PagePluginCatalog` dependency resolution and bundled React/Material UI runtimes. | Dependency-order/hash tests and feature-gated real Chromium mounting test. |
 
 Material contract changes require an ADR amendment, a traceability update, and a
 test that fails against the previous behavior.

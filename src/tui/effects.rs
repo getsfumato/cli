@@ -207,6 +207,18 @@ pub(super) fn execute_operation(
             application.create_theme(&name)?;
             Ok(format!("Created theme '{name}'"))
         }
+        OperationKind::ThemeImport => {
+            let path = PathBuf::from(required_field(form, "Path")?);
+            let name = optional_field(form, "Name");
+            let theme = application.import_theme_design(path, name.as_deref())?;
+            Ok(format!("Imported theme '{}'", theme.manifest.name))
+        }
+        OperationKind::ThemeExport => {
+            let name = form.target.as_deref().context("Theme name is missing")?;
+            let path = application
+                .export_theme_design(name, PathBuf::from(required_field(form, "Path")?))?;
+            Ok(format!("Exported theme '{}' to {}", name, path.display()))
+        }
         OperationKind::ThemeUse => {
             let name = form.target.as_deref().context("Theme name is missing")?;
             let project = optional_field(form, "Project");
@@ -215,6 +227,34 @@ pub(super) fn execute_operation(
                 "Project '{}' now uses theme '{}'",
                 updated.name, updated.theme
             ))
+        }
+        OperationKind::TemplateCreate => {
+            let name = required_field(form, "Name")?;
+            let kind = TemplateKind::from_str(&required_field(form, "Kind")?)?;
+            let source = optional_field(form, "Source").map(PathBuf::from);
+            application.create_template(&name, kind, source)?;
+            Ok(format!("Created {kind} template '{name}'"))
+        }
+        OperationKind::ArtifactAdd => {
+            let path = PathBuf::from(required_field(form, "Path")?);
+            let name = optional_field(form, "Name");
+            let description = optional_field(form, "Description");
+            let project = optional_field(form, "Project");
+            let asset = application.add_project_asset(
+                &path,
+                name.as_deref(),
+                description.as_deref(),
+                project.as_deref(),
+            )?;
+            Ok(format!("Added project artifact '{}'", asset.name))
+        }
+        OperationKind::ArtifactRemove => {
+            if !form.toggle("Confirm") {
+                anyhow::bail!("Confirm removal before continuing");
+            }
+            let name = form.target.as_deref().context("Artifact name is missing")?;
+            application.remove_project_asset(name, None)?;
+            Ok(format!("Removed project artifact '{name}'"))
         }
         OperationKind::PromptCustomize(scope) => {
             if !form.toggle("Confirm") {
@@ -359,6 +399,36 @@ pub(super) fn load_section(
                     title: theme.name,
                     subtitle: "Reusable theme package".to_string(),
                     detail,
+                    active: false,
+                })
+            })
+            .collect(),
+        Section::Templates => application
+            .list_templates(None)?
+            .into_iter()
+            .map(|template| {
+                let package = application.show_template(&template.name, template.kind)?;
+                Ok(BrowseRow {
+                    title: template.name,
+                    subtitle: format!("{} template", template.kind),
+                    detail: format!("{}\n\n{}", template.description, package.source),
+                    active: false,
+                })
+            })
+            .collect(),
+        Section::Artifacts => application
+            .list_project_assets(None)?
+            .into_iter()
+            .map(|asset| {
+                Ok(BrowseRow {
+                    title: asset.name,
+                    subtitle: asset.media_type,
+                    detail: format!(
+                        "{}\nSHA-256: {}\nFile: {}",
+                        asset.description,
+                        asset.content_hash,
+                        asset.path.display()
+                    ),
                     active: false,
                 })
             })

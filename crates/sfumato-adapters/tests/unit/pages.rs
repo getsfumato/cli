@@ -66,6 +66,8 @@ fn assembles_theme_plugins_and_page_in_stable_order() {
             api_global: "window.SfumatoPlugins.threejs".into(),
             runtime_hash: "hash".into(),
             license: "MIT".into(),
+            category: sfumato_core::page_plugins::PagePluginCategory::Utility,
+            dependencies: Vec::new(),
         },
         guidance: String::new(),
         runtime_javascript: "window.pluginLoaded = true;".into(),
@@ -266,6 +268,48 @@ async fn bundled_mathjax_renders_tex_to_svg_offline() {
     let directory = tempfile::tempdir().unwrap();
     let html_path = directory.path().join("index.html");
     fs::write(&html_path, assembled.html).unwrap();
+
+    let issues = ChromiumPageInspector
+        .inspect(&html_path, None, &OperationContext::detached())
+        .await
+        .unwrap();
+
+    assert!(issues.is_empty(), "{issues:#?}");
+}
+
+#[cfg(feature = "real-renderers")]
+#[tokio::test]
+async fn material_ui_and_react_execute_offline_in_a_real_browser() {
+    use sfumato_core::{
+        operation::OperationContext, page_plugins::PagePluginCatalog, renderers::PageInspector,
+    };
+
+    use crate::{page_plugins::BundledPagePluginCatalog, pages::ChromiumPageInspector};
+
+    let (_directory, theme) = theme();
+    let plugins = BundledPagePluginCatalog
+        .resolve(&["materialui".into()])
+        .unwrap();
+    let page = PageDocument::new(
+        "Material UI offline check",
+        "<main><div id=\"sfumato-react-root\"><p>Loading lesson...</p></div></main>",
+        "#sfumato-react-root { min-height: 12rem; }",
+        "const e = React.createElement; const {Button, Stack, Typography} = MaterialUI; const app = e(Stack, {spacing: 2}, e(Typography, {variant: 'h4'}, 'Fourier'), e(Button, {variant: 'contained', id: 'ready'}, 'Ready')); ReactDOM.createRoot(document.getElementById('sfumato-react-root')).render(app);",
+    )
+    .unwrap();
+    let html = StandalonePageAssembler
+        .assemble(PageAssemblyRequest {
+            document: &page,
+            theme: &theme,
+            plugins: &plugins,
+            allowed_assets: &[],
+            inspection: true,
+        })
+        .unwrap()
+        .html;
+    let directory = tempfile::tempdir().unwrap();
+    let html_path = directory.path().join("index.html");
+    fs::write(&html_path, html).unwrap();
 
     let issues = ChromiumPageInspector
         .inspect(&html_path, None, &OperationContext::detached())

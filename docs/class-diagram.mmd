@@ -11,6 +11,8 @@ classDiagram
             Connector
             Model
             Theme
+            Template
+            Artifact
             Prompt
             Plugin
             Generate
@@ -57,6 +59,8 @@ classDiagram
             +list_projects()
             +list_models()
             +list_themes()
+            +list_templates()
+            +list_project_assets()
             +list_prompts()
         }
         class SfumatoApplicationDependencies
@@ -113,6 +117,18 @@ classDiagram
             +list() PagePluginSummary
             +load(id) PagePluginPackage
         }
+        class GenerationTemplateCatalog {
+            <<trait>>
+            +list(kind) GenerationTemplateSummary
+            +load(name, kind) GenerationTemplate
+            +create(name, kind, source) GenerationTemplate
+        }
+        class ProjectAssetCatalog {
+            <<trait>>
+            +list(project_root) ProjectAsset
+            +add(project_root, source, name, description) ProjectAsset
+            +remove(project_root, name) ProjectAsset
+        }
         class ArtifactStore {
             <<trait>>
             +project_root(project) PathBuf
@@ -152,6 +168,8 @@ classDiagram
         class StandalonePageAssembler
         class ChromiumPageInspector
         class BundledPagePluginCatalog
+        class FilesystemGenerationTemplateCatalog
+        class FilesystemProjectAssetCatalog
         class FilesystemArtifactStore
         class FilesystemGlobalConfigRepository
         class FilesystemProjectRepository
@@ -182,6 +200,8 @@ classDiagram
     PageAssembler --> AssembledPage
     SfumatoApplication --> PageInspector
     SfumatoApplication --> PagePluginCatalog
+    SfumatoApplication --> GenerationTemplateCatalog
+    SfumatoApplication --> ProjectAssetCatalog
     SfumatoApplication --> ArtifactStore
     SfumatoApplication --> GlobalConfigRepository
     SfumatoApplication --> ProjectRepository
@@ -207,6 +227,8 @@ classDiagram
     StandalonePageAssembler ..|> PageAssembler
     ChromiumPageInspector ..|> PageInspector
     BundledPagePluginCatalog ..|> PagePluginCatalog
+    FilesystemGenerationTemplateCatalog ..|> GenerationTemplateCatalog
+    FilesystemProjectAssetCatalog ..|> ProjectAssetCatalog
     FilesystemArtifactStore ..|> ArtifactStore
     FilesystemGlobalConfigRepository ..|> GlobalConfigRepository
     FilesystemProjectRepository ..|> ProjectRepository

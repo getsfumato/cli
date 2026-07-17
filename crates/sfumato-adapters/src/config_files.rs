@@ -23,6 +23,8 @@ pub struct ConfigPaths {
     pub project_registry: PathBuf,
     /// Directory containing reusable theme packages.
     pub themes: PathBuf,
+    /// Directory containing reusable structural generation templates.
+    pub templates: PathBuf,
 }
 
 impl ConfigPaths {
@@ -34,6 +36,7 @@ impl ConfigPaths {
             user_config: root.join("config.toml"),
             project_registry: root.join("projects.toml"),
             themes: root.join("themes"),
+            templates: root.join("templates"),
         })
     }
 }

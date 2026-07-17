@@ -75,6 +75,10 @@ pub(super) struct SlidePromptContext {
     pub(super) slide_markdown: String,
     pub(super) compact: bool,
     pub(super) max_tool_rounds: usize,
+    pub(super) template_enabled: bool,
+    pub(super) template_name: String,
+    pub(super) template_source: String,
+    pub(super) reusable_assets: Vec<ProjectAssetReference>,
 }
 
 pub(super) fn render_prompt_request(
@@ -154,6 +158,8 @@ pub(super) struct DraftPromptRequestContext<'a> {
     pub(super) tools: &'a [GenerationToolSummary],
     pub(super) max_tool_rounds: usize,
     pub(super) event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    pub(super) template: Option<&'a GenerationTemplate>,
+    pub(super) reusable_assets: &'a [ProjectAssetReference],
 }
 
 pub(super) struct ReviewPromptRequestContext<'a> {
@@ -191,6 +197,16 @@ pub(super) fn build_generation_request(
         source_bundle: args.source_bundle.to_string(),
         tools: args.tools.to_vec(),
         max_tool_rounds: args.max_tool_rounds,
+        template_enabled: args.template.is_some(),
+        template_name: args
+            .template
+            .map(|template| template.manifest.name.clone())
+            .unwrap_or_default(),
+        template_source: args
+            .template
+            .map(|template| template.source.clone())
+            .unwrap_or_default(),
+        reusable_assets: args.reusable_assets.to_vec(),
         ..Default::default()
     };
     render_prompt_request(args.catalog, DRAFT_PROMPTS, &context)
@@ -218,6 +234,16 @@ pub(super) fn build_compact_generation_request(
         source_bundle: args.source_bundle.to_string(),
         compact: true,
         max_tool_rounds: args.max_tool_rounds,
+        template_enabled: args.template.is_some(),
+        template_name: args
+            .template
+            .map(|template| template.manifest.name.clone())
+            .unwrap_or_default(),
+        template_source: args
+            .template
+            .map(|template| template.source.clone())
+            .unwrap_or_default(),
+        reusable_assets: args.reusable_assets.to_vec(),
         ..Default::default()
     };
     let mut request = render_prompt_request(args.catalog, COMPACT_DRAFT_PROMPTS, &context)?;

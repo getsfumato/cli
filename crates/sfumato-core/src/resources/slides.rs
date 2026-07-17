@@ -25,6 +25,7 @@ use crate::{
         SlideReviewSummary,
     },
     operation::{OperationContext, OperationEventKind},
+    project_assets::{ProjectAssetCatalog, ProjectAssetReference},
     prompts::{
         PromptCatalog, PromptId, PromptPair, PromptProvenance, PromptRenderRequest, PromptVariables,
     },
@@ -36,6 +37,7 @@ use crate::{
     repositories::ThemeRepository,
     review::{ReviewSnapshot, decks::SlideDeckDocument, parse_json_patch},
     sources::SourceReader,
+    templates::GenerationTemplate,
     themes::{ThemePackage, ThemeTokens},
     tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
@@ -69,6 +71,7 @@ const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
 pub(crate) struct GenerateSlidesOptions {
     pub operation: OperationContext,
     pub title: Option<String>,
+    pub template: Option<GenerationTemplate>,
     pub dry_run: bool,
     pub review: bool,
     pub event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
@@ -81,6 +84,7 @@ pub(crate) struct GenerateSlidesOptions {
     pub tool_factory: Arc<dyn GenerationToolFactory>,
     pub theme_repository: Arc<dyn ThemeRepository>,
     pub workspace: Arc<dyn WorkspaceFileSystem>,
+    pub project_asset_catalog: Arc<dyn ProjectAssetCatalog>,
 }
 
 #[derive(Debug)]
@@ -102,6 +106,7 @@ pub(crate) async fn generate_slides(
     let GenerateSlidesOptions {
         operation,
         title: title_override,
+        template,
         dry_run,
         review,
         event_sink,
@@ -114,6 +119,7 @@ pub(crate) async fn generate_slides(
         tool_factory,
         theme_repository,
         workspace,
+        project_asset_catalog,
     } = options;
     operation.checkpoint(OperationStage::Resolve)?;
     let publish_root = config.publish_root()?;
@@ -146,6 +152,28 @@ pub(crate) async fn generate_slides(
     ensure_inside(&artifact_root, &theme_css_path)?;
     ensure_inside(&artifact_root, &diagrams_dir)?;
     ensure_inside(&artifact_root, &images_dir)?;
+
+    let reusable_assets = project_asset_catalog.list(&config.project_root)?;
+    let mut reusable_asset_paths = Vec::new();
+    let reusable_asset_references = reusable_assets
+        .iter()
+        .map(|asset| {
+            let destination = images_dir.join(&asset.filename);
+            reusable_asset_paths.push(destination);
+            ProjectAssetReference {
+                name: asset.name.clone(),
+                description: asset.description.clone(),
+                media_type: asset.media_type.clone(),
+                reference: format!("images/{}", asset.filename),
+                content_hash: asset.content_hash.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    if !dry_run {
+        for (asset, destination) in reusable_assets.iter().zip(&reusable_asset_paths) {
+            workspace.copy_file(&asset.path, destination)?;
+        }
+    }
 
     operation.emit(
         OperationStage::ReadSources,
@@ -224,6 +252,8 @@ pub(crate) async fn generate_slides(
         tools: &tool_summaries,
         max_tool_rounds: draft_tool_rounds,
         event_sink: None,
+        template: template.as_ref(),
+        reusable_assets: &reusable_asset_references,
     })?;
     provider_request.tools = tool_set.definitions.clone();
     provider_request.tool_executor = Some(tool_set.executor.clone());
@@ -265,6 +295,8 @@ pub(crate) async fn generate_slides(
                 project_instructions: project_instructions_path,
                 models: selected_models,
                 tools: tool_summaries.clone(),
+                template: template.as_ref().map(|value| value.manifest.name.clone()),
+                project_assets: reusable_asset_references.clone(),
                 artifacts: Vec::new(),
                 published_artifacts: Vec::new(),
                 review: review_summary,
@@ -300,6 +332,8 @@ pub(crate) async fn generate_slides(
         tools: &[],
         max_tool_rounds: draft_tool_rounds,
         event_sink: event_sink.clone(),
+        template: template.as_ref(),
+        reusable_assets: &reusable_asset_references,
     })?;
     let compact_prompt_provenance = compact_request.prompt_provenance.clone();
     let draft_outcome = generate_with_compact_retry(
@@ -319,7 +353,10 @@ pub(crate) async fn generate_slides(
             "Draft generation exceeded the model limit and was retried with compacted context: {error}"
         ));
     }
-    let response = draft_outcome.response;
+    let mut response = draft_outcome.response;
+    if let Some(template) = &template {
+        response.text = template.compose(&response.text)?;
+    }
     operation.emit(
         OperationStage::Draft,
         OperationEventKind::Completed,
@@ -888,6 +925,7 @@ pub(crate) async fn generate_slides(
     );
 
     let mut staged_artifacts = vec![markdown_path.clone(), theme_css_path];
+    staged_artifacts.extend(reusable_asset_paths);
     staged_artifacts.extend(tool_set.generated_artifacts()?);
     used_prompts.extend(tool_set.generated_prompts()?);
     staged_artifacts.extend(diagram_artifacts);
@@ -987,6 +1025,8 @@ pub(crate) async fn generate_slides(
             project_instructions: project_instructions_path,
             models: selected_models,
             tools: tool_summaries.clone(),
+            template: template.as_ref().map(|value| value.manifest.name.clone()),
+            project_assets: reusable_asset_references,
             artifacts,
             published_artifacts,
             review: review_summary,

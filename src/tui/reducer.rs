@@ -85,6 +85,9 @@ impl App {
             .list_page_plugins()
             .unwrap_or_default()
             .into_iter()
+            .filter(|plugin| {
+                plugin.category != sfumato_core::page_plugins::PagePluginCategory::Runtime
+            })
             .map(|plugin| plugin.id)
             .collect();
         Self {
@@ -165,9 +168,11 @@ impl App {
                 3 => self.open_section(Section::Models),
                 4 => self.open_section(Section::Connectors),
                 5 => self.open_section(Section::Themes),
-                6 => self.open_section(Section::Prompts),
-                7 => self.open_section(Section::Configuration),
-                8 => self.open_section(Section::Setup),
+                6 => self.open_section(Section::Templates),
+                7 => self.open_section(Section::Artifacts),
+                8 => self.open_section(Section::Prompts),
+                9 => self.open_section(Section::Configuration),
+                10 => self.open_section(Section::Setup),
                 _ => {}
             },
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
@@ -375,6 +380,30 @@ impl App {
                 ],
                 selected: 0,
             },
+            BrowseAction::ThemeImport => OperationForm {
+                title: "Import DESIGN.md",
+                kind: OperationKind::ThemeImport,
+                target: None,
+                fields: vec![
+                    text_field("Path", "", "/path/to/DESIGN.md"),
+                    text_field("Name", "", "optional theme name"),
+                    submit_field("Import theme"),
+                ],
+                selected: 0,
+            },
+            BrowseAction::ThemeExport => {
+                let theme = selected.context("Select a theme to export")?;
+                OperationForm {
+                    title: "Export DESIGN.md",
+                    kind: OperationKind::ThemeExport,
+                    target: Some(theme.title.clone()),
+                    fields: vec![
+                        text_field("Path", "DESIGN.md", "output DESIGN.md"),
+                        submit_field("Export theme"),
+                    ],
+                    selected: 0,
+                }
+            }
             BrowseAction::ThemeUse => {
                 let theme = selected.context("Select a theme to apply")?;
                 OperationForm {
@@ -387,6 +416,40 @@ impl App {
                     ],
                     selected: 0,
                 }
+            }
+            BrowseAction::TemplateCreate => OperationForm {
+                title: "Create template",
+                kind: OperationKind::TemplateCreate,
+                target: None,
+                fields: vec![
+                    text_field("Name", "", "lecture"),
+                    text_field("Kind", "slides", "slides or page"),
+                    text_field("Source", "", "optional source with SFUMATO_CONTENT marker"),
+                    submit_field("Create template"),
+                ],
+                selected: 0,
+            },
+            BrowseAction::ArtifactAdd => OperationForm {
+                title: "Add project artifact",
+                kind: OperationKind::ArtifactAdd,
+                target: None,
+                fields: vec![
+                    text_field("Path", "", "/path/to/logo.png"),
+                    text_field("Name", "", "optional portable name"),
+                    text_field("Description", "", "how generators should use it"),
+                    text_field("Project", "", "blank for active project"),
+                    submit_field("Add artifact"),
+                ],
+                selected: 0,
+            },
+            BrowseAction::ArtifactRemove => {
+                let asset = selected.context("Select an artifact to remove")?;
+                confirmation_form(
+                    "Remove project artifact",
+                    OperationKind::ArtifactRemove,
+                    asset.title.clone(),
+                    "Remove artifact",
+                )
             }
             BrowseAction::PromptCustomizeUser | BrowseAction::PromptCustomizeProject => {
                 let prompt = selected.context("Select a prompt to customize")?;

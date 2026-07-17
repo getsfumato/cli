@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use serde::Serialize;
 
 use crate::config::Capability;
+use crate::project_assets::ProjectAssetReference;
 use crate::prompts::PromptProvenance;
 
 #[derive(Clone, Debug)]
@@ -88,6 +89,8 @@ pub struct PageGenerationOutput {
     pub project_instructions: Option<PathBuf>,
     pub models: BTreeMap<String, String>,
     pub plugins: Vec<PagePluginSelection>,
+    pub template: Option<String>,
+    pub project_assets: Vec<ProjectAssetReference>,
     pub runtimes: Vec<PageRuntimeSelection>,
     pub tools: Vec<GenerationToolSummary>,
     pub artifacts: Vec<PathBuf>,
@@ -102,6 +105,8 @@ pub struct GenerationOutput {
     pub project_instructions: Option<PathBuf>,
     pub models: BTreeMap<String, String>,
     pub tools: Vec<GenerationToolSummary>,
+    pub template: Option<String>,
+    pub project_assets: Vec<ProjectAssetReference>,
     pub artifacts: Vec<PathBuf>,
     pub published_artifacts: Vec<PathBuf>,
     pub review: SlideReviewSummary,

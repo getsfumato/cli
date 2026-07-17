@@ -7,4 +7,9 @@ Selected plugin APIs:
 {% for plugin in plugins %}- `{{ plugin.api_global }}`: {{ plugin.guidance }}
 {% else %}- none
 {% endfor %}
+Reusable assets:
+{% for asset in reusable_assets %}- `{{ asset.reference }}`: {{ asset.description }}
+{% else %}- none
+{% endfor %}
+{% if template_enabled %}Template `{{ template_name }}` is active. Return only marker content in `body_html`; do not repeat this scaffold: {{ template_source }}{% endif %}
 Return only the strict JSON object and keep the page focused enough for the available context.

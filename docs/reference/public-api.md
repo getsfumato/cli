@@ -17,6 +17,7 @@ let result = application
         config: ConfigOverrides::default(),
         request,
         title: None,
+        template: None,
         dry_run: false,
         review: true,
         event_sink: None,
@@ -41,6 +42,8 @@ cases. CLI and TUI construct the same command DTOs.
 - `ProviderFactory`, `TextModel`, and `ImageGenerationProvider`;
 - `DiagramRenderer`, `SlideRenderer`, `SourceReader`, and `GenerationToolFactory`.
 - `PageAssembler`, `PageInspector`, and `PagePluginCatalog` for standalone pages.
+- `GenerationTemplateCatalog` and `ProjectAssetCatalog` for reusable structure
+  and portable project media.
 
 Every core port returns a typed result. Adapters may use implementation-specific
 diagnostics internally, but classify and sanitize failures before crossing the
@@ -86,7 +89,8 @@ are sanitized before presentation.
 ## Results And Provenance
 
 Generation results identify the selected project and model profiles, declared
-tools, committed and published paths, review/layout state, warnings, project
+tools, structural template, reusable project-artifact hashes and paths,
+committed and published paths, review/layout state, warnings, project
 instruction path, and every contributing prompt's ID, origin, version, and
 SHA-256 hash. Page results also report automatically embedded runtimes such as
 MathJax with their pinned version and integrity hash. Edit results additionally report changed slide IDs, patch count,

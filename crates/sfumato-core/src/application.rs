@@ -20,6 +20,7 @@ use crate::{
     models::{ModelDefaultChanged, ModelService, ModelSummary},
     operation::OperationContext,
     page_plugins::{PagePluginCatalog, PagePluginPackage, PagePluginSummary},
+    project_assets::{ProjectAsset, ProjectAssetCatalog},
     projects::{ProjectRemoved, ProjectService, ProjectSummary},
     prompts::{
         PromptCatalog, PromptError, PromptId, PromptManager, PromptOverrideScope, PromptProvenance,
@@ -35,6 +36,9 @@ use crate::{
     },
     setup::{SetupService, UserSetupRequest, UserSetupResult},
     sources::SourceReader,
+    templates::{
+        GenerationTemplate, GenerationTemplateCatalog, GenerationTemplateSummary, TemplateKind,
+    },
     themes::{ThemePackage, ThemeService, ThemeSummary},
     tools::GenerationToolFactory,
 };
@@ -61,6 +65,8 @@ pub struct GenerateSlidesCommand {
     pub request: GenerationRequest,
     /// Optional explicit deck title.
     pub title: Option<String>,
+    /// Optional reusable structural template package.
+    pub template: Option<String>,
     /// Resolve and render prompts without invoking providers or writing files.
     pub dry_run: bool,
     /// Run semantic and layout review.
@@ -79,6 +85,8 @@ pub struct GeneratePageCommand {
     pub request: GenerationRequest,
     /// Optional explicit page title.
     pub title: Option<String>,
+    /// Optional reusable structural template package.
+    pub template: Option<String>,
     /// Selected bundled page plugin identifiers.
     pub plugins: Vec<String>,
     /// Resolves the request without invoking models or writing artifacts.
@@ -126,6 +134,10 @@ pub struct SfumatoApplicationDependencies {
     pub page_inspector: Arc<dyn PageInspector>,
     /// Offline page plugin catalog.
     pub page_plugins: Arc<dyn PagePluginCatalog>,
+    /// Reusable generation-template catalog.
+    pub templates: Arc<dyn GenerationTemplateCatalog>,
+    /// Portable reusable project-asset catalog.
+    pub project_assets: Arc<dyn ProjectAssetCatalog>,
     /// Source material reader.
     pub sources: Arc<dyn SourceReader>,
     /// Generation tool factory.
@@ -160,6 +172,8 @@ pub struct SfumatoApplication {
     page_assembler: Arc<dyn PageAssembler>,
     page_inspector: Arc<dyn PageInspector>,
     page_plugins: Arc<dyn PagePluginCatalog>,
+    templates: Arc<dyn GenerationTemplateCatalog>,
+    project_assets: Arc<dyn ProjectAssetCatalog>,
     sources: Arc<dyn SourceReader>,
     tools: Arc<dyn GenerationToolFactory>,
     themes: Arc<dyn ThemeRepository>,
@@ -184,6 +198,8 @@ impl SfumatoApplication {
             page_assembler,
             page_inspector,
             page_plugins,
+            templates,
+            project_assets,
             sources,
             tools,
             themes,
@@ -205,6 +221,8 @@ impl SfumatoApplication {
             page_assembler,
             page_inspector,
             page_plugins,
+            templates,
+            project_assets,
             sources,
             tools,
             themes,
@@ -235,6 +253,11 @@ impl SfumatoApplication {
             command.request,
             GenerateSlidesOptions {
                 title: command.title,
+                template: command
+                    .template
+                    .map(|name| self.templates.load(&name, TemplateKind::Slides))
+                    .transpose()?,
+                project_asset_catalog: Arc::clone(&self.project_assets),
                 operation: command.operation,
                 dry_run: command.dry_run,
                 review: command.review,
@@ -273,6 +296,11 @@ impl SfumatoApplication {
             GeneratePageOptions {
                 operation: command.operation,
                 title: command.title,
+                template: command
+                    .template
+                    .map(|name| self.templates.load(&name, TemplateKind::Page))
+                    .transpose()?,
+                project_asset_catalog: Arc::clone(&self.project_assets),
                 plugins: command.plugins,
                 dry_run: command.dry_run,
                 review: command.review,
@@ -300,6 +328,92 @@ impl SfumatoApplication {
     /// Resolves one bundled offline page plugin.
     pub fn show_page_plugin(&self, id: &str) -> SfumatoResult<PagePluginPackage> {
         self.page_plugins.load(id)
+    }
+
+    /// Lists installed reusable structural templates.
+    pub fn list_templates(
+        &self,
+        kind: Option<TemplateKind>,
+    ) -> SfumatoResult<Vec<GenerationTemplateSummary>> {
+        self.templates.list(kind)
+    }
+
+    /// Loads one reusable structural template.
+    pub fn show_template(
+        &self,
+        name: &str,
+        kind: TemplateKind,
+    ) -> SfumatoResult<GenerationTemplate> {
+        self.templates.load(name, kind)
+    }
+
+    /// Creates one reusable structural template package.
+    pub fn create_template(
+        &self,
+        name: &str,
+        kind: TemplateKind,
+        source: Option<PathBuf>,
+    ) -> SfumatoResult<GenerationTemplate> {
+        self.templates.create(name, kind, source)
+    }
+
+    /// Imports a Google DESIGN.md file as a Sfumato theme.
+    pub fn import_theme_design(
+        &self,
+        path: PathBuf,
+        name: Option<&str>,
+    ) -> SfumatoResult<ThemePackage> {
+        ThemeService::new(Arc::clone(&self.themes), Arc::clone(&self.projects))
+            .import_design(path, name)
+    }
+
+    /// Exports a Sfumato theme as a Google DESIGN.md file.
+    pub fn export_theme_design(&self, name: &str, path: PathBuf) -> SfumatoResult<PathBuf> {
+        ThemeService::new(Arc::clone(&self.themes), Arc::clone(&self.projects))
+            .export_design(name, path)
+    }
+
+    /// Lists reusable assets for the active or explicitly selected project.
+    pub fn list_project_assets(&self, project: Option<&str>) -> SfumatoResult<Vec<ProjectAsset>> {
+        let root = self.selected_project_root(project)?;
+        self.project_assets.list(&root)
+    }
+
+    /// Loads one reusable project asset.
+    pub fn show_project_asset(
+        &self,
+        name: &str,
+        project: Option<&str>,
+    ) -> SfumatoResult<ProjectAsset> {
+        let root = self.selected_project_root(project)?;
+        self.project_assets.load(&root, name)
+    }
+
+    /// Copies and registers one reusable project asset.
+    pub fn add_project_asset(
+        &self,
+        source: &Path,
+        name: Option<&str>,
+        description: Option<&str>,
+        project: Option<&str>,
+    ) -> SfumatoResult<ProjectAsset> {
+        let root = self.selected_project_root(project)?;
+        self.project_assets.add(&root, source, name, description)
+    }
+
+    /// Removes one reusable project asset and its managed copy.
+    pub fn remove_project_asset(
+        &self,
+        name: &str,
+        project: Option<&str>,
+    ) -> SfumatoResult<ProjectAsset> {
+        let root = self.selected_project_root(project)?;
+        self.project_assets.remove(&root, name)
+    }
+
+    fn selected_project_root(&self, project: Option<&str>) -> SfumatoResult<PathBuf> {
+        let registry = self.projects.registry()?;
+        registry.selected(project).map(|(_, root)| root)
     }
 
     /// Applies focused content patches and commits a new deck revision.

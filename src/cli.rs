@@ -37,6 +37,16 @@ pub enum Commands {
         #[command(subcommand)]
         command: ThemeCommands,
     },
+    #[command(about = "Manage reusable structural generation templates")]
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommands,
+    },
+    #[command(about = "Manage reusable project artifacts such as logos and icons")]
+    Artifact {
+        #[command(subcommand)]
+        command: ArtifactCommands,
+    },
     #[command(about = "Inspect and customize model prompt templates")]
     Prompt {
         #[command(subcommand)]
@@ -82,6 +92,80 @@ pub enum PluginCommands {
     List,
     #[command(about = "Show metadata and model guidance for a page plugin")]
     Show(PluginNameArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TemplateCommands {
+    #[command(about = "Create a reusable template package")]
+    Create(TemplateCreateArgs),
+    #[command(about = "List installed reusable templates")]
+    List(TemplateListArgs),
+    #[command(about = "Show a reusable template and its structural source")]
+    Show(TemplateShowArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ArtifactCommands {
+    #[command(about = "Copy and register a reusable project artifact")]
+    Add(ArtifactAddArgs),
+    #[command(about = "List reusable artifacts for a project")]
+    List(ArtifactProjectArgs),
+    #[command(about = "Show one reusable project artifact")]
+    Show(ArtifactNameArgs),
+    #[command(about = "Remove a reusable artifact without touching its original source")]
+    Remove(ArtifactNameArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ArtifactAddArgs {
+    pub path: PathBuf,
+    #[arg(long)]
+    pub name: Option<String>,
+    #[arg(long)]
+    pub description: Option<String>,
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ArtifactProjectArgs {
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ArtifactNameArgs {
+    pub name: String,
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum TemplateKindArg {
+    Slides,
+    Page,
+}
+
+#[derive(Debug, Args)]
+pub struct TemplateCreateArgs {
+    pub name: String,
+    #[arg(long, value_enum)]
+    pub kind: TemplateKindArg,
+    #[arg(long = "from", value_name = "PATH")]
+    pub source: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct TemplateListArgs {
+    #[arg(long, value_enum)]
+    pub kind: Option<TemplateKindArg>,
+}
+
+#[derive(Debug, Args)]
+pub struct TemplateShowArgs {
+    pub name: String,
+    #[arg(long, value_enum)]
+    pub kind: TemplateKindArg,
 }
 
 #[derive(Debug, Args)]
@@ -175,9 +259,27 @@ pub struct ModelUseArgs {
 #[derive(Debug, Subcommand)]
 pub enum ThemeCommands {
     Create(ThemeNameArgs),
+    #[command(about = "Import a Google DESIGN.md file as a theme")]
+    Import(ThemeImportArgs),
+    #[command(about = "Export a theme as a Google DESIGN.md file")]
+    Export(ThemeExportArgs),
     List,
     Show(ThemeNameArgs),
     Use(ThemeUseArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ThemeImportArgs {
+    pub path: PathBuf,
+    #[arg(long, help = "Override the theme name derived from DESIGN.md")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ThemeExportArgs {
+    pub name: String,
+    #[arg(long, default_value = "DESIGN.md")]
+    pub out: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -332,6 +434,9 @@ pub struct SlidesArgs {
     #[arg(long)]
     pub title: Option<String>,
 
+    #[arg(long, help = "Reusable slide structure to fill with generated content")]
+    pub template: Option<String>,
+
     #[arg(
         long,
         help = "Publish the rendered PDF to this folder; working artifacts remain in Sfumato's project workspace"
@@ -373,6 +478,9 @@ pub struct PageArgs {
     #[arg(long)]
     pub title: Option<String>,
 
+    #[arg(long, help = "Reusable page structure to fill with generated content")]
+    pub template: Option<String>,
+
     #[arg(
         long,
         help = "Publish the page to this folder; managed revisions remain in Sfumato's project workspace"
@@ -394,7 +502,7 @@ pub struct PageArgs {
     #[arg(long, value_name = "PROFILE")]
     pub review_model: Option<String>,
 
-    #[arg(long = "plugin", value_name = "ID")]
+    #[arg(long = "plugin", visible_alias = "ui", value_name = "ID")]
     pub plugins: Vec<String>,
 
     #[arg(long)]

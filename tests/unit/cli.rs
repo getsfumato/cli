@@ -118,3 +118,107 @@ fn parses_page_plugin_discovery() {
     };
     assert_eq!(args.id, "threejs");
 }
+
+#[test]
+fn parses_reusable_template_commands_and_generation_selection() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "template",
+        "create",
+        "lecture",
+        "--kind",
+        "slides",
+        "--from",
+        "lecture.md",
+    ])
+    .unwrap();
+    let Some(Commands::Template {
+        command: TemplateCommands::Create(args),
+    }) = cli.command
+    else {
+        panic!("expected template create command");
+    };
+    assert_eq!(args.name, "lecture");
+    assert!(matches!(args.kind, TemplateKindArg::Slides));
+    assert_eq!(args.source, Some(PathBuf::from("lecture.md")));
+
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "page",
+        "--instruction",
+        "Explain Fourier series",
+        "--template",
+        "interactive-lesson",
+    ])
+    .unwrap();
+    let Some(Commands::Generate {
+        command: GenerateCommands::Page(args),
+    }) = cli.command
+    else {
+        panic!("expected generate page command");
+    };
+    assert_eq!(args.template.as_deref(), Some("interactive-lesson"));
+}
+
+#[test]
+fn accepts_ui_as_a_generic_page_plugin_alias() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "page",
+        "--instruction",
+        "Build an interactive lesson",
+        "--ui",
+        "materialui",
+    ])
+    .unwrap();
+    let Some(Commands::Generate {
+        command: GenerateCommands::Page(args),
+    }) = cli.command
+    else {
+        panic!("expected generate page command");
+    };
+    assert_eq!(args.plugins, vec!["materialui"]);
+}
+
+#[test]
+fn parses_project_artifacts_and_design_md_exchange() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "artifact",
+        "add",
+        "logo.png",
+        "--name",
+        "university-logo",
+        "--project",
+        "university",
+    ])
+    .unwrap();
+    let Some(Commands::Artifact {
+        command: ArtifactCommands::Add(args),
+    }) = cli.command
+    else {
+        panic!("expected artifact add command");
+    };
+    assert_eq!(args.name.as_deref(), Some("university-logo"));
+    assert_eq!(args.project.as_deref(), Some("university"));
+
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "theme",
+        "import",
+        "DESIGN.md",
+        "--name",
+        "gruvbox",
+    ])
+    .unwrap();
+    let Some(Commands::Theme {
+        command: ThemeCommands::Import(args),
+    }) = cli.command
+    else {
+        panic!("expected theme import command");
+    };
+    assert_eq!(args.path, PathBuf::from("DESIGN.md"));
+    assert_eq!(args.name.as_deref(), Some("gruvbox"));
+}

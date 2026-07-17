@@ -4,7 +4,7 @@ use include_dir::{Dir, include_dir};
 use serde::Deserialize;
 use sfumato_core::{
     errors::{ErrorClass, SfumatoError, SfumatoResult},
-    page_plugins::{PagePluginCatalog, PagePluginPackage, PagePluginSummary},
+    page_plugins::{PagePluginCatalog, PagePluginCategory, PagePluginPackage, PagePluginSummary},
 };
 use sha2::{Digest, Sha256};
 
@@ -32,6 +32,14 @@ struct PluginEntry {
     guidance: String,
     license: String,
     runtime_hash: String,
+    #[serde(default = "utility_category")]
+    category: PagePluginCategory,
+    #[serde(default)]
+    dependencies: Vec<String>,
+}
+
+fn utility_category() -> PagePluginCategory {
+    PagePluginCategory::Utility
 }
 
 impl PagePluginCatalog for BundledPagePluginCatalog {
@@ -99,6 +107,9 @@ fn manifest() -> SfumatoResult<PluginManifest> {
                 entry.id
             )));
         }
+        for dependency in &entry.dependencies {
+            validate_id(dependency)?;
+        }
     }
     Ok(manifest)
 }
@@ -120,6 +131,8 @@ fn summary(entry: PluginEntry) -> PagePluginSummary {
         api_global: entry.api_global,
         runtime_hash: entry.runtime_hash,
         license: entry.license,
+        category: entry.category,
+        dependencies: entry.dependencies,
     }
 }
 

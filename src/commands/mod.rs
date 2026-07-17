@@ -6,12 +6,13 @@ use serde_json::Value;
 
 use crate::{
     cli::{
-        Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs, ConfigShowArgs,
-        ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, EditCommands, EditSlidesArgs,
-        GenerateCommands, InitProjectArgs, InitTarget, ModelAddArgs, ModelCommands, ModelEditArgs,
-        ModelNameArgs, ModelUseArgs, PageArgs, PluginCommands, ProjectCommands, ProjectNameArgs,
-        ProjectShowArgs, PromptCommands, PromptCustomizeArgs, PromptProjectArgs, PromptScope,
-        PromptShowArgs, SlidesArgs, ThemeCommands, ThemeUseArgs,
+        ArtifactCommands, Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs,
+        ConfigShowArgs, ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, EditCommands,
+        EditSlidesArgs, GenerateCommands, InitProjectArgs, InitTarget, ModelAddArgs, ModelCommands,
+        ModelEditArgs, ModelNameArgs, ModelUseArgs, PageArgs, PluginCommands, ProjectCommands,
+        ProjectNameArgs, ProjectShowArgs, PromptCommands, PromptCustomizeArgs, PromptProjectArgs,
+        PromptScope, PromptShowArgs, SlidesArgs, TemplateCommands, TemplateKindArg, ThemeCommands,
+        ThemeUseArgs,
     },
     init::InitService,
 };
@@ -28,6 +29,7 @@ use sfumato_core::{
     providers::TextGenerationEvent,
     resources::pages::GeneratePageResult,
     resources::slides::{EditSlidesRequest, EditSlidesResult, GenerateSlidesResult},
+    templates::TemplateKind,
 };
 
 #[async_trait]
@@ -45,11 +47,117 @@ impl RunnableCommand for Commands {
             Self::Connector { command } => command.run(application).await,
             Self::Model { command } => command.run(application).await,
             Self::Theme { command } => command.run(application).await,
+            Self::Template { command } => command.run(application).await,
+            Self::Artifact { command } => command.run(application).await,
             Self::Prompt { command } => command.run(application).await,
             Self::Plugin { command } => command.run(application).await,
             Self::Generate { command } => command.run(application).await,
             Self::Edit { command } => command.run(application).await,
         }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ArtifactCommands {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        match self {
+            Self::Add(args) => {
+                let asset = application.add_project_asset(
+                    &args.path,
+                    args.name.as_deref(),
+                    args.description.as_deref(),
+                    args.project.as_deref(),
+                )?;
+                println!(
+                    "Added project artifact '{}' at {}",
+                    asset.name,
+                    asset.path.display()
+                );
+            }
+            Self::List(args) => {
+                let assets = application.list_project_assets(args.project.as_deref())?;
+                if assets.is_empty() {
+                    println!("No reusable project artifacts.");
+                }
+                for asset in assets {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        asset.name,
+                        asset.media_type,
+                        &asset.content_hash[..12],
+                        asset.description
+                    );
+                }
+            }
+            Self::Show(args) => {
+                let asset = application.show_project_asset(&args.name, args.project.as_deref())?;
+                println!(
+                    "{}\nType: {}\nFile: {}\nSHA-256: {}\n\n{}",
+                    asset.name,
+                    asset.media_type,
+                    asset.path.display(),
+                    asset.content_hash,
+                    asset.description
+                );
+            }
+            Self::Remove(args) => {
+                let asset =
+                    application.remove_project_asset(&args.name, args.project.as_deref())?;
+                println!("Removed project artifact '{}'", asset.name);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for TemplateCommands {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        match self {
+            Self::Create(args) => {
+                let template = application.create_template(
+                    &args.name,
+                    template_kind(args.kind),
+                    args.source,
+                )?;
+                println!(
+                    "Created {} template '{}' at {}",
+                    template.manifest.kind,
+                    template.manifest.name,
+                    template.root.display()
+                );
+            }
+            Self::List(args) => {
+                let templates = application.list_templates(args.kind.map(template_kind))?;
+                if templates.is_empty() {
+                    println!("No reusable generation templates installed.");
+                }
+                for template in templates {
+                    println!(
+                        "{}\t{}\t{}",
+                        template.name, template.kind, template.description
+                    );
+                }
+            }
+            Self::Show(args) => {
+                let template = application.show_template(&args.name, template_kind(args.kind))?;
+                println!(
+                    "{} ({})\n{}\n\n{}",
+                    template.manifest.name,
+                    template.manifest.kind,
+                    template.manifest.description,
+                    template.source
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn template_kind(kind: TemplateKindArg) -> TemplateKind {
+    match kind {
+        TemplateKindArg::Slides => TemplateKind::Slides,
+        TemplateKindArg::Page => TemplateKind::Page,
     }
 }
 
@@ -272,6 +380,20 @@ impl RunnableCommand for ThemeCommands {
                     theme.manifest.name,
                     theme.root.display()
                 );
+                Ok(())
+            }
+            Self::Import(args) => {
+                let theme = application.import_theme_design(args.path, args.name.as_deref())?;
+                println!(
+                    "Imported DESIGN.md as theme '{}' at {}",
+                    theme.manifest.name,
+                    theme.root.display()
+                );
+                Ok(())
+            }
+            Self::Export(args) => {
+                let path = application.export_theme_design(&args.name, args.out)?;
+                println!("Exported theme '{}' to {}", args.name, path.display());
                 Ok(())
             }
             Self::List => {
@@ -527,6 +649,7 @@ pub(crate) async fn execute_page(
             config,
             request,
             title: args.title,
+            template: args.template,
             plugins: args.plugins,
             dry_run: args.dry_run,
             review: !args.no_review,
@@ -544,6 +667,16 @@ fn render_page_result(result: GeneratePageResult, json: bool, dry_run: bool) -> 
     } else if dry_run {
         println!("Project: {}", result.output.project);
         println!("Planned HTML: {}", result.html_path.display());
+        println!(
+            "Template: {}",
+            result.output.template.as_deref().unwrap_or("none")
+        );
+        if !result.output.project_assets.is_empty() {
+            println!("Reusable project artifacts:");
+            for asset in &result.output.project_assets {
+                println!("- {}: {}", asset.name, asset.reference);
+            }
+        }
         if result.output.plugins.is_empty() {
             println!("Plugins: none");
         } else {
@@ -719,6 +852,7 @@ pub(crate) async fn execute_slides(
             config,
             request,
             title: args.title,
+            template: args.template,
             dry_run: args.dry_run,
             review: !args.no_review,
             event_sink,
@@ -737,6 +871,17 @@ fn render_slides_result(result: GenerateSlidesResult, json: bool, dry_run: bool)
         match &result.output.project_instructions {
             Some(path) => println!("Project instructions: {}\n", path.display()),
             None => println!("Project instructions: no SFUMATO.md found\n"),
+        }
+        println!(
+            "Template: {}",
+            result.output.template.as_deref().unwrap_or("none")
+        );
+        if !result.output.project_assets.is_empty() {
+            println!("Reusable project artifacts:");
+            for asset in &result.output.project_assets {
+                println!("- {}: {}", asset.name, asset.reference);
+            }
+            println!();
         }
         if !result.tool_summaries.is_empty() {
             println!("Injected tools:");

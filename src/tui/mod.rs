@@ -48,6 +48,7 @@ use sfumato_core::{
         pages::GeneratePageResult,
         slides::{EditSlidesResult, GenerateSlidesResult},
     },
+    templates::TemplateKind,
 };
 use tachyonfx::{EffectManager, fx};
 use tokio::{
@@ -69,6 +70,8 @@ const NAV_ITEMS: &[(&str, &str)] = &[
     ("Models", "Profiles, capabilities, defaults"),
     ("Connectors", "Local and cloud model endpoints"),
     ("Themes", "Reusable visual packages"),
+    ("Templates", "Reusable page and slide structures"),
+    ("Artifacts", "Project logos, icons, and visuals"),
     ("Prompts", "Layered model instructions"),
     ("Configuration", "Merged user and project settings"),
     ("Setup", "Initialize user and project settings"),
@@ -155,7 +158,14 @@ fn section_actions(section: Section) -> &'static [BrowseAction] {
             BrowseAction::ConnectorOllama,
             BrowseAction::ConnectorOpenrouter,
         ],
-        Section::Themes => &[BrowseAction::ThemeCreate, BrowseAction::ThemeUse],
+        Section::Themes => &[
+            BrowseAction::ThemeCreate,
+            BrowseAction::ThemeImport,
+            BrowseAction::ThemeExport,
+            BrowseAction::ThemeUse,
+        ],
+        Section::Templates => &[BrowseAction::TemplateCreate],
+        Section::Artifacts => &[BrowseAction::ArtifactAdd, BrowseAction::ArtifactRemove],
         Section::Prompts => &[
             BrowseAction::PromptCustomizeUser,
             BrowseAction::PromptCustomizeProject,

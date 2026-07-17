@@ -46,6 +46,18 @@ fn representative_variables() -> PromptVariables {
         ),
         ("slide_markdown", json!("## Dense\n\nContent")),
         ("max_tool_rounds", json!(8)),
+        ("template_enabled", json!(false)),
+        ("template_name", json!("")),
+        ("template_source", json!("")),
+        (
+            "reusable_assets",
+            json!([{
+                "name": "logo",
+                "description": "University logo",
+                "media_type": "image/png",
+                "reference": "images/logo.png"
+            }]),
+        ),
         (
             "plugins",
             json!([{
@@ -125,6 +137,38 @@ fn page_validation_repair_restates_fragment_boundaries() {
 }
 
 #[test]
+fn draft_prompts_require_content_only_output_when_a_template_is_selected() {
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let mut variables = representative_variables();
+    variables.0.insert("template_enabled".into(), json!(true));
+    variables.0.insert("template_name".into(), json!("lecture"));
+    variables.0.insert(
+        "template_source".into(),
+        json!("---\nmarp: true\n---\n<!-- SFUMATO_CONTENT -->"),
+    );
+
+    let slides = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::SlidesDraftUser,
+            variables: variables.clone(),
+        })
+        .unwrap();
+    assert!(slides.text.contains("Return only the Markdown content"));
+    assert!(slides.text.contains("Sfumato performs the merge"));
+
+    let page = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::PageDraftUser,
+            variables,
+        })
+        .unwrap();
+    assert!(
+        page.text
+            .contains("Return only the content that belongs in the marker")
+    );
+}
+
+#[test]
 fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
     let catalog = LayeredPromptCatalog::new(None, None);
     let mut aggregate = String::new();
@@ -143,7 +187,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "aa12a73ae7719f07ddb255c233595b87d82f073cd85be8683e10dcff40e8933a"
+        "2c00f5134d5d10017965f949c962252be36d6bcba3607f797e63f8b1d0590c01"
     );
 }
 

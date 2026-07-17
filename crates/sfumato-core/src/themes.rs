@@ -135,6 +135,17 @@ impl ThemeService {
         validate_theme_name(name)?;
         self.repository.load(name)
     }
+
+    /// Imports a DESIGN.md document into a new reusable theme package.
+    pub fn import_design(&self, path: PathBuf, name: Option<&str>) -> Result<ThemePackage> {
+        self.repository.import_design(path, name)
+    }
+
+    /// Exports one installed theme to a DESIGN.md document.
+    pub fn export_design(&self, name: &str, path: PathBuf) -> Result<PathBuf> {
+        validate_theme_name(name)?;
+        self.repository.export_design(name, path)
+    }
 }
 
 /// Validates the stable theme identifier grammar.

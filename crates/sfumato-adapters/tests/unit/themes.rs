@@ -80,3 +80,75 @@ fn assigns_theme_to_active_or_explicit_project() {
         assert_eq!(project.theme, "gruvbox");
     }
 }
+
+#[test]
+fn imports_and_exports_design_md_with_renderer_adapters() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemThemeRepository::new(temp.path().join("themes"));
+    let design_path = temp.path().join("DESIGN.md");
+    fs::write(
+        &design_path,
+        r##"---
+version: alpha
+name: Gruvbox Study
+description: Warm high-contrast study materials.
+colors:
+  primary: "#d79921"
+  background: "#282828"
+  surface: "#3c3836"
+  text: "#ebdbb2"
+typography:
+  h1:
+    fontFamily: Atkinson Hyperlegible
+  body-md:
+    fontFamily: Inter
+---
+
+## Overview
+
+Warm and focused.
+
+## Colors
+
+Use semantic contrast.
+"##,
+    )
+    .unwrap();
+
+    let imported = repository
+        .import_design(design_path, Some("gruvbox-study"))
+        .unwrap();
+    assert_eq!(imported.manifest.tokens.colors["background"], "#282828");
+    assert_eq!(
+        imported.manifest.tokens.fonts["heading"],
+        "Atkinson Hyperlegible"
+    );
+    assert!(imported.root.join("DESIGN.md").is_file());
+    assert!(
+        fs::read_to_string(imported.marp_css_path())
+            .unwrap()
+            .contains("#282828")
+    );
+
+    let export_path = temp.path().join("exported/DESIGN.md");
+    repository
+        .export_design("gruvbox-study", export_path.clone())
+        .unwrap();
+    let exported = fs::read_to_string(export_path).unwrap();
+    assert!(exported.starts_with("---\nversion: alpha"));
+    assert!(exported.contains("## Colors"));
+    assert_eq!(
+        parse_design_document(&exported).unwrap().name,
+        "gruvbox-study"
+    );
+}
+
+#[test]
+fn rejects_invalid_design_tokens_and_duplicate_sections() {
+    let invalid_color =
+        "---\nversion: alpha\nname: Bad\ncolors:\n  primary: red\n---\n\n## Colors\n";
+    assert!(parse_design_document(invalid_color).is_err());
+
+    let duplicate = "---\nversion: alpha\nname: Bad\ncolors:\n  primary: '#ffffff'\n---\n\n## Colors\n\n## Colors\n";
+    assert!(parse_design_document(duplicate).is_err());
+}

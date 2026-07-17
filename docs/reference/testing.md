@@ -55,6 +55,11 @@ Tests do not mock private call graphs.
   desktop/mobile browser issue scoring.
 - Plugin manifest ordering, exact versions, runtime hashes, license presence,
   and opt-in offline Chrome execution for every bundled runtime.
+- Structural template marker/path validation and content-only prompt contracts.
+- Project artifact integrity, passive SVG policy, revision staging, and model
+  reference paths.
+- DESIGN.md token round trips and generated renderer adapters.
+- UI plugin dependency order and offline React component mounting.
 
 ### Cancellation and deadlines
 

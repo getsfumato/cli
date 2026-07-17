@@ -10,6 +10,18 @@ Instruction: {{ instruction }}
 {% include "shared/project-instructions.md.j2" %}
 
 Requirements:
+{% if template_enabled %}
+- A reusable structural template named `{{ template_name }}` is active. Return only the Markdown content that replaces its single `<!-- SFUMATO_CONTENT -->` marker.
+- Do not repeat the template, its frontmatter, or its static content. Sfumato performs the merge after generation.
+{% if title_provided %}- Use exactly "{{ title }}" as the first generated `# H1` when the template does not already provide the title.{% else %}- Create a concise subject title as the first generated `# H1` when the template does not already provide one.{% endif %}
+- Your fragment may contain slide separators and must provide the requested teaching content.
+
+Template source (read-only structure):
+
+```markdown
+{{ template_source }}
+```
+{% else %}
 {% if title_provided %}
 - Use exactly "{{ title }}" as the deck title and as the first `# H1` on the title slide.
 {% else %}
@@ -18,6 +30,7 @@ Requirements:
 - Return only Markdown.
 - Return raw Marp Markdown. Never wrap the deck in a `marp`, `markdown`, or `md` code fence.
 - Start the document with Marp frontmatter as the first bytes. Do not put a slide, title, blank `---`, or any text before it.
+{% endif %}
 - Do not include `style:`, inline CSS, or generated theme CSS in Marp frontmatter.
 - Set Marp math rendering to MathJax with `math: mathjax`.
 - Use slide separators with ---.
@@ -30,6 +43,12 @@ Requirements:
 - You may call `sfumato_image_gen` when a purpose-built educational illustration would teach better than text or Mermaid. Give it a precise subject, composition, labels, and learning purpose. Embed the returned `markdown_path` with Marp's `![height:420px](images/file.png)` syntax so the image fits within the slide. Sfumato applies the project theme automatically.
 {% else %}
 - No image generation model is configured. Use Markdown and Mermaid for visuals.
+{% endif %}
+{% if reusable_assets %}
+- The project provides these reusable visual assets. Use an asset only when it improves the deck, and embed its exact path with Marp image syntax:
+{% for asset in reusable_assets %}
+  - `{{ asset.name }}` ({{ asset.media_type }}): `{{ asset.reference }}` — {{ asset.description }}
+{% endfor %}
 {% endif %}
 - Keep Mermaid diagrams simple: at most 6 nodes, short quoted labels, and no formulas inside labels.
 - Put math formulas in normal Markdown outside Mermaid diagrams.
