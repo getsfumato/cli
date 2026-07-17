@@ -22,11 +22,13 @@ sfumato presentation/composition -> sfumato-core application/ports -> sfumato-do
   It has no filesystem, HTTP, process, async-runtime, or terminal dependency.
 - **`sfumato-core`** owns `SfumatoApplication`, use cases, provider-neutral agent
   execution, typed errors, cancellation, prompt contracts, repository ports, and
-  generation/edit decisions. It has no `anyhow`, Clap, Ratatui, Inquire,
+  generation/edit decisions. It also owns secret resolution and management
+  ports without choosing a storage backend. It has no `anyhow`, Clap, Ratatui, Inquire,
   Indicatif, Reqwest, or process dependency.
 - **`sfumato-adapters`** implements schema-v4 TOML persistence, layered
   MiniJinja prompts, filesystem repositories, OpenAI-compatible transports,
-  source/tools, Marp, Mermaid, browser inspection, and artifact transactions.
+  native OS credential storage, source/tools, Marp, Mermaid, browser inspection,
+  and artifact transactions.
 - **`sfumato`** is the composition and presentation package. CLI and TUI both
   receive one production `SfumatoApplication` and translate typed DTOs/events to
   human or JSON output.
@@ -42,6 +44,7 @@ Cargo workspace dependencies enforce this direction.
 - [Page generation sequence](page-generation-sequence.mmd): structured fragments, offline plugins and MathJax, browser repair, commit, and namespaced Obsidian publication.
 - [Edit sequence](edit-sequence.mmd): revision-guarded content-only editing.
 - [Config lifecycle](config-lifecycle.mmd): strict v4 reads and atomic revision-aware writes.
+- [Secret resolution](secret-resolution.mmd): secure login, provider lookup, and future cloud replacement.
 - [Artifact transaction](artifact-transaction.mmd): staging, validation, immutable commit, and publication.
 - [Reusable generation inputs](../reference/reusable-generation.md): themes, templates, project artifacts, and UI catalogs.
 - [Traceability](traceability.md): requirements mapped to code and executable evidence.
@@ -83,6 +86,9 @@ and operator/integrator contracts under [`docs/reference`](../reference/).
 13. Page-plugin dependencies are installed under `~/.sfumato/plugins` and
     resolved deterministically. Selecting a UI
     component library automatically includes its pinned runtime dependencies.
+14. Configuration contains only indirect credential references. Provider
+    transports resolve protected values at request time through `SecretResolver`;
+    local credential management goes through the native OS store adapter.
 
 ## Verification Gate
 

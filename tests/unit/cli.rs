@@ -122,6 +122,56 @@ fn parses_page_plugin_discovery() {
 }
 
 #[test]
+fn parses_secure_connector_authentication_commands() {
+    for command_name in ["login", "auth-status", "logout"] {
+        let cli =
+            Cli::try_parse_from(["sfumato", "connector", command_name, "openrouter"]).unwrap();
+        let Some(Commands::Connector { command }) = cli.command else {
+            panic!("expected connector command");
+        };
+        let name = match command {
+            ConnectorCommands::Login(args)
+            | ConnectorCommands::AuthStatus(args)
+            | ConnectorCommands::Logout(args) => args.name,
+            _ => panic!("expected connector authentication command"),
+        };
+        assert_eq!(name, "openrouter");
+    }
+}
+
+#[test]
+fn connector_setup_defaults_to_stored_credentials_and_accepts_explicit_env() {
+    let stored = Cli::try_parse_from(["sfumato", "connector", "setup", "openrouter"]).unwrap();
+    let Some(Commands::Connector {
+        command: ConnectorCommands::Setup(stored),
+    }) = stored.command
+    else {
+        panic!("expected connector setup command");
+    };
+    assert!(stored.api_key_env.is_none());
+
+    let environment = Cli::try_parse_from([
+        "sfumato",
+        "connector",
+        "setup",
+        "openrouter",
+        "--api-key-env",
+        "CI_OPENROUTER_KEY",
+    ])
+    .unwrap();
+    let Some(Commands::Connector {
+        command: ConnectorCommands::Setup(environment),
+    }) = environment.command
+    else {
+        panic!("expected connector setup command");
+    };
+    assert_eq!(
+        environment.api_key_env.as_deref(),
+        Some("CI_OPENROUTER_KEY")
+    );
+}
+
+#[test]
 fn parses_plugin_install_update_and_project_enablement() {
     let install = Cli::try_parse_from([
         "sfumato",

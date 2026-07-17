@@ -362,8 +362,8 @@ impl App {
                         ),
                         text_field(
                             "API key environment",
-                            "OPENROUTER_API_KEY",
-                            "used by OpenRouter",
+                            "",
+                            "optional CI environment variable",
                         ),
                         submit_field("Save connector"),
                     ],
@@ -519,11 +519,6 @@ impl App {
                     text_field("Connector", "ollama", "ollama or openrouter"),
                     text_field("Profile", "local-text", "model profile name"),
                     text_field("Model ID", "llama3.2", "provider model identifier"),
-                    text_field(
-                        "API key environment",
-                        "OPENROUTER_API_KEY",
-                        "used by OpenRouter",
-                    ),
                     FormField::Toggle {
                         label: "Overwrite existing config",
                         value: false,

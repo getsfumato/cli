@@ -79,6 +79,16 @@ classDiagram
             +text(config, profile) TextGenerationProvider
             +image(config, profile) ImageGenerationProvider
         }
+        class SecretResolver {
+            <<trait>>
+            +resolve(reference) SecretValue
+        }
+        class SecretStore {
+            <<trait>>
+            +save(reference, value)
+            +exists(reference) bool
+            +delete(reference)
+        }
         class EffectiveConfigResolver {
             <<trait>>
             +resolve(overrides) EffectiveConfig
@@ -175,6 +185,7 @@ classDiagram
         class ChromiumPageInspector
         class FilesystemPagePluginCatalog
         class CdnPagePluginSource
+        class SystemSecretStore
         class FilesystemGenerationTemplateCatalog
         class FilesystemProjectAssetCatalog
         class FilesystemArtifactStore
@@ -197,6 +208,7 @@ classDiagram
     SfumatoApplication --> EditSlidesCommand
     SfumatoApplication --> AgentRunner
     SfumatoApplication --> ProviderFactory
+    SfumatoApplication --> SecretStore
     SfumatoApplication --> EffectiveConfigResolver
     SfumatoApplication --> PromptCatalog
     SfumatoApplication --> SourceReader
@@ -236,6 +248,9 @@ classDiagram
     ChromiumPageInspector ..|> PageInspector
     FilesystemPagePluginCatalog ..|> PagePluginCatalog
     CdnPagePluginSource ..|> PagePluginSource
+    SecretStore --|> SecretResolver
+    SystemSecretStore ..|> SecretStore
+    OpenAiCompatibleProviderFactory --> SecretResolver
     FilesystemGenerationTemplateCatalog ..|> GenerationTemplateCatalog
     FilesystemProjectAssetCatalog ..|> ProjectAssetCatalog
     FilesystemArtifactStore ..|> ArtifactStore

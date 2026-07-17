@@ -329,6 +329,27 @@ impl SecretRef {
         Self::new("env", variable)
     }
 
+    /// Creates a reference to a secret managed by the configured secure store.
+    pub fn stored(target: &str) -> Result<Self, ValueError> {
+        if target.is_empty()
+            || target.starts_with('/')
+            || target.ends_with('/')
+            || target.split('/').any(|segment| {
+                segment.is_empty()
+                    || segment == "."
+                    || segment == ".."
+                    || !segment.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                    })
+            })
+        {
+            return Err(ValueError::InvalidSecretRef {
+                value: format!("stored:{target}"),
+            });
+        }
+        Self::new("stored", target)
+    }
+
     /// Returns the complete opaque reference.
     pub fn as_str(&self) -> &str {
         &self.0

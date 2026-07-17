@@ -3,7 +3,25 @@ use serde_json::json;
 use sfumato_core::{
     config::{ImageModelOptions, ModelOptions, TextModelOptions},
     providers::{ToolDefinition, ToolFunctionDefinition},
+    secrets::{SecretResolver, SecretValue},
 };
+use std::sync::Arc;
+
+struct TestSecrets;
+
+#[async_trait]
+impl SecretResolver for TestSecrets {
+    async fn resolve(
+        &self,
+        _reference: &sfumato_core::config::SecretRef,
+    ) -> sfumato_core::errors::SfumatoResult<SecretValue> {
+        Ok(SecretValue::new("resolved-secret".to_string()))
+    }
+}
+
+fn secrets() -> Arc<dyn SecretResolver> {
+    Arc::new(TestSecrets)
+}
 
 fn connector() -> OpenAiCompatibleConnectorConfig {
     OpenAiCompatibleConnectorConfig {
@@ -40,7 +58,8 @@ fn profile() -> ModelProfile {
 #[test]
 fn serializes_provider_neutral_transcript_tools_and_typed_text_options() {
     let provider =
-        OpenAiCompatibleTextProvider::new("ollama".to_string(), connector(), profile()).unwrap();
+        OpenAiCompatibleTextProvider::new("ollama".to_string(), connector(), profile(), secrets())
+            .unwrap();
     let request = TextModelRequest {
         messages: vec![
             ModelMessage::System("system".to_string()),
@@ -78,7 +97,8 @@ fn serializes_provider_neutral_transcript_tools_and_typed_text_options() {
 #[test]
 fn omits_tools_when_the_turn_disables_tool_calling() {
     let provider =
-        OpenAiCompatibleTextProvider::new("ollama".to_string(), connector(), profile()).unwrap();
+        OpenAiCompatibleTextProvider::new("ollama".to_string(), connector(), profile(), secrets())
+            .unwrap();
     let request = TextModelRequest {
         messages: vec![ModelMessage::User("hello".to_string())],
         tools: Vec::new(),
@@ -92,7 +112,8 @@ fn omits_tools_when_the_turn_disables_tool_calling() {
 #[test]
 fn serializes_image_options_without_text_or_connector_fields() {
     let provider =
-        OpenAiCompatibleImageProvider::new("ollama".to_string(), connector(), profile()).unwrap();
+        OpenAiCompatibleImageProvider::new("ollama".to_string(), connector(), profile(), secrets())
+            .unwrap();
 
     let body = serde_json::to_value(
         provider
@@ -135,4 +156,25 @@ fn classifies_http_timeouts_as_retryable_provider_failures() {
 
     assert_eq!(error.class, ErrorClass::Retry);
     assert_eq!(error.stage, Some(OperationStage::Review));
+}
+
+#[tokio::test]
+async fn connector_resolves_stored_credentials_when_building_a_request() {
+    let mut config = connector();
+    config.credential =
+        Some(sfumato_core::config::SecretRef::stored("connector/openrouter").unwrap());
+    let connector =
+        OpenAiCompatibleConnector::new("openrouter".to_string(), config, secrets()).unwrap();
+
+    let request = connector
+        .post("chat/completions")
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        request.headers()[reqwest::header::AUTHORIZATION],
+        "Bearer resolved-secret"
+    );
 }

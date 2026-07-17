@@ -35,8 +35,7 @@ use model::*;
 use sfumato_core::{
     application::SfumatoApplication,
     config::{
-        Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile, SecretRef,
-        TextModelOptions,
+        Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile, TextModelOptions,
     },
     config_editor::ConfigTarget,
     connectors::ConnectorPreset,

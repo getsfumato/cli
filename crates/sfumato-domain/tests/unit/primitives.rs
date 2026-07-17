@@ -31,4 +31,11 @@ fn secret_references_are_indirect_and_structured() {
     assert_eq!(reference.target(), "OPENAI_API_KEY");
     assert!(SecretRef::try_from("raw-secret").is_err());
     assert!(SecretRef::environment("lowercase").is_err());
+
+    let stored = SecretRef::stored("connector/openrouter").unwrap();
+    assert_eq!(stored.as_str(), "stored:connector/openrouter");
+    assert_eq!(stored.scheme(), "stored");
+    assert_eq!(stored.target(), "connector/openrouter");
+    assert!(SecretRef::stored("../openrouter").is_err());
+    assert!(SecretRef::stored("connector//openrouter").is_err());
 }

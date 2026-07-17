@@ -13,7 +13,7 @@ flowchart TB
         EDIT["Edit slides workflow"]
         SERVICES["Project, model, connector, theme, prompt, and config services"]
         AGENT["AgentRunner"]
-        PORTS["Repository, provider, prompt, source, tool, renderer, filesystem, and artifact ports"]
+        PORTS["Repository, provider, secret, prompt, source, tool, renderer, filesystem, and artifact ports"]
         ERRORS["SfumatoError and OperationContext"]
     end
 
@@ -30,12 +30,14 @@ flowchart TB
         TOOLS["Filesystem and image-generation tools"]
         RENDERERS["Marp, Mermaid, browser, and layout adapters"]
         ARTIFACTS["FilesystemArtifactStore"]
+        SECRETS["SystemSecretStore"]
     end
 
     subgraph External["External systems"]
         API["Ollama, OpenRouter, and compatible APIs"]
         DISK["Config, project roots, themes, and artifact revisions"]
         PROCESSES["marp, mmdc, and browser processes"]
+        KEYRING["macOS Keychain or native OS credential store"]
     end
 
     CLI --> BOOT
@@ -63,9 +65,11 @@ flowchart TB
     TOOLS -. implements .-> PORTS
     RENDERERS -. implements .-> PORTS
     ARTIFACTS -. implements .-> PORTS
+    SECRETS -. implements .-> PORTS
     OPENAI --> API
     CONFIG --> DISK
     PROMPTS --> DISK
     TOOLS --> DISK
     ARTIFACTS --> DISK
     RENDERERS --> PROCESSES
+    SECRETS --> KEYRING

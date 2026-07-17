@@ -36,7 +36,7 @@ base_url = "http://localhost:11434/v1"
 
 [connectors.openrouter]
 base_url = "https://openrouter.ai/api/v1"
-credential = "env:OPENROUTER_API_KEY"
+credential = "stored:connector/openrouter"
 
 [connectors.openrouter.headers]
 HTTP-Referer = "https://example.edu"
@@ -62,10 +62,18 @@ pdf = true
 ```
 
 Connector `credential`, when present, is an indirect `SecretRef`, never secret
-material. v0.2 supports `env:<VARIABLE>`; the environment variable name must be
-portable uppercase shell syntax. A connector with no authentication omits the
-field. Other syntactically valid schemes are reserved and fail as unsupported
-until an adapter explicitly implements them.
+material. v0.2 supports `stored:<target>` through the operating-system keyring
+and `env:<VARIABLE>` for automation. Stored targets use portable path-like
+segments, while environment names use portable uppercase shell syntax. A
+connector with no authentication omits the field.
+
+Manage local credentials without editing TOML:
+
+```bash
+sfumato connector login openrouter
+sfumato connector auth-status openrouter
+sfumato connector logout openrouter
+```
 
 ## Registry Example
 

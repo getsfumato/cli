@@ -220,6 +220,12 @@ pub enum ConnectorCommands {
     List,
     Show(ConnectorShowArgs),
     Setup(ConnectorSetupArgs),
+    #[command(about = "Securely save a connector credential in the operating-system keyring")]
+    Login(ConnectorShowArgs),
+    #[command(about = "Check whether a connector credential is available")]
+    AuthStatus(ConnectorShowArgs),
+    #[command(about = "Remove a connector credential from secure storage")]
+    Logout(ConnectorShowArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -380,8 +386,11 @@ pub struct ConnectorSetupArgs {
     #[arg(long, help = "Connector name; defaults to the preset name")]
     pub name: Option<String>,
 
-    #[arg(long, default_value = "OPENROUTER_API_KEY")]
-    pub api_key_env: String,
+    #[arg(
+        long,
+        help = "Use an environment variable instead of secure OS credential storage"
+    )]
+    pub api_key_env: Option<String>,
 }
 
 #[derive(Debug, Args)]

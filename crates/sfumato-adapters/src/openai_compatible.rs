@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use sfumato_core::{
     config::{Capability, EffectiveConfig, ModelProfile, OpenAiCompatibleConnectorConfig},
@@ -14,22 +14,27 @@ use sfumato_core::{
         ModelMessage, ProviderFactory, TextGenerationLimitError, TextGenerationProvider, TextModel,
         TextModelRequest, TextModelResponse, ToolCall, ToolDefinition,
     },
+    secrets::SecretResolver,
 };
 
 use crate::runtime::await_operation;
 
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleConnector {
     client: Client,
     name: String,
     config: OpenAiCompatibleConnectorConfig,
+    secrets: Arc<dyn SecretResolver>,
 }
 
 impl OpenAiCompatibleConnector {
-    pub fn new(name: String, config: OpenAiCompatibleConnectorConfig) -> Result<Self> {
-        let _ = resolve_api_key(&config)?;
+    pub fn new(
+        name: String,
+        config: OpenAiCompatibleConnectorConfig,
+        secrets: Arc<dyn SecretResolver>,
+    ) -> Result<Self> {
         Ok(Self {
             client: Client::builder()
                 .timeout(HTTP_REQUEST_TIMEOUT)
@@ -37,6 +42,7 @@ impl OpenAiCompatibleConnector {
                 .context("Could not build the OpenAI-compatible HTTP client")?,
             name,
             config,
+            secrets,
         })
     }
 
@@ -48,10 +54,11 @@ impl OpenAiCompatibleConnector {
         )
     }
 
-    fn post(&self, path: &str) -> Result<RequestBuilder> {
+    async fn post(&self, path: &str) -> Result<RequestBuilder> {
         let mut request = self.client.post(self.endpoint(path));
-        if let Some(api_key) = resolve_api_key(&self.config)? {
-            request = request.bearer_auth(api_key);
+        if let Some(reference) = &self.config.credential {
+            let api_key = self.secrets.resolve(reference).await?;
+            request = request.bearer_auth(api_key.expose());
         }
         for (name, value) in &self.config.headers {
             request = request.header(name, value);
@@ -61,8 +68,17 @@ impl OpenAiCompatibleConnector {
 }
 
 /// Provider factory for connectors exposing OpenAI-compatible endpoints.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct OpenAiCompatibleProviderFactory;
+#[derive(Clone)]
+pub struct OpenAiCompatibleProviderFactory {
+    secrets: Arc<dyn SecretResolver>,
+}
+
+impl OpenAiCompatibleProviderFactory {
+    /// Creates a provider factory that resolves credentials at request time.
+    pub fn new(secrets: Arc<dyn SecretResolver>) -> Self {
+        Self { secrets }
+    }
+}
 
 impl ProviderFactory for OpenAiCompatibleProviderFactory {
     fn text(
@@ -82,6 +98,7 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
                 profile.connector.clone(),
                 connector.clone(),
                 profile.clone(),
+                Arc::clone(&self.secrets),
             )?;
             Ok(Box::new(AgentRunner::new(std::sync::Arc::new(model)))
                 as Box<dyn TextGenerationProvider>)
@@ -106,13 +123,14 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
                 profile.connector.clone(),
                 connector.clone(),
                 profile.clone(),
+                Arc::clone(&self.secrets),
             )?) as Box<dyn ImageGenerationProvider>)
         })();
         result.map_err(|error| SfumatoError::config(format_args!("{error:#}")))
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleTextProvider {
     connector: OpenAiCompatibleConnector,
     profile: ModelProfile,
@@ -123,9 +141,10 @@ impl OpenAiCompatibleTextProvider {
         connector_name: String,
         connector: OpenAiCompatibleConnectorConfig,
         profile: ModelProfile,
+        secrets: Arc<dyn SecretResolver>,
     ) -> Result<Self> {
         Ok(Self {
-            connector: OpenAiCompatibleConnector::new(connector_name, connector)?,
+            connector: OpenAiCompatibleConnector::new(connector_name, connector, secrets)?,
             profile,
         })
     }
@@ -217,7 +236,7 @@ impl TextModel for OpenAiCompatibleTextProvider {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenAiCompatibleImageProvider {
     connector: OpenAiCompatibleConnector,
     profile: ModelProfile,
@@ -228,9 +247,10 @@ impl OpenAiCompatibleImageProvider {
         connector_name: String,
         connector: OpenAiCompatibleConnectorConfig,
         profile: ModelProfile,
+        secrets: Arc<dyn SecretResolver>,
     ) -> Result<Self> {
         Ok(Self {
-            connector: OpenAiCompatibleConnector::new(connector_name, connector)?,
+            connector: OpenAiCompatibleConnector::new(connector_name, connector, secrets)?,
             profile,
         })
     }
@@ -276,7 +296,7 @@ impl ImageGenerationProvider for OpenAiCompatibleImageProvider {
             let response = await_operation(
                 operation,
                 stage,
-                self.connector.post("images")?.json(&body).send(),
+                self.connector.post("images").await?.json(&body).send(),
             )
             .await
             .with_context(|| {
@@ -380,7 +400,11 @@ impl OpenAiCompatibleTextProvider {
         let response = await_operation(
             operation,
             stage,
-            self.connector.post("chat/completions")?.json(body).send(),
+            self.connector
+                .post("chat/completions")
+                .await?
+                .json(body)
+                .send(),
         )
         .await
         .with_context(|| {
@@ -410,21 +434,6 @@ impl OpenAiCompatibleTextProvider {
             );
         }
         serde_json::from_str(&text).context("Could not parse chat completions response")
-    }
-}
-
-fn resolve_api_key(connector: &OpenAiCompatibleConnectorConfig) -> Result<Option<String>> {
-    let Some(reference) = &connector.credential else {
-        return Ok(None);
-    };
-    match reference.scheme() {
-        "env" => std::env::var(reference.target()).map(Some).map_err(|_| {
-            anyhow::anyhow!(
-                "Missing API key environment variable {}",
-                reference.target()
-            )
-        }),
-        scheme => bail!("Unsupported connector credential scheme '{scheme}'"),
     }
 }
 

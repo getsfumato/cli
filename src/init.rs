@@ -6,8 +6,7 @@ use inquire::{Confirm, Select, Text};
 
 use sfumato_core::application::SfumatoApplication;
 use sfumato_core::config::{
-    Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile, SecretRef,
-    TextModelOptions,
+    Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile, TextModelOptions,
 };
 
 pub struct InitService {
@@ -99,14 +98,6 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
         Capability::Text,
         profile_name.to_string(),
     )]));
-    config
-        .connectors
-        .get_mut("openrouter")
-        .expect("default OpenRouter connector must exist")
-        .credential = Some(SecretRef::environment(&prompt(
-        "OpenRouter API key environment variable",
-        "OPENROUTER_API_KEY",
-    )?)?);
     Ok(config)
 }
 

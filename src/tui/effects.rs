@@ -198,7 +198,7 @@ pub(super) fn execute_operation(
             let connector = application.setup_connector(
                 preset,
                 optional_field(form, "Name"),
-                required_field(form, "API key environment")?,
+                optional_field(form, "API key environment"),
             )?;
             Ok(format!("Configured connector '{}'", connector.name))
         }
@@ -327,14 +327,6 @@ pub(super) fn execute_operation(
                 },
             );
             config.defaults = ModelDefaults(BTreeMap::from([(Capability::Text, profile_name)]));
-            config
-                .connectors
-                .get_mut("openrouter")
-                .context("Default OpenRouter connector is missing")?
-                .credential = Some(SecretRef::environment(&required_field(
-                form,
-                "API key environment",
-            )?)?);
             let result = application.setup_user(config)?;
             Ok(format!(
                 "Initialized user config at {}",

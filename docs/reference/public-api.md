@@ -40,6 +40,8 @@ cases. CLI and TUI construct the same command DTOs.
 - `PromptManager` and schema-aware `ConfigEditor`;
 - `ArtifactStore`, repositories, and `WorkspaceFileSystem`;
 - `ProviderFactory`, `TextModel`, and `ImageGenerationProvider`;
+- `SecretResolver` for provider authentication and `SecretStore` for secure
+  connector login, status, and logout workflows;
 - `DiagramRenderer`, `SlideRenderer`, `SourceReader`, and `GenerationToolFactory`.
 - `PageAssembler`, `PageInspector`, and `PagePluginCatalog` for standalone pages.
 - `GenerationTemplateCatalog` and `ProjectAssetCatalog` for reusable structure
@@ -64,6 +66,8 @@ port boundary.
   `ResourceArtifactManifest` revision.
 - `OperationContext` carries `JobId`, cancellation, optional deadline, and a
   bounded nonblocking `EventSink`.
+- `SecretValue` requires explicit exposure at the transport boundary, while
+  `SecretRef` persists only an indirect `stored:` or `env:` locator.
 
 ## Errors
 

@@ -120,14 +120,25 @@ They differ only by configuration:
 
 ```bash
 cargo run -- connector setup ollama
-cargo run -- connector setup openrouter --api-key-env OPENROUTER_API_KEY
+cargo run -- connector setup openrouter
+cargo run -- connector login openrouter
+cargo run -- connector auth-status openrouter
 cargo run -- connector list
 cargo run -- connector show openrouter
 ```
 
-Ollama defaults to `http://localhost:11434/v1` with the required-but-ignored
-`ollama` API key. OpenRouter defaults to `https://openrouter.ai/api/v1`, reads
-its bearer token from `OPENROUTER_API_KEY`.
+Ollama defaults to `http://localhost:11434/v1` without authentication.
+OpenRouter defaults to `https://openrouter.ai/api/v1`. `connector login` reads
+the API key through a hidden prompt and stores it in the operating system's
+native credential store. The TOML file contains only
+`stored:connector/openrouter`; it never contains the key. Use `connector
+logout openrouter` to remove it.
+
+Automation may explicitly retain environment-based authentication:
+
+```bash
+sfumato connector setup openrouter --api-key-env OPENROUTER_API_KEY
+```
 
 ## Models
 
@@ -626,7 +637,9 @@ versions fail read-only with an actionable error; run `sfumato init user
 --force` and recreate project registrations instead of relying on an implicit
 migration. Writes validate the complete document and replace it atomically.
 Credentials are stored only as indirect references such as
-`env:OPENROUTER_API_KEY`.
+`stored:connector/openrouter` or `env:OPENROUTER_API_KEY`. Local interactive
+usage defaults to native secure storage; environment references remain
+available for CI and headless deployments.
 
 ## Prompts
 

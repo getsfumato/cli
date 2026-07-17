@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use inquire::{Password, PasswordDisplayMode};
 use serde_json::Value;
 
 use crate::{
@@ -29,6 +30,7 @@ use sfumato_core::{
     providers::TextGenerationEvent,
     resources::pages::GeneratePageResult,
     resources::slides::{EditSlidesRequest, EditSlidesResult, GenerateSlidesResult},
+    secrets::SecretValue,
     templates::TemplateKind,
 };
 
@@ -502,6 +504,44 @@ impl RunnableCommand for ConnectorCommands {
             }
             Self::Show(args) => args.run(Arc::clone(&application)).await,
             Self::Setup(args) => args.run(application).await,
+            Self::Login(args) => {
+                let secret = Password::new(&format!("API key for {}", args.name))
+                    .without_confirmation()
+                    .with_display_mode(PasswordDisplayMode::Hidden)
+                    .prompt()?;
+                let status = application
+                    .login_connector(&args.name, SecretValue::new(secret))
+                    .await?;
+                println!(
+                    "Stored credential securely for connector '{}' ({})",
+                    status.name,
+                    status.credential.as_deref().unwrap_or("stored")
+                );
+                Ok(())
+            }
+            Self::AuthStatus(args) => {
+                let status = application.connector_auth_status(&args.name).await?;
+                println!(
+                    "Connector '{}': {}{}",
+                    status.name,
+                    if status.available {
+                        "credential available"
+                    } else {
+                        "credential unavailable"
+                    },
+                    status
+                        .credential
+                        .as_deref()
+                        .map(|reference| format!(" ({reference})"))
+                        .unwrap_or_default()
+                );
+                Ok(())
+            }
+            Self::Logout(args) => {
+                let status = application.logout_connector(&args.name).await?;
+                println!("Removed credential for connector '{}'", status.name);
+                Ok(())
+            }
         }
     }
 }

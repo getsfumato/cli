@@ -41,6 +41,7 @@ pub mod repositories;
 #[allow(missing_docs)]
 pub mod resources;
 pub mod review;
+pub mod secrets;
 /// User initialization use case.
 #[allow(missing_docs)]
 pub mod setup;

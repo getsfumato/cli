@@ -12,7 +12,14 @@ secret references, and operation-level consistency.
 
 All three TOML documents use `schema_version = 4` and deny unknown fields.
 Connector API keys become optional indirect `SecretRef` values such as
-`env:OPENROUTER_API_KEY`; raw secret material is invalid in v4.
+`stored:connector/openrouter` and `env:OPENROUTER_API_KEY`; raw secret material
+is invalid in v4. Interactive local setup defaults to the native operating
+system credential store. Environment references remain available for CI.
+
+Core exposes `SecretResolver` for provider requests and `SecretStore` for
+credential-management use cases. The OS keyring is an adapter, not a core
+concept. A future server can replace it with a tenant-scoped cloud secret
+manager without changing connector or generation workflows.
 
 Prompt roots are conventional directories rather than config fields: user
 overrides live under the platform config directory's `sfumato/prompts`, project

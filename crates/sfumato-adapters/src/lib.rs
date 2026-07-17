@@ -15,6 +15,7 @@ pub mod prompts;
 pub mod renderers;
 pub mod repositories;
 mod runtime;
+pub mod secrets;
 pub mod sources;
 pub mod templates;
 pub mod themes;

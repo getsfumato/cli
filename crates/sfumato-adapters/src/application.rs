@@ -26,6 +26,7 @@ use crate::{
     prompts::{LayeredPromptCatalog, LayeredPromptManager},
     renderers::{MarpCliRenderer, MermaidCliRenderer},
     repositories::{FilesystemGlobalConfigRepository, FilesystemProjectRepository},
+    secrets::SystemSecretStore,
     sources::FilesystemSourceReader,
     templates::FilesystemGenerationTemplateCatalog,
     themes::FilesystemThemeRepository,
@@ -89,12 +90,15 @@ pub fn production_application() -> Result<SfumatoApplication> {
         projects.clone(),
         config_resolver.clone(),
     ));
+    let secrets = Arc::new(SystemSecretStore::default());
+    let secret_resolver: Arc<dyn sfumato_core::secrets::SecretResolver> = secrets.clone();
+    let secret_store: Arc<dyn sfumato_core::secrets::SecretStore> = secrets;
     Ok(SfumatoApplication::new(SfumatoApplicationDependencies {
         config: config_resolver,
         prompts: Arc::new(LayeredPromptCatalogFactory),
         prompt_manager: Arc::new(LayeredPromptManager),
         artifacts: Arc::new(FilesystemArtifactStore::default_path()?),
-        providers: Arc::new(OpenAiCompatibleProviderFactory),
+        providers: Arc::new(OpenAiCompatibleProviderFactory::new(secret_resolver)),
         diagrams: Arc::new(MermaidCliRenderer),
         slides: Arc::new(MarpCliRenderer),
         page_assembler: Arc::new(StandalonePageAssembler),
@@ -111,5 +115,6 @@ pub fn production_application() -> Result<SfumatoApplication> {
         user_config_path,
         workspace: Arc::new(LocalWorkspaceFileSystem),
         config_editor,
+        secrets: secret_store,
     }))
 }

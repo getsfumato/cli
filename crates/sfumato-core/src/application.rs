@@ -13,7 +13,9 @@ use crate::{
     artifacts::ArtifactStore,
     config::{ConfigOverrides, EffectiveConfig, GlobalConfig},
     config_editor::{ConfigEditor, ConfigTarget},
-    connectors::{ConnectorDetails, ConnectorPreset, ConnectorService, ConnectorSummary},
+    connectors::{
+        ConnectorAuthStatus, ConnectorDetails, ConnectorPreset, ConnectorService, ConnectorSummary,
+    },
     errors::{ErrorCode, OperationStage, SfumatoError, SfumatoResult},
     filesystem::WorkspaceFileSystem,
     generation::GenerationRequest,
@@ -37,6 +39,7 @@ use crate::{
         EditSlidesOptions, EditSlidesRequest, EditSlidesResult, GenerateSlidesOptions,
         GenerateSlidesResult, edit_slides, generate_slides,
     },
+    secrets::{SecretStore, SecretValue},
     setup::{SetupService, UserSetupRequest, UserSetupResult},
     sources::SourceReader,
     templates::{
@@ -159,6 +162,8 @@ pub struct SfumatoApplicationDependencies {
     pub workspace: Arc<dyn WorkspaceFileSystem>,
     /// Structured configuration editor.
     pub config_editor: Arc<dyn ConfigEditor>,
+    /// Secure credential storage for connector authentication workflows.
+    pub secrets: Arc<dyn SecretStore>,
 }
 
 /// Shared entry point for Sfumato application workflows.
@@ -188,6 +193,7 @@ pub struct SfumatoApplication {
     user_config_path: std::path::PathBuf,
     workspace: Arc<dyn WorkspaceFileSystem>,
     config_editor: Arc<dyn ConfigEditor>,
+    secrets: Arc<dyn SecretStore>,
 }
 
 impl SfumatoApplication {
@@ -215,6 +221,7 @@ impl SfumatoApplication {
             user_config_path,
             workspace,
             config_editor,
+            secrets,
         } = dependencies;
 
         Self {
@@ -239,6 +246,7 @@ impl SfumatoApplication {
             user_config_path,
             workspace,
             config_editor,
+            secrets,
         }
     }
 
@@ -729,12 +737,52 @@ impl SfumatoApplication {
         &self,
         preset: ConnectorPreset,
         name: Option<String>,
-        api_key_env: String,
+        api_key_env: Option<String>,
     ) -> SfumatoResult<ConnectorSummary> {
         public_result(
             self.connector_service()
                 .and_then(|mut service| service.setup(preset, name, api_key_env)),
             ErrorCode::Validation,
+        )
+    }
+
+    /// Saves a connector credential in secure storage and selects it in configuration.
+    pub async fn login_connector(
+        &self,
+        name: &str,
+        secret: SecretValue,
+    ) -> SfumatoResult<ConnectorAuthStatus> {
+        public_result(
+            async {
+                let mut service = self.connector_service()?;
+                service.login(name, secret).await
+            }
+            .await,
+            ErrorCode::Validation,
+        )
+    }
+
+    /// Reports whether one connector's configured credential is currently available.
+    pub async fn connector_auth_status(&self, name: &str) -> SfumatoResult<ConnectorAuthStatus> {
+        public_result(
+            async {
+                let service = self.connector_service()?;
+                service.auth_status(name).await
+            }
+            .await,
+            ErrorCode::Config,
+        )
+    }
+
+    /// Removes a stored connector credential and clears its configuration reference.
+    pub async fn logout_connector(&self, name: &str) -> SfumatoResult<ConnectorAuthStatus> {
+        public_result(
+            async {
+                let mut service = self.connector_service()?;
+                service.logout(name).await
+            }
+            .await,
+            ErrorCode::Config,
         )
     }
 
@@ -747,7 +795,7 @@ impl SfumatoApplication {
     }
 
     fn connector_service(&self) -> SfumatoResult<ConnectorService> {
-        ConnectorService::new(Arc::clone(&self.global_config))
+        ConnectorService::new(Arc::clone(&self.global_config), Arc::clone(&self.secrets))
     }
 
     /// Shows a complete configuration scope or one dotted key.

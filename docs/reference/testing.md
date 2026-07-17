@@ -37,6 +37,8 @@ Tests do not mock private call graphs.
 - Read-only rejection of v1/v2/v3 and future schema versions.
 - Unknown field, missing reference, capability mismatch, future version,
   unsupported secret scheme, and prohibited raw-secret edits.
+- Stored-secret save/resolve/delete behavior, environment fallback, connector
+  login/status/logout, and provider authorization through an injected resolver.
 - Faults at temporary write, validation, and atomic replacement; originals must
   remain intact.
 - One immutable snapshot per operation despite concurrent file changes.

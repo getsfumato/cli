@@ -276,8 +276,8 @@ impl GlobalConfig {
                     OpenAiCompatibleConnectorConfig {
                         base_url: "https://openrouter.ai/api/v1".to_string(),
                         credential: Some(
-                            SecretRef::environment("OPENROUTER_API_KEY")
-                                .expect("the bundled environment reference is valid"),
+                            SecretRef::stored("connector/openrouter")
+                                .expect("the bundled stored reference is valid"),
                         ),
                         headers: BTreeMap::new(),
                     },
