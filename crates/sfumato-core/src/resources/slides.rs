@@ -65,6 +65,8 @@ use prompting::*;
 use publishing::publish_slides;
 use source_bundle::{build_compact_source_bundle, build_source_bundle};
 
+use super::DryRunImageProvider;
+
 const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
 const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
 
@@ -203,8 +205,11 @@ pub(crate) async fn generate_slides(
         .transpose()?;
     let image_tool = image_selection
         .map(|(profile_name, profile)| {
-            let provider: Arc<dyn crate::providers::ImageGenerationProvider> =
-                Arc::from(provider_factory.image(&config, profile)?);
+            let provider: Arc<dyn crate::providers::ImageGenerationProvider> = if dry_run {
+                Arc::new(DryRunImageProvider)
+            } else {
+                Arc::from(provider_factory.image(&config, profile)?)
+            };
             Ok::<ImageToolConfig, SfumatoError>(ImageToolConfig {
                 provider,
                 profile_name: profile_name.to_string(),

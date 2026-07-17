@@ -6,7 +6,6 @@ use std::{
     sync::Arc,
 };
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 pub use sfumato_domain::PageDocument;
 use sfumato_domain::{ArtifactKind, ReviewableDocument};
@@ -30,8 +29,8 @@ use crate::{
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
-        GenerationStage, ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
-        ProviderFactory, TextGenerationEvent, TextGenerationRequest, ToolDefinition,
+        GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
+        TextGenerationRequest, ToolDefinition,
     },
     renderers::{AssembledPage, PageAssembler, PageAssemblyRequest, PageInspector},
     repositories::ThemeRepository,
@@ -40,6 +39,8 @@ use crate::{
     themes::ThemePackage,
     tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
+
+use super::DryRunImageProvider;
 
 /// Complete page-generation result returned to presentation frontends.
 #[derive(Debug)]
@@ -131,23 +132,6 @@ struct PageContextInput<'a> {
     max_tool_rounds: usize,
     template: Option<&'a GenerationTemplate>,
     reusable_assets: &'a [ProjectAssetReference],
-}
-
-struct DryRunImageProvider;
-
-#[async_trait]
-impl ImageGenerationProvider for DryRunImageProvider {
-    async fn generate_image(
-        &self,
-        _request: ImageGenerationRequest,
-        _operation: &OperationContext,
-        _stage: OperationStage,
-    ) -> Result<ImageGenerationResponse> {
-        Err(SfumatoError::provider(
-            ErrorClass::Unavailable,
-            "Dry-run image provider cannot execute",
-        ))
-    }
 }
 
 pub(crate) async fn generate_page(
