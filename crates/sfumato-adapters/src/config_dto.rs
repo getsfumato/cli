@@ -5,8 +5,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sfumato_core::config::{
-    Capability, GlobalConfig, ImageModelOptions, MarpConfig, ModelDefaults, ModelOptions,
-    ModelProfile, ModelRole, OpenAiCompatibleConnectorConfig, ProjectConfig, ProjectRegistry,
+    Capability, CodexAppServerConnectorConfig, ConnectorConfig, GlobalConfig, ImageModelOptions,
+    MarpConfig, ModelDefaults, ModelOptions, ModelProfile, ModelRole, OllamaConnectorConfig,
+    OpenAiCompatibleConnectorConfig, OpenRouterConnectorConfig, ProjectConfig, ProjectRegistry,
     RegisteredProject, SecretRef, TextModelOptions, UserConfig,
 };
 
@@ -36,11 +37,29 @@ struct UserConfigDto {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ConnectorDto {
-    base_url: String,
+    #[serde(default)]
+    kind: ConnectorKindDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
     #[serde(default)]
     credential: Option<SecretRef>,
     #[serde(default)]
     headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executable: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_base_url: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConnectorKindDto {
+    #[default]
+    OpenaiCompatible,
+    Openrouter,
+    Ollama,
+    #[serde(alias = "codex_cli")]
+    CodexAppServer,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -132,16 +151,69 @@ impl GlobalConfigDto {
                 .connectors
                 .into_iter()
                 .map(|(name, connector)| {
-                    (
-                        name,
-                        OpenAiCompatibleConnectorConfig {
-                            base_url: connector.base_url,
-                            credential: connector.credential,
-                            headers: connector.headers,
-                        },
-                    )
+                    let connector = match connector.kind {
+                        ConnectorKindDto::OpenaiCompatible => {
+                            ConnectorConfig::OpenAiCompatible(OpenAiCompatibleConnectorConfig {
+                                base_url: connector.base_url.ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "OpenAI-compatible connector '{name}' requires base_url"
+                                    )
+                                })?,
+                                credential: connector.credential,
+                                headers: connector.headers,
+                            })
+                        }
+                        ConnectorKindDto::Openrouter => {
+                            if connector.executable.is_some() || connector.native_base_url.is_some() {
+                                bail!("OpenRouter connector '{name}' cannot define executable or native_base_url");
+                            }
+                            ConnectorConfig::OpenRouter(OpenRouterConnectorConfig {
+                                transport: OpenAiCompatibleConnectorConfig {
+                                    base_url: connector.base_url.ok_or_else(|| anyhow::anyhow!(
+                                        "OpenRouter connector '{name}' requires base_url"
+                                    ))?,
+                                    credential: connector.credential,
+                                    headers: connector.headers,
+                                },
+                            })
+                        }
+                        ConnectorKindDto::Ollama => {
+                            if connector.executable.is_some() {
+                                bail!("Ollama connector '{name}' cannot define executable");
+                            }
+                            ConnectorConfig::Ollama(OllamaConnectorConfig {
+                                transport: OpenAiCompatibleConnectorConfig {
+                                    base_url: connector.base_url.ok_or_else(|| anyhow::anyhow!(
+                                        "Ollama connector '{name}' requires base_url"
+                                    ))?,
+                                    credential: connector.credential,
+                                    headers: connector.headers,
+                                },
+                                native_base_url: connector.native_base_url.ok_or_else(|| anyhow::anyhow!(
+                                    "Ollama connector '{name}' requires native_base_url"
+                                ))?,
+                            })
+                        }
+                        ConnectorKindDto::CodexAppServer => {
+                            if connector.base_url.is_some()
+                                || connector.credential.is_some()
+                                || !connector.headers.is_empty()
+                                || connector.native_base_url.is_some()
+                            {
+                                bail!(
+                                    "Codex App Server connector '{name}' cannot define base_url, credential, or headers"
+                                );
+                            }
+                            ConnectorConfig::CodexAppServer(CodexAppServerConnectorConfig {
+                                executable: connector
+                                    .executable
+                                    .unwrap_or_else(|| PathBuf::from("codex")),
+                            })
+                        }
+                    };
+                    Ok((name, connector))
                 })
-                .collect(),
+                .collect::<Result<_>>()?,
             models: self
                 .models
                 .into_iter()
@@ -176,14 +248,41 @@ impl GlobalConfigDto {
                 .connectors
                 .iter()
                 .map(|(name, connector)| {
-                    (
-                        name.clone(),
-                        ConnectorDto {
-                            base_url: connector.base_url.clone(),
+                    let connector = match connector {
+                        ConnectorConfig::OpenAiCompatible(connector) => ConnectorDto {
+                            kind: ConnectorKindDto::OpenaiCompatible,
+                            base_url: Some(connector.base_url.clone()),
                             credential: connector.credential.clone(),
                             headers: connector.headers.clone(),
+                            executable: None,
+                            native_base_url: None,
                         },
-                    )
+                        ConnectorConfig::OpenRouter(connector) => ConnectorDto {
+                            kind: ConnectorKindDto::Openrouter,
+                            base_url: Some(connector.transport.base_url.clone()),
+                            credential: connector.transport.credential.clone(),
+                            headers: connector.transport.headers.clone(),
+                            executable: None,
+                            native_base_url: None,
+                        },
+                        ConnectorConfig::Ollama(connector) => ConnectorDto {
+                            kind: ConnectorKindDto::Ollama,
+                            base_url: Some(connector.transport.base_url.clone()),
+                            credential: connector.transport.credential.clone(),
+                            headers: connector.transport.headers.clone(),
+                            executable: None,
+                            native_base_url: Some(connector.native_base_url.clone()),
+                        },
+                        ConnectorConfig::CodexAppServer(connector) => ConnectorDto {
+                            kind: ConnectorKindDto::CodexAppServer,
+                            base_url: None,
+                            credential: None,
+                            headers: BTreeMap::new(),
+                            executable: Some(connector.executable.clone()),
+                            native_base_url: None,
+                        },
+                    };
+                    (name.clone(), connector)
                 })
                 .collect(),
             models: config

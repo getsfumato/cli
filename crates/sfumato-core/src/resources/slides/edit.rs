@@ -11,11 +11,11 @@ use sfumato_domain::RevisionId;
 use slug::slugify;
 
 use super::{
-    SlidePromptContext, compact_review_snapshot, constrain_generated_images, copy_theme_css,
-    emit_context_compaction, emit_layout_result, emit_review_retry, emit_stage, ensure_inside,
-    extract_generated_title, format_tokens, generation_limit, inspect_candidate_layout,
-    markdown_fences, render_mermaid_diagrams, render_prompt_request, request_chars,
-    resource_artifact_file, validate_normalized_deck,
+    LayoutInspectionContext, SlidePromptContext, compact_review_snapshot,
+    constrain_generated_images, copy_theme_css, emit_context_compaction, emit_layout_result,
+    emit_review_retry, emit_stage, ensure_inside, extract_generated_title, format_tokens,
+    generation_limit, inspect_candidate_layout, markdown_fences, render_mermaid_diagrams,
+    render_prompt_request, request_chars, resource_artifact_file, validate_normalized_deck,
 };
 use crate::sfumato_bail as bail;
 use crate::{
@@ -192,16 +192,16 @@ pub(crate) async fn edit_slides(
         OperationEventKind::Started,
         BTreeMap::new(),
     );
-    let layout_result = inspect_candidate_layout(
-        &candidate,
-        &theme,
-        config.marp.browser_path.as_deref(),
-        options.diagram_renderer.as_ref(),
-        options.slide_renderer.as_ref(),
-        options.workspace.as_ref(),
-        &options.operation,
-    )
-    .await;
+    let layout_context = LayoutInspectionContext {
+        browser_path: config.marp.browser_path.as_deref(),
+        diagram_renderer: options.diagram_renderer.as_ref(),
+        slide_renderer: options.slide_renderer.as_ref(),
+        workspace: options.workspace.as_ref(),
+        project_assets: None,
+        generated_assets: &[],
+        operation: &options.operation,
+    };
+    let layout_result = inspect_candidate_layout(&candidate, &theme, &layout_context).await;
     options
         .operation
         .checkpoint(OperationStage::InspectLayout)?;

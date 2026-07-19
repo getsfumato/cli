@@ -4,6 +4,8 @@ sequenceDiagram
     actor Client as CLI or TUI
     participant App as SfumatoApplication
     participant Config as EffectiveConfigResolver
+    participant Assets as ProjectAssetCatalog
+    participant Image as Image provider
     participant Source as SourceReader
     participant Prompt as PromptCatalog
     participant Agent as AgentRunner
@@ -15,6 +17,12 @@ sequenceDiagram
     Client->>App: generate_slides(command)
     App->>Config: resolve(command overrides)
     Config-->>App: EffectiveConfig
+    App->>Assets: resolve exact-theme then wildcard variants
+    opt missing themed variant has a regeneration recipe
+        App->>Prompt: render artifact regeneration prompt
+        App->>Image: generate variant with active theme tokens
+        App->>Assets: cache content-addressed themed variant
+    end
     App->>Source: read bounded sources and SFUMATO.md
     Source-->>App: deterministic source bundle and warnings
     App->>Prompt: render draft pair
@@ -48,8 +56,9 @@ sequenceDiagram
         App->>Deck: replace focused slide and validate
         App->>Render: compare layout metrics
     end
+    App->>Deck: collect only project and generated images referenced by final Markdown
     App->>Tx: begin project slide transaction
-    App->>Render: stage theme, Mermaid SVGs, Markdown, and optional PDF
+    App->>Render: stage referenced images, theme, Mermaid SVGs, Markdown, and optional PDF
     App->>Tx: validate manifest and commit immutable revision
     Tx-->>App: committed revision and current pointer
     opt publish directory resolved

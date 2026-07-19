@@ -19,11 +19,11 @@ use crate::{
     config_editor::TomlConfigEditor,
     config_files::ConfigPaths,
     filesystem::LocalWorkspaceFileSystem,
-    openai_compatible::OpenAiCompatibleProviderFactory,
     page_plugins::{CdnPagePluginSource, FilesystemPagePluginCatalog},
     pages::{ChromiumPageInspector, StandalonePageAssembler},
     project_assets::FilesystemProjectAssetCatalog,
     prompts::{LayeredPromptCatalog, LayeredPromptManager},
+    providers::AdapterProviderFactory,
     renderers::{MarpCliRenderer, MermaidCliRenderer},
     repositories::{FilesystemGlobalConfigRepository, FilesystemProjectRepository},
     secrets::SystemSecretStore,
@@ -93,12 +93,14 @@ pub fn production_application() -> Result<SfumatoApplication> {
     let secrets = Arc::new(SystemSecretStore::default());
     let secret_resolver: Arc<dyn sfumato_core::secrets::SecretResolver> = secrets.clone();
     let secret_store: Arc<dyn sfumato_core::secrets::SecretStore> = secrets;
+    let providers = Arc::new(AdapterProviderFactory::new(secret_resolver));
     Ok(SfumatoApplication::new(SfumatoApplicationDependencies {
         config: config_resolver,
         prompts: Arc::new(LayeredPromptCatalogFactory),
         prompt_manager: Arc::new(LayeredPromptManager),
         artifacts: Arc::new(FilesystemArtifactStore::default_path()?),
-        providers: Arc::new(OpenAiCompatibleProviderFactory::new(secret_resolver)),
+        providers: providers.clone(),
+        connector_introspection: providers,
         diagrams: Arc::new(MermaidCliRenderer),
         slides: Arc::new(MarpCliRenderer),
         page_assembler: Arc::new(StandalonePageAssembler),

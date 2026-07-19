@@ -71,7 +71,10 @@ fn default_config_has_openai_compatible_connector_presets() {
     let service = ConnectorService::new(repository, Arc::new(MemorySecrets::default())).unwrap();
 
     assert_eq!(
-        service.config.connectors.get("ollama").unwrap().base_url,
+        service.config.connectors["ollama"]
+            .openai_compatible()
+            .unwrap()
+            .base_url,
         "http://localhost:11434/v1"
     );
     assert_eq!(
@@ -79,6 +82,8 @@ fn default_config_has_openai_compatible_connector_presets() {
             .config
             .connectors
             .get("openrouter")
+            .unwrap()
+            .openai_compatible()
             .unwrap()
             .base_url,
         "https://openrouter.ai/api/v1"
@@ -103,6 +108,8 @@ async fn login_selects_secure_storage_and_logout_removes_the_secret() {
     assert!(service.auth_status("openrouter").await.unwrap().available);
     assert_eq!(
         repository.load().unwrap().connectors["openrouter"]
+            .openai_compatible()
+            .unwrap()
             .credential
             .as_ref()
             .unwrap()
@@ -114,6 +121,8 @@ async fn login_selects_secure_storage_and_logout_removes_the_secret() {
     assert!(!service.auth_status("openrouter").await.unwrap().available);
     assert!(
         repository.load().unwrap().connectors["openrouter"]
+            .openai_compatible()
+            .unwrap()
             .credential
             .is_none()
     );
@@ -130,6 +139,8 @@ fn openrouter_setup_defaults_to_secure_storage_but_allows_explicit_environment_r
         .unwrap();
     assert_eq!(
         service.config.connectors["openrouter"]
+            .openai_compatible()
+            .unwrap()
             .credential
             .as_ref()
             .unwrap()
@@ -146,10 +157,35 @@ fn openrouter_setup_defaults_to_secure_storage_but_allows_explicit_environment_r
         .unwrap();
     assert_eq!(
         service.config.connectors["ci-openrouter"]
+            .openai_compatible()
+            .unwrap()
             .credential
             .as_ref()
             .unwrap()
             .as_str(),
         "env:CI_OPENROUTER_KEY"
+    );
+}
+
+#[tokio::test]
+async fn codex_setup_delegates_authentication_to_codex_app_server() {
+    let repository = Arc::new(MemoryGlobal(Mutex::new(GlobalConfig::default_config())));
+    let mut service =
+        ConnectorService::new(repository, Arc::new(MemorySecrets::default())).unwrap();
+
+    let configured = service.setup(ConnectorPreset::Codex, None, None).unwrap();
+
+    assert_eq!(configured.kind, "codex_app_server");
+    assert_eq!(configured.target, "codex");
+    let status = service.auth_status("codex").await.unwrap();
+    assert!(status.managed_externally);
+    assert!(!status.available);
+    assert!(
+        service
+            .login("codex", SecretValue::new("not-used".to_string()))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("codex login")
     );
 }

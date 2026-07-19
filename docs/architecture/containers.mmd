@@ -26,7 +26,10 @@ flowchart TB
     subgraph Adapters["sfumato-adapters crate: infrastructure"]
         CONFIG["Schema-v4 TOML repositories"]
         PROMPTS["Layered MiniJinja PromptCatalog"]
-        OPENAI["OpenAI-compatible text and image providers"]
+        OPENAI["OpenAI-compatible text and image transport"]
+        OPENROUTER["OpenRouter native catalog and usage"]
+        OLLAMA["Ollama native catalog and runtime"]
+        CODEX["Codex App Server JSON-RPC provider"]
         TOOLS["Filesystem and image-generation tools"]
         RENDERERS["Marp, Mermaid, browser, and layout adapters"]
         ARTIFACTS["FilesystemArtifactStore"]
@@ -36,7 +39,7 @@ flowchart TB
     subgraph External["External systems"]
         API["Ollama, OpenRouter, and compatible APIs"]
         DISK["Config, project roots, themes, and artifact revisions"]
-        PROCESSES["marp, mmdc, and browser processes"]
+        PROCESSES["codex, marp, mmdc, and browser processes"]
         KEYRING["macOS Keychain or native OS credential store"]
     end
 
@@ -62,11 +65,17 @@ flowchart TB
     CONFIG -. implements .-> PORTS
     PROMPTS -. implements .-> PORTS
     OPENAI -. implements .-> PORTS
+    OPENROUTER -. implements .-> PORTS
+    OLLAMA -. implements .-> PORTS
+    CODEX -. implements .-> PORTS
     TOOLS -. implements .-> PORTS
     RENDERERS -. implements .-> PORTS
     ARTIFACTS -. implements .-> PORTS
     SECRETS -. implements .-> PORTS
     OPENAI --> API
+    OPENROUTER --> API
+    OLLAMA --> API
+    CODEX --> PROCESSES
     CONFIG --> DISK
     PROMPTS --> DISK
     TOOLS --> DISK

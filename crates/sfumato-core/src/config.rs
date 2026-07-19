@@ -25,7 +25,7 @@ pub struct ConfigOverrides {
 #[derive(Clone, Debug, Serialize)]
 pub struct GlobalConfig {
     pub user: UserConfig,
-    pub connectors: BTreeMap<String, OpenAiCompatibleConnectorConfig>,
+    pub connectors: BTreeMap<String, ConnectorConfig>,
     pub models: BTreeMap<String, ModelProfile>,
     pub defaults: ModelDefaults,
     #[serde(default)]
@@ -198,6 +198,85 @@ pub struct OpenAiCompatibleConnectorConfig {
     pub headers: BTreeMap<String, String>,
 }
 
+/// OpenRouter connector composed from its OpenAI-compatible transport.
+#[derive(Clone, Debug, Serialize)]
+pub struct OpenRouterConnectorConfig {
+    /// Shared chat/image transport configuration.
+    pub transport: OpenAiCompatibleConnectorConfig,
+}
+
+/// Ollama connector composed from its OpenAI-compatible transport and native API root.
+#[derive(Clone, Debug, Serialize)]
+pub struct OllamaConnectorConfig {
+    /// Shared chat transport configuration.
+    pub transport: OpenAiCompatibleConnectorConfig,
+    /// Native Ollama API root, normally without `/v1`.
+    pub native_base_url: String,
+}
+
+/// Configuration for one external model transport.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConnectorConfig {
+    /// HTTP connector exposing OpenAI-compatible endpoints.
+    OpenAiCompatible(OpenAiCompatibleConnectorConfig),
+    /// OpenRouter with provider-native catalog and account operations.
+    OpenRouter(OpenRouterConnectorConfig),
+    /// Ollama with provider-native local model operations.
+    Ollama(OllamaConnectorConfig),
+    /// Local Codex App Server using Codex-owned ChatGPT authentication.
+    CodexAppServer(CodexAppServerConnectorConfig),
+}
+
+impl ConnectorConfig {
+    /// Stable connector kind used by presentation and persistence adapters.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::OpenAiCompatible(_) => "openai_compatible",
+            Self::OpenRouter(_) => "openrouter",
+            Self::Ollama(_) => "ollama",
+            Self::CodexAppServer(_) => "codex_app_server",
+        }
+    }
+
+    /// Human-readable endpoint or executable target.
+    pub fn target(&self) -> String {
+        match self {
+            Self::OpenAiCompatible(config) => config.base_url.clone(),
+            Self::OpenRouter(config) => config.transport.base_url.clone(),
+            Self::Ollama(config) => config.native_base_url.clone(),
+            Self::CodexAppServer(config) => config.executable.display().to_string(),
+        }
+    }
+
+    /// Returns the OpenAI-compatible settings when this connector uses HTTP.
+    pub fn openai_compatible(&self) -> Option<&OpenAiCompatibleConnectorConfig> {
+        match self {
+            Self::OpenAiCompatible(config) => Some(config),
+            Self::OpenRouter(config) => Some(&config.transport),
+            Self::Ollama(config) => Some(&config.transport),
+            Self::CodexAppServer(_) => None,
+        }
+    }
+
+    /// Returns mutable OpenAI-compatible settings when this connector uses HTTP.
+    pub fn openai_compatible_mut(&mut self) -> Option<&mut OpenAiCompatibleConnectorConfig> {
+        match self {
+            Self::OpenAiCompatible(config) => Some(config),
+            Self::OpenRouter(config) => Some(&mut config.transport),
+            Self::Ollama(config) => Some(&mut config.transport),
+            Self::CodexAppServer(_) => None,
+        }
+    }
+}
+
+/// Process settings for a local Codex App Server connector.
+#[derive(Clone, Debug, Serialize)]
+pub struct CodexAppServerConnectorConfig {
+    /// Executable name or path. Authentication remains owned by Codex.
+    pub executable: PathBuf,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct MarpConfig {
     pub pdf: bool,
@@ -212,7 +291,7 @@ pub struct EffectiveConfig {
     pub project_root: PathBuf,
     pub publish_dir: Option<PathBuf>,
     pub theme: String,
-    pub connectors: BTreeMap<String, OpenAiCompatibleConnectorConfig>,
+    pub connectors: BTreeMap<String, ConnectorConfig>,
     pub models: BTreeMap<String, ModelProfile>,
     pub model_defaults: BTreeMap<Capability, String>,
     pub model_roles: BTreeMap<ModelRole, String>,
@@ -265,22 +344,27 @@ impl GlobalConfig {
             connectors: BTreeMap::from([
                 (
                     "ollama".to_string(),
-                    OpenAiCompatibleConnectorConfig {
-                        base_url: "http://localhost:11434/v1".to_string(),
-                        credential: None,
-                        headers: BTreeMap::new(),
-                    },
+                    ConnectorConfig::Ollama(OllamaConnectorConfig {
+                        transport: OpenAiCompatibleConnectorConfig {
+                            base_url: "http://localhost:11434/v1".to_string(),
+                            credential: None,
+                            headers: BTreeMap::new(),
+                        },
+                        native_base_url: "http://localhost:11434".to_string(),
+                    }),
                 ),
                 (
                     "openrouter".to_string(),
-                    OpenAiCompatibleConnectorConfig {
-                        base_url: "https://openrouter.ai/api/v1".to_string(),
-                        credential: Some(
-                            SecretRef::stored("connector/openrouter")
-                                .expect("the bundled stored reference is valid"),
-                        ),
-                        headers: BTreeMap::new(),
-                    },
+                    ConnectorConfig::OpenRouter(OpenRouterConnectorConfig {
+                        transport: OpenAiCompatibleConnectorConfig {
+                            base_url: "https://openrouter.ai/api/v1".to_string(),
+                            credential: Some(
+                                SecretRef::stored("connector/openrouter")
+                                    .expect("the bundled stored reference is valid"),
+                            ),
+                            headers: BTreeMap::new(),
+                        },
+                    }),
                 ),
             ]),
             models,
@@ -306,8 +390,32 @@ impl GlobalConfig {
             bail!("Learning styles cannot contain empty values");
         }
         for (name, connector) in &self.connectors {
-            if name.trim().is_empty() || connector.base_url.trim().is_empty() {
-                bail!("Connector names and base URLs cannot be empty");
+            if name.trim().is_empty() {
+                bail!("Connector names cannot be empty");
+            }
+            match connector {
+                ConnectorConfig::OpenAiCompatible(connector)
+                    if connector.base_url.trim().is_empty() =>
+                {
+                    bail!("OpenAI-compatible connector base URLs cannot be empty");
+                }
+                ConnectorConfig::OpenRouter(connector)
+                    if connector.transport.base_url.trim().is_empty() =>
+                {
+                    bail!("OpenRouter connector base URLs cannot be empty");
+                }
+                ConnectorConfig::Ollama(connector)
+                    if connector.transport.base_url.trim().is_empty()
+                        || connector.native_base_url.trim().is_empty() =>
+                {
+                    bail!("Ollama connector base URLs cannot be empty");
+                }
+                ConnectorConfig::CodexAppServer(connector)
+                    if connector.executable.as_os_str().is_empty() =>
+                {
+                    bail!("Codex App Server connector executables cannot be empty");
+                }
+                _ => {}
             }
         }
         for (name, profile) in &self.models {

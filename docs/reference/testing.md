@@ -58,8 +58,11 @@ Tests do not mock private call graphs.
 - Plugin manifest ordering, exact versions, runtime hashes, license presence,
   and opt-in offline Chrome execution for every bundled runtime.
 - Structural template marker/path validation and content-only prompt contracts.
-- Project artifact integrity, passive SVG policy, revision staging, and model
-  reference paths.
+- Project artifact integrity, passive SVG policy, schema-1 migration, semantic
+  metadata, exact-theme/wildcard resolution, themed regeneration, referenced-only
+  revision staging, and model reference paths.
+- Connector capability discovery and native OpenRouter, Ollama, and Codex model
+  catalog/status response mapping without requiring network credentials.
 - DESIGN.md token round trips and generated renderer adapters.
 - CDN recipe validation, versioned installation, dependency order, and
   feature-gated offline React component mounting.

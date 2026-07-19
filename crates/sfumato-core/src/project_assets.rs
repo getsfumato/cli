@@ -1,24 +1,43 @@
-//! Reusable project-owned assets such as logos and icon files.
+//! Reusable project-owned artifacts with theme-aware variants.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{errors::SfumatoResult, sfumato_bail as bail};
 
-/// Current project-asset manifest schema.
-pub const PROJECT_ASSET_SCHEMA_VERSION: u32 = 1;
+/// Current project-artifact manifest schema.
+pub const PROJECT_ASSET_SCHEMA_VERSION: u32 = 2;
+/// Theme selector used by artifacts that are valid with every visual theme.
+pub const ALL_THEMES: &str = "*";
 
-/// One validated reusable asset available to generation workflows.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ProjectAsset {
-    /// Stable project-local identifier.
-    pub name: String,
-    /// Human-readable model context.
+/// Descriptive information shared by every themed variant of an artifact.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProjectAssetMetadata {
+    /// Human-readable purpose and subject matter.
     pub description: String,
+    /// Accessible description suitable for generated documents.
+    #[serde(default)]
+    pub alt_text: String,
+    /// Searchable semantic labels.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Model-facing recipe used to recreate the artifact for another theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_prompt: Option<String>,
+}
+
+/// One concrete file variant associated with a theme or with all themes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProjectAssetVariant {
+    /// Theme name or [`ALL_THEMES`].
+    pub theme: String,
     /// Detected media type.
     pub media_type: String,
-    /// Original filename retained for presentation.
+    /// Managed filename retained for presentation.
     pub filename: String,
     /// Absolute adapter-resolved source file.
     pub path: PathBuf,
@@ -26,40 +45,116 @@ pub struct ProjectAsset {
     pub content_hash: String,
 }
 
-/// Model-facing reference to a reusable asset staged for one generation.
+/// One logical reusable artifact and all of its themed files.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ProjectAsset {
+    /// Stable project-local identifier.
+    pub name: String,
+    /// Semantic metadata shared by every variant.
+    pub metadata: ProjectAssetMetadata,
+    /// Variants keyed by exact theme name or [`ALL_THEMES`].
+    pub variants: BTreeMap<String, ProjectAssetVariant>,
+}
+
+impl ProjectAsset {
+    /// Resolves an exact theme variant before considering the wildcard variant.
+    pub fn resolve(&self, theme: &str) -> Option<&ProjectAssetVariant> {
+        self.variants
+            .get(theme)
+            .or_else(|| self.variants.get(ALL_THEMES))
+    }
+
+    /// Returns whether this artifact can be regenerated for a missing theme.
+    pub fn is_regenerable(&self) -> bool {
+        self.metadata
+            .generation_prompt
+            .as_deref()
+            .is_some_and(|prompt| !prompt.trim().is_empty())
+    }
+}
+
+/// Model-facing reference to a theme-compatible reusable artifact.
 #[derive(Clone, Debug, Serialize)]
 pub struct ProjectAssetReference {
     /// Stable project-local identifier.
     pub name: String,
     /// Human-readable intended use.
     pub description: String,
+    /// Accessible description suitable for an image `alt` value.
+    pub alt_text: String,
+    /// Semantic labels supplied by the project.
+    pub tags: Vec<String>,
+    /// Theme selected for this concrete variant.
+    pub theme: String,
     /// Media type.
     pub media_type: String,
     /// Exact renderer-relative path the model may embed.
     pub reference: String,
-    /// SHA-256 digest of the staged reusable file.
+    /// SHA-256 digest of the selected reusable file.
     pub content_hash: String,
 }
 
-/// Port for managing portable reusable assets under a project root.
+/// Metadata accepted while adding the first variant of an artifact.
+#[derive(Clone, Debug)]
+pub struct AddProjectAssetRequest<'a> {
+    /// Source file copied into project-managed storage.
+    pub source: &'a Path,
+    /// Optional stable logical name.
+    pub name: Option<&'a str>,
+    /// Theme name or [`ALL_THEMES`].
+    pub theme: &'a str,
+    /// Semantic metadata shared by future variants.
+    pub metadata: ProjectAssetMetadata,
+}
+
+/// Partial metadata update for an existing logical artifact.
+#[derive(Clone, Debug, Default)]
+pub struct UpdateProjectAssetRequest {
+    /// Replacement description.
+    pub description: Option<String>,
+    /// Replacement accessible text.
+    pub alt_text: Option<String>,
+    /// Replacement semantic tags.
+    pub tags: Option<Vec<String>>,
+    /// Replacement regeneration recipe. `Some(None)` clears it.
+    pub generation_prompt: Option<Option<String>>,
+    /// Rename one existing variant theme selector.
+    pub variant_theme: Option<(String, String)>,
+}
+
+/// Port for managing portable reusable artifacts under a project root.
 pub trait ProjectAssetCatalog: Send + Sync {
-    /// Lists all reusable assets in stable name order.
+    /// Lists all logical artifacts in stable name order.
     fn list(&self, project_root: &Path) -> SfumatoResult<Vec<ProjectAsset>>;
-    /// Loads one reusable asset by name.
+    /// Loads one logical artifact by name.
     fn load(&self, project_root: &Path, name: &str) -> SfumatoResult<ProjectAsset>;
-    /// Copies and registers a local file as a project asset.
+    /// Copies and registers the first or replacement themed variant.
     fn add(
         &self,
         project_root: &Path,
-        source: &Path,
-        name: Option<&str>,
-        description: Option<&str>,
+        request: AddProjectAssetRequest<'_>,
     ) -> SfumatoResult<ProjectAsset>;
-    /// Removes one registration and its managed copy.
+    /// Stores bytes generated by a model as a new themed variant.
+    fn add_generated_variant(
+        &self,
+        project_root: &Path,
+        name: &str,
+        theme: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> SfumatoResult<ProjectAsset>;
+    /// Updates shared metadata or a variant's theme selector.
+    fn update(
+        &self,
+        project_root: &Path,
+        name: &str,
+        changes: UpdateProjectAssetRequest,
+    ) -> SfumatoResult<ProjectAsset>;
+    /// Removes one logical registration and all managed variants.
     fn remove(&self, project_root: &Path, name: &str) -> SfumatoResult<ProjectAsset>;
 }
 
-/// Validates a project asset identifier.
+/// Validates a project artifact identifier.
 pub fn validate_project_asset_name(name: &str) -> SfumatoResult<()> {
     if name.is_empty()
         || name.starts_with('-')
@@ -68,7 +163,26 @@ pub fn validate_project_asset_name(name: &str) -> SfumatoResult<()> {
             character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
         })
     {
-        bail!("Invalid project asset name '{name}'. Use lowercase letters, numbers, and hyphens.");
+        bail!(
+            "Invalid project artifact name '{name}'. Use lowercase letters, numbers, and hyphens."
+        );
+    }
+    Ok(())
+}
+
+/// Validates an exact theme selector or the wildcard selector.
+pub fn validate_asset_theme(theme: &str) -> SfumatoResult<()> {
+    if theme == ALL_THEMES {
+        return Ok(());
+    }
+    if theme.is_empty()
+        || theme.starts_with('-')
+        || theme.ends_with('-')
+        || !theme.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+    {
+        bail!("Invalid artifact theme '{theme}'. Use a theme name or '*'.");
     }
     Ok(())
 }

@@ -40,14 +40,14 @@ Template source (read-only structure):
 - Prefer `##` headings for normal content slides after the title slide.
 - You may use Mermaid diagrams in fenced ```mermaid blocks when a visual structure helps.
 {% if image_generation_available %}
-- You may call `sfumato_image_gen` when a purpose-built educational illustration would teach better than text or Mermaid. Give it a precise subject, composition, labels, and learning purpose. Embed the returned `markdown_path` with Marp's `![height:420px](images/file.png)` syntax so the image fits within the slide. Sfumato applies the project theme automatically.
+- Actively assess whether a new purpose-built educational illustration would teach better than text or Mermaid. Call `sfumato_image_gen` when it would, even if reusable artifacts are available; existing artifacts are options, not an image budget or restriction. Give it a precise subject, composition, labels, and learning purpose. Embed every returned `markdown_path` with Marp's `![height:420px](images/file.png)` syntax so it fits within the slide. Sfumato applies the project theme automatically.
 {% else %}
 - No image generation model is configured. Use Markdown and Mermaid for visuals.
 {% endif %}
 {% if reusable_assets %}
-- The project provides these reusable visual assets. Use an asset only when it improves the deck, and embed its exact path with Marp image syntax:
+- The project provides these theme-compatible visual assets. They are copied only when the final deck references them. Use one only when it improves the deck, and embed its exact path with Marp image syntax:
 {% for asset in reusable_assets %}
-  - `{{ asset.name }}` ({{ asset.media_type }}): `{{ asset.reference }}` — {{ asset.description }}
+  - **{{ asset.name }}** — {{ asset.description }}; path=`{{ asset.reference }}`; theme=`{{ asset.theme }}`; type=`{{ asset.media_type }}`; alt=`{{ asset.alt_text }}`; tags=`{{ asset.tags | join(", ") }}`
 {% endfor %}
 {% endif %}
 - Keep Mermaid diagrams simple: at most 6 nodes, short quoted labels, and no formulas inside labels.

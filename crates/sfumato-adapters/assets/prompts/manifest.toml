@@ -17,6 +17,17 @@ required = [
 ]
 
 [[prompts]]
+id = "artifact.regeneration.user"
+path = "artifact/regeneration.user.md.j2"
+required = [
+  "artifact_name",
+  "artifact_description",
+  "artifact_alt_text",
+  "artifact_tags",
+  "generation_recipe",
+]
+
+[[prompts]]
 id = "slides.draft.system"
 path = "slides/draft.system.md.j2"
 required = ["learning_style"]

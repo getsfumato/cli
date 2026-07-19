@@ -26,7 +26,8 @@ sfumato presentation/composition -> sfumato-core application/ports -> sfumato-do
   ports without choosing a storage backend. It has no `anyhow`, Clap, Ratatui, Inquire,
   Indicatif, Reqwest, or process dependency.
 - **`sfumato-adapters`** implements schema-v4 TOML persistence, layered
-  MiniJinja prompts, filesystem repositories, OpenAI-compatible transports,
+  MiniJinja prompts, filesystem repositories, composed OpenAI-compatible,
+  OpenRouter, Ollama, and local Codex transports,
   native OS credential storage, source/tools, Marp, Mermaid, browser inspection,
   and artifact transactions.
 - **`sfumato`** is the composition and presentation package. CLI and TUI both
@@ -45,6 +46,9 @@ Cargo workspace dependencies enforce this direction.
 - [Edit sequence](edit-sequence.mmd): revision-guarded content-only editing.
 - [Config lifecycle](config-lifecycle.mmd): strict v4 reads and atomic revision-aware writes.
 - [Secret resolution](secret-resolution.mmd): secure login, provider lookup, and future cloud replacement.
+- [Codex App Server connector](../reference/codex-app-server.md): authenticated model discovery, streamed turns, and native Sfumato dynamic tools.
+- [Connector capabilities](../reference/connector-capabilities.md): common generation transport and provider-native catalogs/status.
+- [Codex App Server sequence](codex-app-server-sequence.mmd): persistent JSON-RPC lifecycle, model selection, and dynamic tool execution.
 - [Artifact transaction](artifact-transaction.mmd): staging, validation, immutable commit, and publication.
 - [Reusable generation inputs](../reference/reusable-generation.md): themes, templates, project artifacts, and UI catalogs.
 - [Traceability](traceability.md): requirements mapped to code and executable evidence.
@@ -52,6 +56,8 @@ Cargo workspace dependencies enforce this direction.
 The [class diagram](../class-diagram.mmd) contains concrete Rust types and trait
 relationships. Accepted architectural decisions live under [`docs/adr`](../adr/),
 and operator/integrator contracts under [`docs/reference`](../reference/).
+Connector transport composition is recorded in
+[ADR 0008](../adr/0008-connector-composition.md).
 
 ## Invariants
 
@@ -80,9 +86,9 @@ and operator/integrator contracts under [`docs/reference`](../reference/).
     inlines only installed, hash-verified plugin runtimes before browser inspection.
 11. Structural templates contain one validated content marker. Models generate
     marker content and never own package assembly.
-12. Reusable project artifacts are integrity-checked and copied into every
-    revision that references them; generated resources never depend on the
-    mutable catalog copy.
+12. Reusable project artifacts resolve exact-theme variants before wildcard
+    variants, regenerate missing themed variants from metadata when possible,
+    and are copied only when the final document references them.
 13. Page-plugin dependencies are installed under `~/.sfumato/plugins` and
     resolved deterministically. Selecting a UI
     component library automatically includes its pinned runtime dependencies.

@@ -39,7 +39,8 @@ cases. CLI and TUI construct the same command DTOs.
 - `EffectiveConfigResolver` and `PromptCatalogFactory`;
 - `PromptManager` and schema-aware `ConfigEditor`;
 - `ArtifactStore`, repositories, and `WorkspaceFileSystem`;
-- `ProviderFactory`, `TextModel`, and `ImageGenerationProvider`;
+- `ProviderFactory`, `ConnectorIntrospection`, `TextModel`, and
+  `ImageGenerationProvider`;
 - `SecretResolver` for provider authentication and `SecretStore` for secure
   connector login, status, and logout workflows;
 - `DiagramRenderer`, `SlideRenderer`, `SourceReader`, and `GenerationToolFactory`.
@@ -57,9 +58,18 @@ port boundary.
   snapshots and transactional patch application.
 - `PageDocument` exposes the same revision-guarded contract over `title`,
   `body_html`, `css`, and `javascript`; browser repair cannot change its title.
-- `TextModel::complete` performs one provider turn only.
+- `TextModel::complete` performs one provider turn only for request/response
+  transports such as OpenAI-compatible APIs.
+- `CodexAppServerProvider` owns a persistent JSON-RPC App Server process. It
+  discovers authenticated models through `model/list`, starts ephemeral
+  read-only threads, executes Sfumato `dynamicTools` through `item/tool/call`,
+  and consumes streamed item and turn lifecycle events.
+- `ConnectorIntrospection` reports `ConnectorCapabilities` before dispatching
+  native model-catalog and status operations. OpenRouter and Ollama adapters
+  compose `OpenAiCompatibleConnector`; Codex dispatches directly to App Server.
 - `AgentRunner` owns transcripts, tools, tool-round limits, the final no-tools
-  output-contract turn, and cancellation checkpoints.
+  output-contract turn, and cancellation checkpoints for transports that expose
+  isolated model turns. Codex App Server owns its native turn loop instead.
 - `PromptCatalog` resolves a stable `PromptId` and `PromptVariables` into a
   rendered message plus `PromptProvenance`.
 - `ArtifactTransaction` stages files and commits one immutable
@@ -93,7 +103,8 @@ are sanitized before presentation.
 ## Results And Provenance
 
 Generation results identify the selected project and model profiles, declared
-tools, structural template, reusable project-artifact hashes and paths,
+tools, structural template, actually referenced project-artifact variants,
+themes, metadata, hashes, and paths,
 committed and published paths, review/layout state, warnings, project
 instruction path, and every contributing prompt's ID, origin, version, and
 SHA-256 hash. Page results also report automatically embedded runtimes such as

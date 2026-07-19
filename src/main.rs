@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod init;
+mod presentation;
 mod tui;
 
 use anyhow::Result;

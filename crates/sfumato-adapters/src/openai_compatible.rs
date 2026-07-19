@@ -65,6 +65,18 @@ impl OpenAiCompatibleConnector {
         }
         Ok(request)
     }
+
+    pub(crate) async fn get(&self, path: &str) -> Result<RequestBuilder> {
+        let mut request = self.client.get(self.endpoint(path));
+        if let Some(reference) = &self.config.credential {
+            let api_key = self.secrets.resolve(reference).await?;
+            request = request.bearer_auth(api_key.expose());
+        }
+        for (name, value) in &self.config.headers {
+            request = request.header(name, value);
+        }
+        Ok(request)
+    }
 }
 
 /// Provider factory for connectors exposing OpenAI-compatible endpoints.
@@ -93,7 +105,11 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
             let connector = config
                 .connectors
                 .get(&profile.connector)
-                .with_context(|| format!("Connector '{}' was not found", profile.connector))?;
+                .with_context(|| format!("Connector '{}' was not found", profile.connector))?
+                .openai_compatible()
+                .with_context(|| {
+                    format!("Connector '{}' is not OpenAI-compatible", profile.connector)
+                })?;
             let model = OpenAiCompatibleTextProvider::new(
                 profile.connector.clone(),
                 connector.clone(),
@@ -118,7 +134,11 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
             let connector = config
                 .connectors
                 .get(&profile.connector)
-                .with_context(|| format!("Connector '{}' was not found", profile.connector))?;
+                .with_context(|| format!("Connector '{}' was not found", profile.connector))?
+                .openai_compatible()
+                .with_context(|| {
+                    format!("Connector '{}' is not OpenAI-compatible", profile.connector)
+                })?;
             Ok(Box::new(OpenAiCompatibleImageProvider::new(
                 profile.connector.clone(),
                 connector.clone(),

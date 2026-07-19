@@ -3,6 +3,8 @@ sequenceDiagram
     participant UI as CLI or TUI
     participant App as SfumatoApplication
     participant Page as GeneratePage
+    participant Assets as ProjectAssetCatalog
+    participant Image as Image provider
     participant Prompts as PromptCatalog
     participant Plugins as PagePluginCatalog
     participant Draft as Text provider
@@ -17,6 +19,12 @@ sequenceDiagram
     UI->>App: GeneratePageCommand
     App->>Page: effective config and outbound ports
     Page->>Plugins: resolve and verify selected runtimes
+    Page->>Assets: resolve exact-theme then wildcard variants
+    opt missing themed variant has a regeneration recipe
+        Page->>Prompts: render artifact regeneration prompt
+        Page->>Image: generate variant with active theme tokens
+        Page->>Assets: cache content-addressed themed variant
+    end
     Page->>Prompts: render page draft templates
     Page->>Draft: structured draft plus bounded tools
     Draft-->>Page: title, body_html, css, javascript
@@ -37,6 +45,7 @@ sequenceDiagram
         Review-->>Page: constrained RFC 6902 patch
         Page->>Browser: measure candidate again
     end
+    Page->>Assemble: retain only images referenced by the final page
     Page->>Store: commit immutable page revision
     opt output directory selected
         Page->>Publish: atomically publish _sfumato/pages/slug tree

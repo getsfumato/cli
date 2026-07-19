@@ -7,6 +7,7 @@ use crate::{
 };
 
 pub mod pages;
+pub(crate) mod project_assets;
 pub mod slides;
 
 pub(crate) struct DryRunImageProvider;

@@ -214,6 +214,66 @@ fn main_menu_exposes_prompt_management() {
 }
 
 #[test]
+fn connector_browser_exposes_native_catalog_and_status_actions() {
+    assert!(section_actions(Section::Connectors).contains(&BrowseAction::ConnectorModels));
+    assert!(section_actions(Section::Connectors).contains(&BrowseAction::ConnectorStatus));
+}
+
+#[test]
+fn browse_arrow_keys_move_rows_without_requiring_tab_first() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Browse(Section::Models);
+    app.browse_focus = BrowseFocus::Actions;
+    app.browse_rows = vec![
+        BrowseRow {
+            title: "one".to_string(),
+            subtitle: String::new(),
+            detail: String::new(),
+            active: false,
+        },
+        BrowseRow {
+            title: "two".to_string(),
+            subtitle: String::new(),
+            detail: String::new(),
+            active: false,
+        },
+    ];
+
+    app.handle_browse_key(
+        Section::Models,
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+    );
+
+    assert_eq!(app.browse_focus, BrowseFocus::Rows);
+    assert_eq!(app.browse_index, 1);
+}
+
+#[test]
+fn browse_horizontal_keys_select_actions_and_vertical_keys_return_to_rows() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Browse(Section::Models);
+    app.browse_rows = vec![BrowseRow {
+        title: "codex".to_string(),
+        subtitle: String::new(),
+        detail: String::new(),
+        active: false,
+    }];
+    app.browse_focus = BrowseFocus::Rows;
+
+    app.handle_browse_key(
+        Section::Models,
+        KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+    );
+    assert_eq!(app.browse_focus, BrowseFocus::Actions);
+
+    app.handle_browse_key(
+        Section::Models,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+    );
+    assert_eq!(app.browse_focus, BrowseFocus::Rows);
+}
+
+#[test]
 fn edit_form_builds_a_focused_slide_command() {
     let mut form = EditForm::default();
     for field in &mut form.fields {

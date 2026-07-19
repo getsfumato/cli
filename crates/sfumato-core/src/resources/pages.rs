@@ -40,7 +40,13 @@ use crate::{
     tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
 
-use super::DryRunImageProvider;
+use super::{
+    DryRunImageProvider,
+    project_assets::{
+        PrepareProjectAssetsRequest, prepare_project_assets, referenced_generated_assets,
+        retain_referenced_generated_assets,
+    },
+};
 
 /// Complete page-generation result returned to presentation frontends.
 #[derive(Debug)]
@@ -186,28 +192,6 @@ pub(crate) async fn generate_page(
                 .join("resources/pages/dry-run")
         });
     let images_dir = staging_root.join("assets/images");
-    let reusable_assets = project_asset_catalog.list(&config.project_root)?;
-    let mut reusable_asset_paths = Vec::new();
-    let reusable_asset_references = reusable_assets
-        .iter()
-        .map(|asset| {
-            let destination = images_dir.join(&asset.filename);
-            reusable_asset_paths.push(destination);
-            ProjectAssetReference {
-                name: asset.name.clone(),
-                description: asset.description.clone(),
-                media_type: asset.media_type.clone(),
-                reference: format!("assets/images/{}", asset.filename),
-                content_hash: asset.content_hash.clone(),
-            }
-        })
-        .collect::<Vec<_>>();
-    if !dry_run {
-        for (asset, destination) in reusable_assets.iter().zip(&reusable_asset_paths) {
-            workspace.copy_file(&asset.path, destination)?;
-        }
-    }
-
     operation.emit(
         OperationStage::ReadSources,
         OperationEventKind::Started,
@@ -228,13 +212,39 @@ pub(crate) async fn generate_page(
         .contains_key(&Capability::Image)
         .then(|| config.resolve_model(Capability::Image))
         .transpose()?;
-    let image = image_selection
-        .map(|(name, profile)| {
-            let provider: Arc<dyn ImageGenerationProvider> = if dry_run {
-                Arc::new(DryRunImageProvider)
+    let image_provider = image_selection
+        .map(|(_, profile)| {
+            if dry_run {
+                Ok::<Arc<dyn ImageGenerationProvider>, SfumatoError>(Arc::new(DryRunImageProvider))
             } else {
-                Arc::from(provider_factory.image(&config, profile)?)
-            };
+                provider_factory.image(&config, profile).map(Arc::from)
+            }
+        })
+        .transpose()?;
+    let prepared_assets = prepare_project_assets(PrepareProjectAssetsRequest {
+        catalog: project_asset_catalog.as_ref(),
+        project_root: &config.project_root,
+        theme: &theme,
+        image_provider: image_provider.as_ref(),
+        prompt_catalog: prompt_catalog.as_ref(),
+        project_instructions: project_instructions
+            .as_ref()
+            .map(|value| value.content.as_str())
+            .unwrap_or_default(),
+        output_dir: &images_dir,
+        reference_prefix: "assets/images",
+        dry_run,
+        operation: &operation,
+    })
+    .await?;
+    let reusable_asset_references = prepared_assets.references();
+    let reusable_asset_paths = prepared_assets.allowed_paths();
+    let image = image_selection
+        .map(|(name, _)| {
+            let provider = image_provider
+                .as_ref()
+                .expect("image provider resolved above")
+                .clone();
             Ok::<ImageToolConfig, SfumatoError>(ImageToolConfig {
                 provider,
                 profile_name: name.to_string(),
@@ -307,7 +317,8 @@ pub(crate) async fn generate_page(
         PromptId::PageCompactDraftUser,
         &compact_context,
     )?;
-    let mut prompts = draft_request.prompt_provenance.clone();
+    let mut prompts = prepared_assets.prompts.clone();
+    prompts.extend(draft_request.prompt_provenance.clone());
     let mut review_summary = PageReviewSummary::new(review);
     let project_instructions_path = project_instructions
         .as_ref()
@@ -335,7 +346,7 @@ pub(crate) async fn generate_page(
             },
             prompt_preview: Some(draft_request.user_prompt),
             tool_summaries,
-            warnings: Vec::new(),
+            warnings: prepared_assets.warnings.clone(),
         });
     }
 
@@ -360,8 +371,9 @@ pub(crate) async fn generate_page(
         }
         Err(error) => return Err(error),
     };
-    let mut generated_assets = reusable_asset_paths;
-    generated_assets.extend(tool_set.generated_artifacts()?);
+    let generated_tool_assets = tool_set.generated_artifacts()?;
+    let mut generated_assets = reusable_asset_paths.clone();
+    generated_assets.extend(generated_tool_assets.clone());
     prompts.extend(tool_set.generated_prompts()?);
     let mut page =
         parse_page_document(&response.text, title_override.as_deref(), template.as_ref()).and_then(
@@ -394,7 +406,7 @@ pub(crate) async fn generate_page(
     }
     let mut page =
         page.map_err(|error| error.context("Generated page remained invalid after repair"))?;
-    let mut warnings = Vec::new();
+    let mut warnings = prepared_assets.warnings.clone();
 
     if let Some((reviewer_name, reviewer_profile)) = reviewer {
         emit_stage(
@@ -447,15 +459,23 @@ pub(crate) async fn generate_page(
         }
     }
 
+    let initial_asset_text = page_asset_text(&page);
+    let (initial_project_paths, _) =
+        prepared_assets.materialize_referenced(&initial_asset_text, workspace.as_ref())?;
+    let initial_generated_paths =
+        referenced_generated_assets(&generated_tool_assets, &initial_asset_text, "assets/images");
+    let mut initial_inspection_assets = initial_project_paths;
+    initial_inspection_assets.extend(initial_generated_paths);
     let assembled = validate_page(&page_assembler, &page, &theme, &plugins, &generated_assets)?;
     let mut html = assembled.html;
     let mut runtimes = assembled.runtimes;
     let inspection_workspace = workspace.temporary_directory("sfumato-page-inspection")?;
-    let inspection_path = inspection_workspace.path().join("index.html");
+    let inspection_root = inspection_workspace.path().to_path_buf();
+    let inspection_path = inspection_root.join("index.html");
     stage_inspection_assets(
         workspace.as_ref(),
-        inspection_workspace.path(),
-        &generated_assets,
+        &inspection_root,
+        &initial_inspection_assets,
     )?;
     let inspection_html = assemble_page(
         &page_assembler,
@@ -520,6 +540,21 @@ pub(crate) async fn generate_page(
             candidate
                 .apply_browser_repair_patch(&patch)
                 .map_err(review_error)?;
+            let candidate_asset_text = page_asset_text(&candidate);
+            let (candidate_project_paths, _) = prepared_assets
+                .materialize_referenced(&candidate_asset_text, workspace.as_ref())?;
+            let candidate_generated_paths = referenced_generated_assets(
+                &generated_tool_assets,
+                &candidate_asset_text,
+                "assets/images",
+            );
+            let mut candidate_inspection_assets = candidate_project_paths;
+            candidate_inspection_assets.extend(candidate_generated_paths);
+            stage_inspection_assets(
+                workspace.as_ref(),
+                &inspection_root,
+                &candidate_inspection_assets,
+            )?;
             let candidate_assembly = validate_page(
                 &page_assembler,
                 &candidate,
@@ -587,6 +622,21 @@ pub(crate) async fn generate_page(
     }
 
     emit_stage(&event_sink, GenerationStage::PageRendering, None);
+    let final_asset_text = page_asset_text(&page);
+    let (used_project_paths, used_project_assets) =
+        prepared_assets.materialize_referenced(&final_asset_text, workspace.as_ref())?;
+    for path in reusable_asset_paths
+        .iter()
+        .filter(|path| !used_project_paths.contains(path))
+    {
+        workspace.remove_file(path)?;
+    }
+    let _used_generated_assets = retain_referenced_generated_assets(
+        generated_tool_assets,
+        &final_asset_text,
+        "assets/images",
+        workspace.as_ref(),
+    )?;
     let title = page.title().to_string();
     let slug = slugify(&title);
     if slug.is_empty() {
@@ -656,7 +706,7 @@ pub(crate) async fn generate_page(
             models,
             plugins: plugin_selections,
             template: template.as_ref().map(|value| value.manifest.name.clone()),
-            project_assets: reusable_asset_references,
+            project_assets: used_project_assets,
             runtimes,
             tools: tool_summaries.clone(),
             artifacts,
@@ -668,6 +718,15 @@ pub(crate) async fn generate_page(
         tool_summaries,
         warnings,
     })
+}
+
+fn page_asset_text(page: &PageDocument) -> String {
+    format!(
+        "{}\n{}\n{}",
+        page.body_html(),
+        page.css(),
+        page.javascript()
+    )
 }
 
 fn page_context(input: PageContextInput<'_>) -> PagePromptContext {

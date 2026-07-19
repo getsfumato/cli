@@ -71,6 +71,8 @@ pub enum PromptId {
     SlidesLayoutRepairToolExhaustedUser,
     /// User prompt sent to an image-generation model.
     ImageGenerationUser,
+    /// User prompt that reconstructs one logical artifact for a new theme.
+    ProjectAssetRegenerationUser,
     /// Model-facing descriptions for the generation tool registry.
     ToolsGenerationDescriptions,
     /// System prompt for a standalone page draft.
@@ -128,6 +130,7 @@ impl PromptId {
             Self::SlidesEditToolExhaustedUser,
             Self::SlidesLayoutRepairToolExhaustedUser,
             Self::ImageGenerationUser,
+            Self::ProjectAssetRegenerationUser,
             Self::ToolsGenerationDescriptions,
             Self::PageDraftSystem,
             Self::PageDraftUser,
@@ -173,6 +176,7 @@ impl PromptId {
             Self::SlidesEditToolExhaustedUser => "slides.edit.tool-exhausted.user",
             Self::SlidesLayoutRepairToolExhaustedUser => "slides.layout-repair.tool-exhausted.user",
             Self::ImageGenerationUser => "image.generation.user",
+            Self::ProjectAssetRegenerationUser => "artifact.regeneration.user",
             Self::ToolsGenerationDescriptions => "tools.generation.descriptions",
             Self::PageDraftSystem => "page.draft.system",
             Self::PageDraftUser => "page.draft.user",

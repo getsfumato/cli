@@ -18,22 +18,53 @@ contain exactly one `<!-- SFUMATO_CONTENT -->` marker. Names use lowercase
 letters, digits, and hyphens; source paths cannot be absolute or traverse out
 of the package.
 
-`--template <name>` resolves the package before any provider call. Draft
-prompts receive the structure as read-only context and require content-only
-output. Sfumato inserts that output into the marker, then runs the normal
-normalization, review, browser/layout inspection, artifact transaction, and
-publication stages.
+Structural templates are opt-in per generation. `--template <name>` resolves
+the selected package before any provider call; omitting the flag leaves the
+generation untemplated even when reusable templates are installed. Draft
+prompts receive the selected structure as read-only context and require
+content-only output. Sfumato inserts that output into the marker, then runs the
+normal normalization, review, browser/layout inspection, artifact transaction,
+and publication stages.
 
 ## Project Artifacts
 
-The project catalog lives under `<project-root>/.sfumato/assets/`. Adding a file
-copies it into the managed `files/` directory and records its media type,
-description, original filename, and SHA-256 digest in `manifest.toml`.
+The project catalog lives under `<project-root>/.sfumato/assets/`. A logical
+artifact owns semantic metadata (`description`, `alt_text`, tags, and an
+optional regeneration prompt) plus concrete variants keyed by theme name or
+`*`. Exact-theme variants win over wildcard variants.
 
-Generation verifies every digest, copies assets into its private transaction,
-and gives the model an exact renderer-relative path. This prevents a committed
-resource from depending on a mutable external file. Active SVG content,
-external URLs, traversal, and symlinks are rejected.
+`artifact add` associates a file with the selected project's current theme by
+default. `--theme <name>` chooses another exact association and `--all-themes`
+registers a universal variant. `artifact edit` updates metadata, adds or clears
+the regeneration recipe, or reassigns a legacy variant from one theme key to
+another. Schema-1 manifests migrate atomically to schema 2; because their theme
+cannot be inferred safely, existing files become wildcard variants.
+
+Before a generation call, Sfumato resolves every artifact against the active
+theme. A missing exact/wildcard variant is regenerated and cached when both a
+recipe and an image model are available. Otherwise it is omitted with a
+warning. The prompt receives purpose, alt text, tags, selected theme, media type,
+and exact renderer path. Reusable artifacts do not disable `sfumato_image_gen`;
+the drafter is explicitly asked to generate additional purpose-built visuals
+when they improve teaching.
+
+Generation verifies every digest but copies only files referenced by the final
+reviewed document. Unreferenced catalog files and unused image-tool outputs are
+removed from staging before commit. This prevents resource revisions from
+accumulating unrelated media or depending on mutable external files. Active SVG
+content, external URLs, traversal, and symlinks are rejected.
+
+```bash
+sfumato artifact add ./spectrum.png --name square-wave-spectrum \
+  --theme gruvbox --description "Odd-harmonic square-wave spectrum" \
+  --alt-text "Amplitude bars at odd harmonics" \
+  --tag fourier --tag spectrum \
+  --prompt "Draw the same labeled odd-harmonic spectrum and composition"
+
+sfumato artifact edit square-wave-spectrum \
+  --from-theme '*' --to-theme gruvbox \
+  --prompt "Draw the same labeled odd-harmonic spectrum and composition"
+```
 
 ## DESIGN.md Exchange
 

@@ -44,15 +44,19 @@ No JavaScript plugins were selected. Use standard browser APIs only.
 {% endif %}
 
 {% if image_generation_available %}
-You may call `sfumato_image_gen` for an image that materially improves learning. Use the returned artifact path exactly in an `<img>` element with useful alt text.
+Actively assess where a new purpose-built image would materially improve learning. Call `sfumato_image_gen` whenever it is the clearest medium, even when reusable project artifacts are listed below; those artifacts are options, not an image budget or a restriction. Use every returned artifact path exactly in an `<img>` element with useful alt text.
 {% endif %}
 
 {% if reusable_assets %}
 ## Reusable project assets
 
-These files are already staged. Use their exact paths when they improve the page:
+These theme-compatible variants are available. Sfumato copies a file only if the final page references its exact path:
 {% for asset in reusable_assets %}
-- `{{ asset.name }}` ({{ asset.media_type }}): `{{ asset.reference }}` — {{ asset.description }}
+- **{{ asset.name }}** — {{ asset.description }}
+  - path: `{{ asset.reference }}`
+  - theme: `{{ asset.theme }}`; type: `{{ asset.media_type }}`
+  - alt text: {{ asset.alt_text }}
+  - tags: {{ asset.tags | join(", ") }}
 {% endfor %}
 {% endif %}
 

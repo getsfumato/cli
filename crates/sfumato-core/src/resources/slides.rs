@@ -30,8 +30,8 @@ use crate::{
         PromptCatalog, PromptId, PromptPair, PromptProvenance, PromptRenderRequest, PromptVariables,
     },
     providers::{
-        GenerationStage, ProviderFactory, TextGenerationEvent, TextGenerationProvider,
-        TextGenerationRequest, TextGenerationResponse, ToolDefinition,
+        GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
+        TextGenerationProvider, TextGenerationRequest, TextGenerationResponse, ToolDefinition,
     },
     renderers::{DiagramRenderer, MermaidThemeConfig, SlideRenderer},
     repositories::ThemeRepository,
@@ -65,7 +65,13 @@ use prompting::*;
 use publishing::publish_slides;
 use source_bundle::{build_compact_source_bundle, build_source_bundle};
 
-use super::DryRunImageProvider;
+use super::{
+    DryRunImageProvider,
+    project_assets::{
+        PrepareProjectAssetsRequest, prepare_project_assets, retain_referenced_generated_assets,
+        stage_referenced_generated_assets,
+    },
+};
 
 const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
 const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
@@ -155,28 +161,6 @@ pub(crate) async fn generate_slides(
     ensure_inside(&artifact_root, &diagrams_dir)?;
     ensure_inside(&artifact_root, &images_dir)?;
 
-    let reusable_assets = project_asset_catalog.list(&config.project_root)?;
-    let mut reusable_asset_paths = Vec::new();
-    let reusable_asset_references = reusable_assets
-        .iter()
-        .map(|asset| {
-            let destination = images_dir.join(&asset.filename);
-            reusable_asset_paths.push(destination);
-            ProjectAssetReference {
-                name: asset.name.clone(),
-                description: asset.description.clone(),
-                media_type: asset.media_type.clone(),
-                reference: format!("images/{}", asset.filename),
-                content_hash: asset.content_hash.clone(),
-            }
-        })
-        .collect::<Vec<_>>();
-    if !dry_run {
-        for (asset, destination) in reusable_assets.iter().zip(&reusable_asset_paths) {
-            workspace.copy_file(&asset.path, destination)?;
-        }
-    }
-
     operation.emit(
         OperationStage::ReadSources,
         OperationEventKind::Started,
@@ -203,13 +187,36 @@ pub(crate) async fn generate_slides(
         .contains_key(&Capability::Image)
         .then(|| config.resolve_model(Capability::Image))
         .transpose()?;
-    let image_tool = image_selection
-        .map(|(profile_name, profile)| {
-            let provider: Arc<dyn crate::providers::ImageGenerationProvider> = if dry_run {
-                Arc::new(DryRunImageProvider)
+    let image_provider = image_selection
+        .map(|(_, profile)| {
+            if dry_run {
+                Ok::<Arc<dyn ImageGenerationProvider>, SfumatoError>(Arc::new(DryRunImageProvider))
             } else {
-                Arc::from(provider_factory.image(&config, profile)?)
-            };
+                provider_factory.image(&config, profile).map(Arc::from)
+            }
+        })
+        .transpose()?;
+    let prepared_assets = prepare_project_assets(PrepareProjectAssetsRequest {
+        catalog: project_asset_catalog.as_ref(),
+        project_root: &config.project_root,
+        theme: &theme,
+        image_provider: image_provider.as_ref(),
+        prompt_catalog: prompt_catalog.as_ref(),
+        project_instructions: &project_instructions_prompt,
+        output_dir: &images_dir,
+        reference_prefix: "images",
+        dry_run,
+        operation: &operation,
+    })
+    .await?;
+    let reusable_asset_references = prepared_assets.references();
+    let reusable_asset_paths = prepared_assets.allowed_paths();
+    let image_tool = image_selection
+        .map(|(profile_name, _)| {
+            let provider = image_provider
+                .as_ref()
+                .expect("image provider resolved above")
+                .clone();
             Ok::<ImageToolConfig, SfumatoError>(ImageToolConfig {
                 provider,
                 profile_name: profile_name.to_string(),
@@ -269,7 +276,8 @@ pub(crate) async fn generate_slides(
         OperationEventKind::Completed,
         BTreeMap::new(),
     );
-    let mut used_prompts = provider_request.prompt_provenance.clone();
+    let mut used_prompts = prepared_assets.prompts.clone();
+    used_prompts.extend(provider_request.prompt_provenance.clone());
     let reviewer_selection = review
         .then(|| config.resolve_model_role(ModelRole::Reviewer))
         .transpose()?;
@@ -286,7 +294,7 @@ pub(crate) async fn generate_slides(
     } else {
         SlideReviewSummary::disabled()
     };
-    let mut warnings = Vec::new();
+    let mut warnings = prepared_assets.warnings.clone();
 
     if dry_run {
         let dry_run_title = title_override.as_deref().unwrap_or("model-generated-title");
@@ -309,7 +317,7 @@ pub(crate) async fn generate_slides(
             },
             prompt_preview: Some(provider_request.user_prompt),
             tool_summaries,
-            warnings: Vec::new(),
+            warnings: prepared_assets.warnings.clone(),
             published_pdf_path: None,
         });
     }
@@ -359,6 +367,7 @@ pub(crate) async fn generate_slides(
         ));
     }
     let mut response = draft_outcome.response;
+    let generated_tool_assets = tool_set.generated_artifacts()?;
     if let Some(template) = &template {
         response.text = template.compose(&response.text)?;
     }
@@ -609,16 +618,16 @@ pub(crate) async fn generate_slides(
             OperationEventKind::Started,
             BTreeMap::new(),
         );
-        let layout_result = inspect_candidate_layout(
-            &markdown,
-            &theme,
-            config.marp.browser_path.as_deref(),
-            diagram_renderer.as_ref(),
-            slide_renderer.as_ref(),
-            workspace.as_ref(),
-            &operation,
-        )
-        .await;
+        let layout_context = LayoutInspectionContext {
+            browser_path: config.marp.browser_path.as_deref(),
+            diagram_renderer: diagram_renderer.as_ref(),
+            slide_renderer: slide_renderer.as_ref(),
+            workspace: workspace.as_ref(),
+            project_assets: Some(&prepared_assets),
+            generated_assets: &generated_tool_assets,
+            operation: &operation,
+        };
+        let layout_result = inspect_candidate_layout(&markdown, &theme, &layout_context).await;
         operation.checkpoint(OperationStage::InspectLayout)?;
         match layout_result {
             Ok(issues) => {
@@ -775,11 +784,7 @@ pub(crate) async fn generate_slides(
                                 let candidate_issues = inspect_candidate_layout(
                                     &candidate_markdown,
                                     &theme,
-                                    config.marp.browser_path.as_deref(),
-                                    diagram_renderer.as_ref(),
-                                    slide_renderer.as_ref(),
-                                    workspace.as_ref(),
-                                    &operation,
+                                    &layout_context,
                                 )
                                 .await?;
                                 Ok::<_, SfumatoError>((
@@ -898,6 +903,20 @@ pub(crate) async fn generate_slides(
         OperationStage::Render,
     )
     .await?;
+    let (used_project_asset_paths, used_project_assets) =
+        prepared_assets.materialize_referenced(&markdown, workspace.as_ref())?;
+    for path in reusable_asset_paths
+        .iter()
+        .filter(|path| !used_project_asset_paths.contains(path))
+    {
+        workspace.remove_file(path)?;
+    }
+    let used_generated_assets = retain_referenced_generated_assets(
+        generated_tool_assets,
+        &markdown,
+        "images",
+        workspace.as_ref(),
+    )?;
     copy_theme_css(&theme, &theme_css_path, workspace.as_ref())?;
     workspace.write(&markdown_path, markdown.as_bytes())?;
 
@@ -930,8 +949,8 @@ pub(crate) async fn generate_slides(
     );
 
     let mut staged_artifacts = vec![markdown_path.clone(), theme_css_path];
-    staged_artifacts.extend(reusable_asset_paths);
-    staged_artifacts.extend(tool_set.generated_artifacts()?);
+    staged_artifacts.extend(used_project_asset_paths);
+    staged_artifacts.extend(used_generated_assets);
     used_prompts.extend(tool_set.generated_prompts()?);
     staged_artifacts.extend(diagram_artifacts);
     if let Some(pdf) = &rendered_pdf {
@@ -1031,7 +1050,7 @@ pub(crate) async fn generate_slides(
             models: selected_models,
             tools: tool_summaries.clone(),
             template: template.as_ref().map(|value| value.manifest.name.clone()),
-            project_assets: reusable_asset_references,
+            project_assets: used_project_assets,
             artifacts,
             published_artifacts,
             review: review_summary,
@@ -1427,40 +1446,63 @@ fn should_retry_model_output(error: &SfumatoError) -> bool {
         || error.code == ErrorCode::Validation && !error.message.contains("validation workspace")
 }
 
+pub(super) struct LayoutInspectionContext<'a> {
+    pub browser_path: Option<&'a Path>,
+    pub diagram_renderer: &'a dyn DiagramRenderer,
+    pub slide_renderer: &'a dyn SlideRenderer,
+    pub workspace: &'a dyn WorkspaceFileSystem,
+    pub project_assets: Option<&'a crate::resources::project_assets::PreparedProjectAssets>,
+    pub generated_assets: &'a [PathBuf],
+    pub operation: &'a OperationContext,
+}
+
 async fn inspect_candidate_layout(
     markdown: &str,
     theme: &ThemePackage,
-    browser_path: Option<&Path>,
-    diagram_renderer: &dyn DiagramRenderer,
-    slide_renderer: &dyn SlideRenderer,
-    workspace: &dyn WorkspaceFileSystem,
-    operation: &OperationContext,
+    context: &LayoutInspectionContext<'_>,
 ) -> Result<Vec<SlideLayoutIssue>> {
-    operation.checkpoint(OperationStage::InspectLayout)?;
-    let temp = workspace.temporary_directory("sfumato-layout-review-")?;
+    context
+        .operation
+        .checkpoint(OperationStage::InspectLayout)?;
+    let temp = context
+        .workspace
+        .temporary_directory("sfumato-layout-review-")?;
     let markdown_path = temp.path().join("review.md");
     let theme_path = temp.path().join("theme.css");
     let diagrams_dir = temp.path().join("diagrams");
     let html_path = temp.path().join("review.html");
+    if let Some(project_assets) = context.project_assets {
+        project_assets.stage_referenced(markdown, temp.path(), context.workspace)?;
+    }
+    stage_referenced_generated_assets(
+        context.generated_assets,
+        markdown,
+        "images",
+        temp.path(),
+        context.workspace,
+    )?;
     let (rendered, _) = render_mermaid_diagrams(
         markdown,
         &diagrams_dir,
         theme,
-        diagram_renderer,
-        workspace,
-        operation,
+        context.diagram_renderer,
+        context.workspace,
+        context.operation,
         OperationStage::InspectLayout,
     )
     .await?;
-    copy_theme_css(theme, &theme_path, workspace)?;
-    workspace.write(&markdown_path, rendered.as_bytes())?;
-    let issues = slide_renderer
+    copy_theme_css(theme, &theme_path, context.workspace)?;
+    context
+        .workspace
+        .write(&markdown_path, rendered.as_bytes())?;
+    let issues = context
+        .slide_renderer
         .inspect_layout(
             &markdown_path,
             &theme_path,
             &html_path,
-            browser_path,
-            operation,
+            context.browser_path,
+            context.operation,
         )
         .await?;
     Ok(issues)

@@ -25,13 +25,19 @@ use crate::{
         PagePluginCatalog, PagePluginDefaultChanged, PagePluginInstallResult, PagePluginPackage,
         PagePluginService, PagePluginSource, PagePluginStatus,
     },
-    project_assets::{ProjectAsset, ProjectAssetCatalog},
+    project_assets::{
+        ALL_THEMES, AddProjectAssetRequest, ProjectAsset, ProjectAssetCatalog,
+        ProjectAssetMetadata, UpdateProjectAssetRequest,
+    },
     projects::{ProjectRemoved, ProjectService, ProjectSummary},
     prompts::{
         PromptCatalog, PromptError, PromptId, PromptManager, PromptOverrideScope, PromptProvenance,
         PromptTemplateSource, PromptTemplateSummary,
     },
-    providers::{ProviderFactory, TextGenerationEvent},
+    providers::{
+        ConnectorCapabilities, ConnectorIntrospection, ConnectorModelSummary, ConnectorStatus,
+        ProviderFactory, TextGenerationEvent,
+    },
     renderers::{DiagramRenderer, PageAssembler, PageInspector, SlideRenderer},
     repositories::{GlobalConfigRepository, ProjectRepository, ThemeRepository},
     resources::pages::{GeneratePageOptions, GeneratePageResult, generate_page},
@@ -130,6 +136,8 @@ pub struct SfumatoApplicationDependencies {
     pub artifacts: Arc<dyn ArtifactStore>,
     /// Model provider factory.
     pub providers: Arc<dyn ProviderFactory>,
+    /// Connector-native model discovery.
+    pub connector_introspection: Arc<dyn ConnectorIntrospection>,
     /// Diagram renderer.
     pub diagrams: Arc<dyn DiagramRenderer>,
     /// Slide renderer.
@@ -177,6 +185,7 @@ pub struct SfumatoApplication {
     prompt_manager: Arc<dyn PromptManager>,
     artifacts: Arc<dyn ArtifactStore>,
     providers: Arc<dyn ProviderFactory>,
+    connector_introspection: Arc<dyn ConnectorIntrospection>,
     diagrams: Arc<dyn DiagramRenderer>,
     slides: Arc<dyn SlideRenderer>,
     page_assembler: Arc<dyn PageAssembler>,
@@ -196,6 +205,48 @@ pub struct SfumatoApplication {
     secrets: Arc<dyn SecretStore>,
 }
 
+/// Presentation-neutral request for registering a reusable project artifact.
+#[derive(Clone, Debug)]
+pub struct AddProjectAssetCommand {
+    /// Existing image file to register.
+    pub source: PathBuf,
+    /// Optional logical artifact name inferred from the source when absent.
+    pub name: Option<String>,
+    /// Human-readable purpose.
+    pub description: Option<String>,
+    /// Accessible description used by generated resources.
+    pub alt_text: Option<String>,
+    /// Semantic labels.
+    pub tags: Vec<String>,
+    /// Recipe used to recreate missing theme variants.
+    pub generation_prompt: Option<String>,
+    /// Exact theme association; defaults to the selected project theme.
+    pub theme: Option<String>,
+    /// Whether this concrete file works with every visual theme.
+    pub all_themes: bool,
+    /// Optional project override.
+    pub project: Option<String>,
+}
+
+/// Presentation-neutral request for changing reusable artifact metadata.
+#[derive(Clone, Debug, Default)]
+pub struct UpdateProjectAssetCommand {
+    /// Logical artifact name.
+    pub name: String,
+    /// Replacement purpose.
+    pub description: Option<String>,
+    /// Replacement accessible description.
+    pub alt_text: Option<String>,
+    /// Replacement semantic labels.
+    pub tags: Option<Vec<String>>,
+    /// Replacement recipe, where `Some(None)` clears the recipe.
+    pub generation_prompt: Option<Option<String>>,
+    /// Existing and replacement theme keys for one variant.
+    pub variant_theme: Option<(String, String)>,
+    /// Optional project override.
+    pub project: Option<String>,
+}
+
 impl SfumatoApplication {
     /// Creates an application from its outbound ports.
     pub fn new(dependencies: SfumatoApplicationDependencies) -> Self {
@@ -205,6 +256,7 @@ impl SfumatoApplication {
             prompt_manager,
             artifacts,
             providers,
+            connector_introspection,
             diagrams,
             slides,
             page_assembler,
@@ -230,6 +282,7 @@ impl SfumatoApplication {
             prompt_manager,
             artifacts,
             providers,
+            connector_introspection,
             diagrams,
             slides,
             page_assembler,
@@ -484,13 +537,57 @@ impl SfumatoApplication {
     /// Copies and registers one reusable project asset.
     pub fn add_project_asset(
         &self,
-        source: &Path,
-        name: Option<&str>,
-        description: Option<&str>,
-        project: Option<&str>,
+        command: AddProjectAssetCommand,
     ) -> SfumatoResult<ProjectAsset> {
-        let root = self.selected_project_root(project)?;
-        self.project_assets.add(&root, source, name, description)
+        if command.all_themes && command.theme.is_some() {
+            return Err(SfumatoError::validation(
+                "Use either an exact artifact theme or all themes, not both",
+            ));
+        }
+        let registry = self.projects.registry()?;
+        let (project_name, root) = registry.selected(command.project.as_deref())?;
+        let project_config = self.projects.load(Some(&project_name))?;
+        let theme = if command.all_themes {
+            ALL_THEMES.to_string()
+        } else {
+            command.theme.unwrap_or(project_config.theme)
+        };
+        let description = command
+            .description
+            .unwrap_or_else(|| "Reusable project visual artifact".into());
+        self.project_assets.add(
+            &root,
+            AddProjectAssetRequest {
+                source: &command.source,
+                name: command.name.as_deref(),
+                theme: &theme,
+                metadata: ProjectAssetMetadata {
+                    alt_text: command.alt_text.unwrap_or_else(|| description.clone()),
+                    description,
+                    tags: command.tags,
+                    generation_prompt: command.generation_prompt,
+                },
+            },
+        )
+    }
+
+    /// Updates semantic metadata or a variant theme selector.
+    pub fn update_project_asset(
+        &self,
+        command: UpdateProjectAssetCommand,
+    ) -> SfumatoResult<ProjectAsset> {
+        let root = self.selected_project_root(command.project.as_deref())?;
+        self.project_assets.update(
+            &root,
+            &command.name,
+            UpdateProjectAssetRequest {
+                description: command.description,
+                alt_text: command.alt_text,
+                tags: command.tags,
+                generation_prompt: command.generation_prompt,
+                variant_theme: command.variant_theme,
+            },
+        )
     }
 
     /// Removes one reusable project asset and its managed copy.
@@ -730,6 +827,47 @@ impl SfumatoApplication {
                 .and_then(|service| service.show(name)),
             ErrorCode::NotFound,
         )
+    }
+
+    /// Discovers models exposed by one connector using its native protocol.
+    pub async fn list_connector_models(
+        &self,
+        name: &str,
+        operation: OperationContext,
+    ) -> SfumatoResult<Vec<ConnectorModelSummary>> {
+        operation.checkpoint(OperationStage::Resolve)?;
+        let snapshot = self.global_config.load_snapshot()?;
+        let connector = snapshot.value.connectors.get(name).ok_or_else(|| {
+            SfumatoError::not_found(format_args!("Connector '{name}' was not found"))
+        })?;
+        self.connector_introspection
+            .list_models(name, connector, &operation)
+            .await
+    }
+
+    /// Reports optional provider-native features for one configured connector.
+    pub fn connector_capabilities(&self, name: &str) -> SfumatoResult<ConnectorCapabilities> {
+        let snapshot = self.global_config.load_snapshot()?;
+        let connector = snapshot.value.connectors.get(name).ok_or_else(|| {
+            SfumatoError::not_found(format_args!("Connector '{name}' was not found"))
+        })?;
+        Ok(self.connector_introspection.capabilities(connector))
+    }
+
+    /// Reads provider-native account, usage, or local-runtime status.
+    pub async fn connector_status(
+        &self,
+        name: &str,
+        operation: OperationContext,
+    ) -> SfumatoResult<ConnectorStatus> {
+        operation.checkpoint(OperationStage::Resolve)?;
+        let snapshot = self.global_config.load_snapshot()?;
+        let connector = snapshot.value.connectors.get(name).ok_or_else(|| {
+            SfumatoError::not_found(format_args!("Connector '{name}' was not found"))
+        })?;
+        self.connector_introspection
+            .status(name, connector, &operation)
+            .await
     }
 
     /// Creates or replaces a connector preset.

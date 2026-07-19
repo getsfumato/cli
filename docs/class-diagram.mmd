@@ -74,10 +74,20 @@ classDiagram
             <<trait>>
             +complete(request, operation) TextModelResponse
         }
+        class TextGenerationProvider {
+            <<trait>>
+            +generate(request, operation) TextGenerationResponse
+        }
         class ProviderFactory {
             <<trait>>
             +text(config, profile) TextGenerationProvider
             +image(config, profile) ImageGenerationProvider
+        }
+        class ConnectorIntrospection {
+            <<trait>>
+            +capabilities(connector) ConnectorCapabilities
+            +list_models(name, connector, operation) ConnectorModelSummary[]
+            +status(name, connector, operation) ConnectorStatus
         }
         class SecretResolver {
             <<trait>>
@@ -175,8 +185,25 @@ classDiagram
         class FilesystemConfigResolver
         class LayeredPromptCatalog
         class OpenAiCompatibleProviderFactory
+        class AdapterProviderFactory
         class OpenAiCompatibleTextProvider
         class OpenAiCompatibleImageProvider
+        class OpenRouterConnector {
+            -transport: OpenAiCompatibleConnector
+            +list_models(operation) ConnectorModelSummary[]
+            +status(operation) ConnectorStatus
+        }
+        class OllamaConnector {
+            -native_base_url
+            +list_models(operation) ConnectorModelSummary[]
+            +status(operation) ConnectorStatus
+        }
+        class CodexAppServerProvider {
+            -process
+            -cached_models
+            +generate(request, operation) TextGenerationResponse
+            +discover_models(config, operation) ConnectorModelSummary[]
+        }
         class FilesystemSourceReader
         class FilesystemGenerationToolFactory
         class MermaidCliRenderer
@@ -208,6 +235,7 @@ classDiagram
     SfumatoApplication --> EditSlidesCommand
     SfumatoApplication --> AgentRunner
     SfumatoApplication --> ProviderFactory
+    SfumatoApplication --> ConnectorModelDiscovery
     SfumatoApplication --> SecretStore
     SfumatoApplication --> EffectiveConfigResolver
     SfumatoApplication --> PromptCatalog
@@ -231,15 +259,21 @@ classDiagram
     GenerateSlidesCommand --> OperationContext
     GeneratePageCommand --> OperationContext
     EditSlidesCommand --> OperationContext
+    AgentRunner ..|> TextGenerationProvider
     AgentRunner --> TextModel
     ArtifactStore --> ArtifactTransaction
 
     FilesystemConfigResolver ..|> EffectiveConfigResolver
     LayeredPromptCatalog ..|> PromptCatalog
     OpenAiCompatibleProviderFactory ..|> ProviderFactory
+    AdapterProviderFactory ..|> ProviderFactory
+    AdapterProviderFactory ..|> ConnectorIntrospection
+    AdapterProviderFactory --> OpenRouterConnector
+    AdapterProviderFactory --> OllamaConnector
     OpenAiCompatibleProviderFactory --> OpenAiCompatibleTextProvider
     OpenAiCompatibleProviderFactory --> OpenAiCompatibleImageProvider
     OpenAiCompatibleTextProvider ..|> TextModel
+    CodexAppServerProvider ..|> TextGenerationProvider
     FilesystemSourceReader ..|> SourceReader
     FilesystemGenerationToolFactory ..|> GenerationToolFactory
     MermaidCliRenderer ..|> DiagramRenderer

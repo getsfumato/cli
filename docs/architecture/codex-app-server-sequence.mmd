@@ -1,0 +1,31 @@
+sequenceDiagram
+    actor User
+    participant CLI as Sfumato CLI or TUI
+    participant App as SfumatoApplication
+    participant Provider as CodexAppServerProvider
+    participant Server as codex app-server
+    participant Tools as Sfumato ToolExecutor
+
+    User->>CLI: generate slides or page
+    CLI->>App: typed generation command
+    App->>Provider: generate(rendered prompts, tools)
+    Provider->>Server: initialize(experimentalApi=true)
+    Provider->>Server: initialized
+    Provider->>Server: model/list
+    Server-->>Provider: authenticated model catalog
+    Provider->>Server: thread/start(model, cwd, system prompt, dynamicTools)
+    Server-->>Provider: ephemeral thread
+    Provider->>Server: turn/start(user prompt)
+    loop Native model tool loop
+        Server-->>Provider: item/tool/call
+        Provider-->>CLI: tool requested event
+        Provider->>Tools: execute(name, arguments)
+        Tools-->>Provider: structured result
+        Provider-->>CLI: tool result event
+        Provider->>Server: dynamic tool response
+    end
+    Server-->>Provider: item/completed(agentMessage)
+    Server-->>Provider: turn/completed
+    Provider-->>App: generated text
+    App-->>CLI: artifacts and provenance
+    CLI-->>User: readable result

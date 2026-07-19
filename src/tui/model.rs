@@ -486,6 +486,9 @@ pub(super) enum BrowseAction {
     ModelRemove,
     ConnectorOllama,
     ConnectorOpenrouter,
+    ConnectorCodex,
+    ConnectorModels,
+    ConnectorStatus,
     ThemeCreate,
     ThemeImport,
     ThemeExport,
@@ -513,6 +516,9 @@ impl BrowseAction {
             Self::ModelRemove => "Remove",
             Self::ConnectorOllama => "Setup Ollama",
             Self::ConnectorOpenrouter => "Setup OpenRouter",
+            Self::ConnectorCodex => "Setup Codex",
+            Self::ConnectorModels => "Model catalog",
+            Self::ConnectorStatus => "Native status",
             Self::ThemeCreate => "Create",
             Self::ThemeImport => "Import DESIGN.md",
             Self::ThemeExport => "Export DESIGN.md",
@@ -615,6 +621,15 @@ impl Activity {
                 kind: ActivityKind::Model,
                 title: format!("Model request {round}"),
                 detail: "Waiting for a response".to_string(),
+                image_path: None,
+            },
+            TextGenerationEvent::ModelSelected {
+                model,
+                display_name,
+            } => Self {
+                kind: ActivityKind::Model,
+                title: format!("Selected {display_name}"),
+                detail: model.clone(),
                 image_path: None,
             },
             TextGenerationEvent::ToolCallRequested { name, arguments } => Self {
@@ -765,6 +780,10 @@ pub(super) enum UiMessage {
     ResourceCancelled {
         job_id: u64,
     },
+    ConnectorQueryFinished {
+        connector: String,
+        result: Result<Vec<BrowseRow>, String>,
+    },
 }
 
 pub(super) enum ResourceResult {
@@ -808,6 +827,7 @@ pub(super) struct App {
     pub(super) browse_focus: BrowseFocus,
     pub(super) browse_action_index: usize,
     pub(super) browse_detail_scroll: u16,
+    pub(super) connector_query_source: Option<String>,
     pub(super) operation: Option<OperationForm>,
     pub(super) form: GenerateForm,
     pub(super) edit_form: EditForm,

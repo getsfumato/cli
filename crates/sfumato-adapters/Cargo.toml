@@ -30,7 +30,7 @@ sfumato-core = { path = "../sfumato-core" }
 tempfile = "3.23"
 thiserror = "2.0"
 toml = "0.9"
-tokio = { version = "1.48", features = ["macros", "process", "time"] }
+tokio = { version = "1.48", features = ["io-util", "macros", "process", "sync", "time"] }
 walkdir = "2.5"
 
 [dev-dependencies]

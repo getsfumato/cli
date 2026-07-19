@@ -41,6 +41,99 @@ fn v4_global_config_without_model_roles_uses_an_empty_map() {
 }
 
 #[test]
+fn legacy_v4_connectors_without_kind_remain_openai_compatible() {
+    let rendered = toml::to_string_pretty(&GlobalConfigDto::from_domain(
+        &GlobalConfig::default_config(),
+    ))
+    .unwrap()
+    .replace("kind = \"openai_compatible\"\n", "");
+
+    let parsed = toml::from_str::<GlobalConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+
+    assert!(parsed.connectors["ollama"].openai_compatible().is_some());
+}
+
+#[test]
+fn v4_round_trip_preserves_codex_app_server_connectors() {
+    let mut config = GlobalConfig::default_config();
+    config.connectors.insert(
+        "codex".to_string(),
+        ConnectorConfig::CodexAppServer(CodexAppServerConnectorConfig {
+            executable: PathBuf::from("codex"),
+        }),
+    );
+
+    let rendered = toml::to_string_pretty(&GlobalConfigDto::from_domain(&config)).unwrap();
+    assert!(rendered.contains("kind = \"codex_app_server\""));
+    assert!(rendered.contains("executable = \"codex\""));
+
+    let parsed = toml::from_str::<GlobalConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+    assert!(matches!(
+        parsed.connectors["codex"],
+        ConnectorConfig::CodexAppServer(_)
+    ));
+}
+
+#[test]
+fn v4_round_trip_preserves_native_openrouter_and_ollama_composition() {
+    let config = GlobalConfig::default_config();
+    let rendered = toml::to_string_pretty(&GlobalConfigDto::from_domain(&config)).unwrap();
+
+    assert!(rendered.contains("kind = \"openrouter\""));
+    assert!(rendered.contains("kind = \"ollama\""));
+    assert!(rendered.contains("native_base_url = \"http://localhost:11434\""));
+
+    let parsed = toml::from_str::<GlobalConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+    assert!(matches!(
+        parsed.connectors["openrouter"],
+        ConnectorConfig::OpenRouter(_)
+    ));
+    assert!(matches!(
+        parsed.connectors["ollama"],
+        ConnectorConfig::Ollama(_)
+    ));
+    assert!(
+        parsed.connectors["openrouter"]
+            .openai_compatible()
+            .is_some()
+    );
+    assert!(parsed.connectors["ollama"].openai_compatible().is_some());
+}
+
+#[test]
+fn legacy_codex_cli_kind_loads_as_app_server_and_normalizes_on_write() {
+    let mut config = GlobalConfig::default_config();
+    config.connectors.insert(
+        "codex".to_string(),
+        ConnectorConfig::CodexAppServer(CodexAppServerConnectorConfig {
+            executable: PathBuf::from("codex"),
+        }),
+    );
+    let rendered = toml::to_string_pretty(&GlobalConfigDto::from_domain(&config))
+        .unwrap()
+        .replace("kind = \"codex_app_server\"", "kind = \"codex_cli\"");
+
+    let parsed = toml::from_str::<GlobalConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+
+    assert!(matches!(
+        parsed.connectors["codex"],
+        ConnectorConfig::CodexAppServer(_)
+    ));
+}
+
+#[test]
 fn project_and_registry_versions_are_owned_by_persistence_dtos() {
     let registry = ProjectRegistry::default();
     let persisted = ProjectRegistryDto::from_domain(&registry);

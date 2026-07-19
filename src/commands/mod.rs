@@ -16,10 +16,12 @@ use crate::{
         ThemeUseArgs,
     },
     init::InitService,
+    presentation::{Cell, print_table},
 };
 use sfumato_core::{
     application::{
-        EditSlidesCommand, GeneratePageCommand, GenerateSlidesCommand, SfumatoApplication,
+        AddProjectAssetCommand, EditSlidesCommand, GeneratePageCommand, GenerateSlidesCommand,
+        SfumatoApplication, UpdateProjectAssetCommand,
     },
     config::{Capability, ConfigOverrides},
     config_editor::ConfigTarget,
@@ -64,42 +66,99 @@ impl RunnableCommand for ArtifactCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         match self {
             Self::Add(args) => {
-                let asset = application.add_project_asset(
-                    &args.path,
-                    args.name.as_deref(),
-                    args.description.as_deref(),
-                    args.project.as_deref(),
-                )?;
+                let asset = application.add_project_asset(AddProjectAssetCommand {
+                    source: args.path,
+                    name: args.name,
+                    description: args.description,
+                    alt_text: args.alt_text,
+                    tags: args.tags,
+                    generation_prompt: args.prompt,
+                    theme: args.theme,
+                    all_themes: args.all_themes,
+                    project: args.project,
+                })?;
                 println!(
                     "Added project artifact '{}' at {}",
                     asset.name,
-                    asset.path.display()
+                    asset
+                        .variants
+                        .values()
+                        .next()
+                        .map(|variant| variant.path.display().to_string())
+                        .unwrap_or_default()
                 );
+            }
+            Self::Edit(args) => {
+                let generation_prompt = if args.clear_prompt {
+                    Some(None)
+                } else {
+                    args.prompt.map(Some)
+                };
+                let variant_theme = args.from_theme.zip(args.to_theme);
+                let tags = (!args.tags.is_empty()).then_some(args.tags);
+                let asset = application.update_project_asset(UpdateProjectAssetCommand {
+                    name: args.name,
+                    description: args.description,
+                    alt_text: args.alt_text,
+                    tags,
+                    generation_prompt,
+                    variant_theme,
+                    project: args.project,
+                })?;
+                println!("Updated project artifact '{}'", asset.name);
             }
             Self::List(args) => {
                 let assets = application.list_project_assets(args.project.as_deref())?;
                 if assets.is_empty() {
                     println!("No reusable project artifacts.");
-                }
-                for asset in assets {
-                    println!(
-                        "{}\t{}\t{}\t{}",
-                        asset.name,
-                        asset.media_type,
-                        &asset.content_hash[..12],
-                        asset.description
+                } else {
+                    print_table(
+                        &["NAME", "THEMES", "TAGS", "DESCRIPTION"],
+                        assets
+                            .into_iter()
+                            .map(|asset| {
+                                vec![
+                                    Cell::primary(asset.name),
+                                    Cell::new(
+                                        asset
+                                            .variants
+                                            .keys()
+                                            .cloned()
+                                            .collect::<Vec<_>>()
+                                            .join(", "),
+                                    ),
+                                    Cell::muted(asset.metadata.tags.join(", ")),
+                                    Cell::new(asset.metadata.description),
+                                ]
+                            })
+                            .collect(),
                     );
                 }
             }
             Self::Show(args) => {
                 let asset = application.show_project_asset(&args.name, args.project.as_deref())?;
                 println!(
-                    "{}\nType: {}\nFile: {}\nSHA-256: {}\n\n{}",
+                    "{}\nDescription: {}\nAlt text: {}\nTags: {}\nRegenerable: {}",
                     asset.name,
-                    asset.media_type,
-                    asset.path.display(),
-                    asset.content_hash,
-                    asset.description
+                    asset.metadata.description,
+                    asset.metadata.alt_text,
+                    asset.metadata.tags.join(", "),
+                    asset.is_regenerable()
+                );
+                print_table(
+                    &["THEME", "TYPE", "SHA-256", "FILE"],
+                    asset
+                        .variants
+                        .into_values()
+                        .map(|variant| {
+                            vec![
+                                Cell::primary(variant.theme),
+                                Cell::new(variant.media_type),
+                                Cell::muted(&variant.content_hash[..12]),
+                                Cell::new(variant.path.display()),
+                            ]
+                        })
+                        .collect(),
                 );
             }
             Self::Remove(args) => {
@@ -133,11 +192,19 @@ impl RunnableCommand for TemplateCommands {
                 let templates = application.list_templates(args.kind.map(template_kind))?;
                 if templates.is_empty() {
                     println!("No reusable generation templates installed.");
-                }
-                for template in templates {
-                    println!(
-                        "{}\t{}\t{}",
-                        template.name, template.kind, template.description
+                } else {
+                    print_table(
+                        &["NAME", "KIND", "DESCRIPTION"],
+                        templates
+                            .into_iter()
+                            .map(|template| {
+                                vec![
+                                    Cell::primary(template.name),
+                                    Cell::new(template.kind),
+                                    Cell::new(template.description),
+                                ]
+                            })
+                            .collect(),
                     );
                 }
             }
@@ -168,28 +235,31 @@ impl RunnableCommand for PluginCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         match self {
             Self::List(args) => {
-                for status in application
+                let statuses = application
                     .list_page_plugins(args.project.as_deref(), &OperationContext::detached())
-                    .await?
-                {
-                    let installed = status
-                        .installed_version
-                        .as_deref()
-                        .unwrap_or("not installed");
-                    let enabled = if status.enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    };
-                    println!(
-                        "{}\t{}\tlatest {}\t{}\t{}",
-                        status.plugin.id,
-                        status.plugin.name,
-                        status.plugin.latest_version,
-                        installed,
-                        enabled,
-                    );
-                }
+                    .await?;
+                print_table(
+                    &["ID", "PLUGIN", "LATEST", "INSTALLED", "PROJECT"],
+                    statuses
+                        .into_iter()
+                        .map(|status| {
+                            vec![
+                                Cell::primary(status.plugin.id),
+                                Cell::new(status.plugin.name),
+                                Cell::muted(status.plugin.latest_version),
+                                match status.installed_version {
+                                    Some(version) => Cell::success(version),
+                                    None => Cell::warning("not installed"),
+                                },
+                                if status.enabled {
+                                    Cell::success("enabled")
+                                } else {
+                                    Cell::muted("disabled")
+                                },
+                            ]
+                        })
+                        .collect(),
+                );
                 Ok(())
             }
             Self::Show(args) => {
@@ -274,13 +344,19 @@ impl RunnableCommand for PromptCommands {
 
 impl PromptProjectArgs {
     fn list(self, application: &SfumatoApplication) -> Result<()> {
-        for prompt in application.list_prompts(self.project)? {
-            println!(
-                "{}\t{}",
-                prompt.id,
-                prompt_origin_label(&prompt.provenance.origin)
-            );
-        }
+        print_table(
+            &["PROMPT", "ORIGIN"],
+            application
+                .list_prompts(self.project)?
+                .into_iter()
+                .map(|prompt| {
+                    vec![
+                        Cell::primary(prompt.id),
+                        Cell::muted(prompt_origin_label(&prompt.provenance.origin)),
+                    ]
+                })
+                .collect(),
+        );
         Ok(())
     }
 
@@ -347,17 +423,27 @@ impl RunnableCommand for ModelCommands {
                 let models = application.list_models()?;
                 if models.is_empty() {
                     println!("No registered model profiles.");
-                }
-                for model in models {
-                    let capabilities = model
-                        .capabilities
-                        .iter()
-                        .map(|capability| capability.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    println!(
-                        "{}\t{}\t{}\t{capabilities}",
-                        model.name, model.connector, model.model
+                } else {
+                    print_table(
+                        &["PROFILE", "CONNECTOR", "MODEL", "CAPABILITIES"],
+                        models
+                            .into_iter()
+                            .map(|model| {
+                                vec![
+                                    Cell::primary(model.name),
+                                    Cell::new(model.connector),
+                                    Cell::new(model.model),
+                                    Cell::muted(
+                                        model
+                                            .capabilities
+                                            .iter()
+                                            .map(|capability| capability.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", "),
+                                    ),
+                                ]
+                            })
+                            .collect(),
                     );
                 }
                 Ok(())
@@ -465,9 +551,14 @@ impl RunnableCommand for ThemeCommands {
                 Ok(())
             }
             Self::List => {
-                for theme in application.list_themes()? {
-                    println!("{}", theme.name);
-                }
+                print_table(
+                    &["THEME"],
+                    application
+                        .list_themes()?
+                        .into_iter()
+                        .map(|theme| vec![Cell::primary(theme.name)])
+                        .collect(),
+                );
                 Ok(())
             }
             Self::Show(args) => {
@@ -497,12 +588,93 @@ impl RunnableCommand for ConnectorCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         match self {
             Self::List => {
-                for connector in application.list_connectors()? {
-                    println!("{}\t{}", connector.name, connector.base_url);
-                }
+                print_table(
+                    &["CONNECTOR", "KIND", "TARGET"],
+                    application
+                        .list_connectors()?
+                        .into_iter()
+                        .map(|connector| {
+                            vec![
+                                Cell::primary(connector.name),
+                                Cell::new(connector.kind),
+                                Cell::muted(connector.target),
+                            ]
+                        })
+                        .collect(),
+                );
                 Ok(())
             }
             Self::Show(args) => args.run(Arc::clone(&application)).await,
+            Self::Capabilities(args) => {
+                let capabilities = application.connector_capabilities(&args.name)?;
+                print_table(
+                    &["CONNECTOR KIND", "NATIVE FEATURE"],
+                    capabilities
+                        .features
+                        .into_iter()
+                        .map(|feature| {
+                            vec![
+                                Cell::primary(&capabilities.kind),
+                                Cell::new(feature.as_str()),
+                            ]
+                        })
+                        .collect(),
+                );
+                Ok(())
+            }
+            Self::Models(args) => {
+                let models = application
+                    .list_connector_models(&args.name, OperationContext::detached())
+                    .await?;
+                print_table(
+                    &["DEFAULT", "MODEL", "NAME", "INPUTS", "OUTPUTS", "CONTEXT"],
+                    models
+                        .into_iter()
+                        .filter(|model| !model.hidden)
+                        .map(|model| {
+                            vec![
+                                if model.is_default {
+                                    Cell::success("default")
+                                } else {
+                                    Cell::muted("")
+                                },
+                                Cell::primary(model.id),
+                                Cell::new(model.display_name),
+                                Cell::muted(model.input_modalities.join(", ")),
+                                Cell::muted(model.output_modalities.join(", ")),
+                                Cell::muted(
+                                    model
+                                        .context_length
+                                        .map(|value| value.to_string())
+                                        .unwrap_or_default(),
+                                ),
+                            ]
+                        })
+                        .collect(),
+                );
+                Ok(())
+            }
+            Self::Status(args) => {
+                let status = application
+                    .connector_status(&args.name, OperationContext::detached())
+                    .await?;
+                print_table(
+                    &["CONNECTOR", "KIND", "FIELD", "VALUE"],
+                    status
+                        .fields
+                        .into_iter()
+                        .map(|field| {
+                            vec![
+                                Cell::primary(&status.connector),
+                                Cell::muted(&status.kind),
+                                Cell::new(field.name),
+                                Cell::new(field.value),
+                            ]
+                        })
+                        .collect(),
+                );
+                Ok(())
+            }
             Self::Setup(args) => args.run(application).await,
             Self::Login(args) => {
                 let secret = Password::new(&format!("API key for {}", args.name))
@@ -521,6 +693,13 @@ impl RunnableCommand for ConnectorCommands {
             }
             Self::AuthStatus(args) => {
                 let status = application.connector_auth_status(&args.name).await?;
+                if status.managed_externally {
+                    println!(
+                        "Connector '{}': authentication is managed by Codex CLI; run `codex login status`",
+                        status.name
+                    );
+                    return Ok(());
+                }
                 println!(
                     "Connector '{}': {}{}",
                     status.name,
@@ -563,11 +742,12 @@ impl RunnableCommand for ConnectorSetupArgs {
         let preset = match self.preset {
             crate::cli::ConnectorPreset::Ollama => CoreConnectorPreset::Ollama,
             crate::cli::ConnectorPreset::Openrouter => CoreConnectorPreset::Openrouter,
+            crate::cli::ConnectorPreset::Codex => CoreConnectorPreset::Codex,
         };
         let connector = application.setup_connector(preset, self.name, self.api_key_env)?;
         println!(
-            "Configured OpenAI-compatible connector '{}'",
-            connector.name
+            "Configured {} connector '{}'",
+            connector.kind, connector.name
         );
         Ok(())
     }
@@ -602,10 +782,24 @@ impl RunnableCommand for ProjectCommands {
                 let projects = application.list_projects()?;
                 if projects.is_empty() {
                     println!("No registered projects.");
-                }
-                for project in projects {
-                    let marker = if project.active { "*" } else { " " };
-                    println!("{marker} {}\t{}", project.name, project.path.display());
+                } else {
+                    print_table(
+                        &["STATUS", "PROJECT", "PATH"],
+                        projects
+                            .into_iter()
+                            .map(|project| {
+                                vec![
+                                    if project.active {
+                                        Cell::success("active")
+                                    } else {
+                                        Cell::muted("")
+                                    },
+                                    Cell::primary(project.name),
+                                    Cell::new(project.path.display()),
+                                ]
+                            })
+                            .collect(),
+                    );
                 }
                 Ok(())
             }
@@ -1047,6 +1241,17 @@ fn render_generation_event(event: TextGenerationEvent) {
                 "{} {}",
                 styled_label("model", ANSI_CYAN),
                 dim(&format!("request round {round}"))
+            );
+        }
+        TextGenerationEvent::ModelSelected {
+            model,
+            display_name,
+        } => {
+            eprintln!(
+                "{} {} {}",
+                styled_label("model", ANSI_CYAN),
+                bold(&display_name),
+                dim(&format!("({model})"))
             );
         }
         TextGenerationEvent::ToolCallRequested { name, arguments } => {

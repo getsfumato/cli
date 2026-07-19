@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use thiserror::Error;
 
-use crate::config::{EffectiveConfig, ModelProfile};
+use crate::config::{ConnectorConfig, EffectiveConfig, ModelProfile};
 use crate::errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult};
 use crate::operation::{OperationContext, OperationEventKind};
 use crate::prompts::PromptProvenance;
@@ -150,6 +150,11 @@ pub enum TextGenerationEvent {
     },
     RequestStarted {
         round: usize,
+    },
+    /// Codex App Server resolved and selected one authenticated model.
+    ModelSelected {
+        model: String,
+        display_name: String,
     },
     ToolCallRequested {
         name: String,
@@ -513,6 +518,113 @@ pub struct ImageGenerationRequest {
 pub struct ImageGenerationResponse {
     pub bytes: Vec<u8>,
     pub media_type: String,
+}
+
+/// Model metadata discovered from a connector's authenticated catalog.
+#[derive(Clone, Debug, Serialize)]
+pub struct ConnectorModelSummary {
+    /// Stable provider model identifier accepted by model profiles.
+    pub id: String,
+    /// Human-readable model name.
+    pub display_name: String,
+    /// Whether the connector recommends this model by default.
+    pub is_default: bool,
+    /// Whether the model is hidden from normal selectors.
+    pub hidden: bool,
+    /// Supported provider input modalities.
+    pub input_modalities: Vec<String>,
+    /// Provider output modalities, when advertised.
+    pub output_modalities: Vec<String>,
+    /// Maximum context window in tokens, when advertised.
+    pub context_length: Option<u64>,
+    /// Concise provider description.
+    pub description: Option<String>,
+    /// Provider-native pricing or local model details safe for presentation.
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// Optional native operation exposed by a connector adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorCapability {
+    /// Discover models and their provider metadata.
+    ModelCatalog,
+    /// Read authenticated account identity or plan information.
+    Account,
+    /// Read usage, credits, or rate-limit state.
+    Usage,
+    /// Inspect richer details for locally installed models.
+    ModelDetails,
+    /// Manage locally installed models through provider-native operations.
+    ModelManagement,
+    /// Inspect a local runtime and currently loaded models.
+    RuntimeStatus,
+}
+
+impl ConnectorCapability {
+    /// Stable presentation and automation identifier.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ModelCatalog => "model_catalog",
+            Self::Account => "account",
+            Self::Usage => "usage",
+            Self::ModelDetails => "model_details",
+            Self::ModelManagement => "model_management",
+            Self::RuntimeStatus => "runtime_status",
+        }
+    }
+}
+
+/// Connector-native feature set presented by CLI, TUI, and future frontends.
+#[derive(Clone, Debug, Serialize)]
+pub struct ConnectorCapabilities {
+    /// Connector kind owning these features.
+    pub kind: String,
+    /// Supported optional operations.
+    pub features: Vec<ConnectorCapability>,
+}
+
+/// One labeled account, usage, credit, or rate-limit value.
+#[derive(Clone, Debug, Serialize)]
+pub struct ConnectorStatusField {
+    /// Stable field name.
+    pub name: String,
+    /// Human-readable value with no secret material.
+    pub value: String,
+}
+
+/// Provider-native connector status suitable for presentation frontends.
+#[derive(Clone, Debug, Serialize)]
+pub struct ConnectorStatus {
+    /// Configured connector name.
+    pub connector: String,
+    /// Provider connector kind.
+    pub kind: String,
+    /// Provider-specific but typed key/value rows.
+    pub fields: Vec<ConnectorStatusField>,
+}
+
+/// Port for connector-native discovery and account operations.
+#[async_trait]
+pub trait ConnectorIntrospection: Send + Sync {
+    /// Reports optional native features without performing I/O.
+    fn capabilities(&self, connector: &ConnectorConfig) -> ConnectorCapabilities;
+
+    /// Lists models available through the connector's current authentication.
+    async fn list_models(
+        &self,
+        connector_name: &str,
+        connector: &ConnectorConfig,
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<ConnectorModelSummary>>;
+
+    /// Reads provider-native account, credit, usage, or runtime status.
+    async fn status(
+        &self,
+        connector_name: &str,
+        connector: &ConnectorConfig,
+        operation: &OperationContext,
+    ) -> SfumatoResult<ConnectorStatus>;
 }
 
 #[async_trait]

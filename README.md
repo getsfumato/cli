@@ -66,9 +66,10 @@ so a rendering failure preserves the original pair.
 - **Projects:** many registered study/work contexts, with one active project.
 - **Themes:** globally reusable design packages selected by projects.
 - **Templates:** globally reusable page or slide structures filled by generators.
-- **Project artifacts:** portable logos, icons, and visual files available to every generation.
-- **Connectors:** named OpenAI-compatible API connections such as Ollama and
-  OpenRouter.
+- **Project artifacts:** portable logical visuals with semantic metadata and
+  exact-theme or wildcard file variants.
+- **Connectors:** generic OpenAI-compatible generation plus native OpenRouter,
+  Ollama, and Codex App Server catalogs/status operations.
 - **Model profiles:** named connector models with capabilities such as `text`,
   `code`, `image`, `video`, `speech`, and `embedding`.
 - **Generation requests:** a required instruction plus optional files/folders.
@@ -110,13 +111,14 @@ Reusable themes live in:
 ```
 
 Reusable structural templates live in `~/.config/sfumato/templates/<name>/`.
-Project artifacts live in `<project-root>/.sfumato/assets/` and are copied into
-each immutable generated revision that uses them.
+Project artifacts live in `<project-root>/.sfumato/assets/`. Missing themed
+variants can be regenerated from metadata, and only final document references
+are copied into an immutable revision.
 
 ## OpenAI-Compatible Connectors
 
-Ollama and OpenRouter use the same OpenAI-compatible connector implementation.
-They differ only by configuration:
+Ollama and OpenRouter compose the same OpenAI-compatible generation transport,
+then add provider-native APIs for catalogs and status:
 
 ```bash
 cargo run -- connector setup ollama
@@ -125,6 +127,9 @@ cargo run -- connector login openrouter
 cargo run -- connector auth-status openrouter
 cargo run -- connector list
 cargo run -- connector show openrouter
+cargo run -- connector capabilities openrouter
+cargo run -- connector models openrouter
+cargo run -- connector status openrouter
 ```
 
 Ollama defaults to `http://localhost:11434/v1` without authentication.
@@ -267,7 +272,9 @@ sfumato template list
 sfumato template show lecture --kind slides
 ```
 
-Select it with `--template lecture`. The drafter sees the structure but returns
+Templates are opt-in for each generation. Select one explicitly with
+`--template lecture`; when the flag is omitted, Sfumato does not load or apply
+any structural template. The drafter sees the selected structure but returns
 only marker content; Sfumato performs the merge before validation and review.
 
 Register reusable visual files for the active or selected project:
@@ -276,14 +283,24 @@ Register reusable visual files for the active or selected project:
 sfumato artifact add ./branding/logo.png \
   --name university-logo \
   --description "University logo for title and closing sections" \
+  --all-themes \
   --project university
+sfumato artifact add ./figures/spectrum.png \
+  --name square-wave-spectrum --theme gruvbox \
+  --description "Odd-harmonic square-wave amplitude spectrum" \
+  --alt-text "Bars at odd harmonic frequencies" \
+  --tag fourier --tag spectrum \
+  --prompt "Recreate this labeled odd-harmonic spectrum with the same composition"
 sfumato artifact list --project university
 sfumato artifact show university-logo --project university
 ```
 
 PNG, JPEG, WebP, GIF, and passive SVG files are copied into the portable
-project catalog. Their exact staged paths and intended use are injected into
-page and slide prompts, and their hashes are included in generation output.
+project catalog. Exact-theme variants take precedence over `*`. Prompt context
+includes description, alt text, tags, theme, path, and media type. A configured
+image model reconstructs missing variants when metadata includes a recipe.
+Reusable artifacts do not disable additional `sfumato_image_gen` calls, and
+only images referenced by the final reviewed page or deck survive staging.
 
 ## Generate Pages
 

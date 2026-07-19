@@ -3,15 +3,19 @@
 
 pub mod application;
 pub mod artifacts;
+pub mod codex_app_server;
 mod config_dto;
 pub mod config_editor;
 pub mod config_files;
 pub mod filesystem;
+pub mod ollama;
 pub(crate) mod openai_compatible;
+pub mod openrouter;
 pub mod page_plugins;
 pub mod pages;
 pub mod project_assets;
 pub mod prompts;
+pub mod providers;
 pub mod renderers;
 pub mod repositories;
 mod runtime;

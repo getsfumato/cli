@@ -172,6 +172,48 @@ fn connector_setup_defaults_to_stored_credentials_and_accepts_explicit_env() {
 }
 
 #[test]
+fn parses_local_codex_connector_setup() {
+    let cli = Cli::try_parse_from(["sfumato", "connector", "setup", "codex"]).unwrap();
+    let Some(Commands::Connector {
+        command: ConnectorCommands::Setup(args),
+    }) = cli.command
+    else {
+        panic!("expected connector setup command");
+    };
+
+    assert!(matches!(args.preset, ConnectorPreset::Codex));
+    assert!(args.api_key_env.is_none());
+}
+
+#[test]
+fn parses_connector_native_model_discovery() {
+    let cli = Cli::try_parse_from(["sfumato", "connector", "models", "codex"]).unwrap();
+    let Some(Commands::Connector {
+        command: ConnectorCommands::Models(args),
+    }) = cli.command
+    else {
+        panic!("expected connector models command");
+    };
+    assert_eq!(args.name, "codex");
+}
+
+#[test]
+fn parses_connector_capabilities_and_status() {
+    for command_name in ["capabilities", "status"] {
+        let cli =
+            Cli::try_parse_from(["sfumato", "connector", command_name, "openrouter"]).unwrap();
+        let Some(Commands::Connector { command }) = cli.command else {
+            panic!("expected connector command");
+        };
+        let name = match command {
+            ConnectorCommands::Capabilities(args) | ConnectorCommands::Status(args) => args.name,
+            _ => panic!("expected connector introspection command"),
+        };
+        assert_eq!(name, "openrouter");
+    }
+}
+
+#[test]
 fn parses_plugin_install_update_and_project_enablement() {
     let install = Cli::try_parse_from([
         "sfumato",
@@ -272,6 +314,41 @@ fn parses_reusable_template_commands_and_generation_selection() {
 }
 
 #[test]
+fn generation_does_not_select_a_template_implicitly() {
+    let page = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "page",
+        "--instruction",
+        "Explain Fourier series",
+    ])
+    .unwrap();
+    let Some(Commands::Generate {
+        command: GenerateCommands::Page(page),
+    }) = page.command
+    else {
+        panic!("expected page generator");
+    };
+    assert!(page.template.is_none());
+
+    let slides = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "slides",
+        "--instruction",
+        "Explain Fourier series",
+    ])
+    .unwrap();
+    let Some(Commands::Generate {
+        command: GenerateCommands::Slides(slides),
+    }) = slides.command
+    else {
+        panic!("expected slides generator");
+    };
+    assert!(slides.template.is_none());
+}
+
+#[test]
 fn accepts_ui_as_a_generic_page_plugin_alias() {
     let cli = Cli::try_parse_from([
         "sfumato",
@@ -313,6 +390,36 @@ fn parses_project_artifacts_and_design_md_exchange() {
     };
     assert_eq!(args.name.as_deref(), Some("university-logo"));
     assert_eq!(args.project.as_deref(), Some("university"));
+
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "artifact",
+        "edit",
+        "square-wave-spectrum",
+        "--project",
+        "university",
+        "--alt-text",
+        "Odd harmonic spectrum",
+        "--tag",
+        "fourier",
+        "--prompt",
+        "Recreate the same diagram for the selected theme",
+        "--from-theme",
+        "*",
+        "--to-theme",
+        "gruvbox",
+    ])
+    .unwrap();
+    let Some(Commands::Artifact {
+        command: ArtifactCommands::Edit(args),
+    }) = cli.command
+    else {
+        panic!("expected artifact edit command");
+    };
+    assert_eq!(args.name, "square-wave-spectrum");
+    assert_eq!(args.tags, vec!["fourier"]);
+    assert_eq!(args.from_theme.as_deref(), Some("*"));
+    assert_eq!(args.to_theme.as_deref(), Some("gruvbox"));
 
     let cli = Cli::try_parse_from([
         "sfumato",

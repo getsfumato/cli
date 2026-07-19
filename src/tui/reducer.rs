@@ -75,6 +75,25 @@ pub(super) fn reduce_message(app: &mut App, message: UiMessage) {
             app.activity_index = app.activities.len().saturating_sub(1);
             app.transition(Screen::Complete);
         }
+        UiMessage::ConnectorQueryFinished { connector, result } => {
+            if app.screen != Screen::Browse(Section::Connectors) {
+                return;
+            }
+            match result {
+                Ok(rows) => {
+                    app.browse_rows = rows;
+                    app.connector_query_source = Some(connector.clone());
+                    app.browse_index = 0;
+                    app.browse_focus = BrowseFocus::Rows;
+                    app.browse_detail_scroll = 0;
+                    app.status = Some((
+                        format!("Loaded native data from {connector}; press r to return"),
+                        false,
+                    ));
+                }
+                Err(error) => app.status = Some((error, true)),
+            }
+        }
     }
 }
 
@@ -99,6 +118,7 @@ impl App {
             browse_focus: BrowseFocus::Rows,
             browse_action_index: 0,
             browse_detail_scroll: 0,
+            connector_query_source: None,
             operation: None,
             form: GenerateForm::with_plugins(page_plugins),
             edit_form: EditForm::default(),
@@ -185,9 +205,14 @@ impl App {
             Ok(rows) => {
                 self.browse_rows = rows;
                 self.browse_index = 0;
-                self.browse_focus = BrowseFocus::Actions;
+                self.browse_focus = if self.browse_rows.is_empty() {
+                    BrowseFocus::Actions
+                } else {
+                    BrowseFocus::Rows
+                };
                 self.browse_action_index = 0;
                 self.browse_detail_scroll = 0;
+                self.connector_query_source = None;
                 self.status = None;
                 self.transition(Screen::Browse(section));
             }
@@ -204,18 +229,22 @@ impl App {
                     BrowseFocus::Rows => BrowseFocus::Actions,
                 };
             }
-            KeyCode::Left | KeyCode::Char('h') if self.browse_focus == BrowseFocus::Actions => {
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.browse_focus = BrowseFocus::Actions;
                 self.browse_action_index = self.browse_action_index.saturating_sub(1);
             }
-            KeyCode::Right | KeyCode::Char('l') if self.browse_focus == BrowseFocus::Actions => {
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.browse_focus = BrowseFocus::Actions;
                 self.browse_action_index = (self.browse_action_index + 1)
                     .min(section_actions(section).len().saturating_sub(1));
             }
-            KeyCode::Up | KeyCode::Char('k') if self.browse_focus == BrowseFocus::Rows => {
+            KeyCode::Up | KeyCode::Char('k') if !self.browse_rows.is_empty() => {
+                self.browse_focus = BrowseFocus::Rows;
                 self.browse_index = self.browse_index.saturating_sub(1);
                 self.browse_detail_scroll = 0;
             }
-            KeyCode::Down | KeyCode::Char('j') if self.browse_focus == BrowseFocus::Rows => {
+            KeyCode::Down | KeyCode::Char('j') if !self.browse_rows.is_empty() => {
+                self.browse_focus = BrowseFocus::Rows;
                 self.browse_index =
                     (self.browse_index + 1).min(self.browse_rows.len().saturating_sub(1));
                 self.browse_detail_scroll = 0;
@@ -228,6 +257,9 @@ impl App {
             }
             KeyCode::Enter if self.browse_focus == BrowseFocus::Actions => {
                 self.execute_browse_action(section);
+            }
+            KeyCode::Enter if self.browse_focus == BrowseFocus::Rows => {
+                self.browse_focus = BrowseFocus::Actions;
             }
             KeyCode::Char('r') => self.open_section(section),
             _ => {}
@@ -243,6 +275,27 @@ impl App {
         };
         if action == BrowseAction::ProjectActivate {
             self.activate_project();
+            return;
+        }
+        if matches!(
+            action,
+            BrowseAction::ConnectorModels | BrowseAction::ConnectorStatus
+        ) {
+            let Some(connector) = self.connector_query_source.clone().or_else(|| {
+                self.browse_rows
+                    .get(self.browse_index)
+                    .map(|row| row.title.clone())
+            }) else {
+                self.status = Some(("Select a configured connector first".into(), true));
+                return;
+            };
+            self.status = Some((format!("Loading native data from {connector}..."), false));
+            spawn_connector_query(
+                Arc::clone(&self.application),
+                connector,
+                action == BrowseAction::ConnectorModels,
+                self.sender.clone(),
+            );
             return;
         }
         match self.operation_for_action(action) {
@@ -340,35 +393,41 @@ impl App {
                     "Remove model",
                 )
             }
-            BrowseAction::ConnectorOllama | BrowseAction::ConnectorOpenrouter => {
+            BrowseAction::ConnectorOllama
+            | BrowseAction::ConnectorOpenrouter
+            | BrowseAction::ConnectorCodex => {
                 let is_ollama = action == BrowseAction::ConnectorOllama;
+                let is_codex = action == BrowseAction::ConnectorCodex;
+                let (title, preset, name) = if is_ollama {
+                    ("Setup Ollama", ConnectorPreset::Ollama, "ollama")
+                } else if is_codex {
+                    ("Setup Codex", ConnectorPreset::Codex, "codex")
+                } else {
+                    (
+                        "Setup OpenRouter",
+                        ConnectorPreset::Openrouter,
+                        "openrouter",
+                    )
+                };
+                let mut fields = vec![text_field("Name", name, "connector name")];
+                if !is_codex {
+                    fields.push(text_field(
+                        "API key environment",
+                        "",
+                        "optional CI environment variable",
+                    ));
+                }
+                fields.push(submit_field("Save connector"));
                 OperationForm {
-                    title: if is_ollama {
-                        "Setup Ollama"
-                    } else {
-                        "Setup OpenRouter"
-                    },
-                    kind: OperationKind::ConnectorSetup(if is_ollama {
-                        ConnectorPreset::Ollama
-                    } else {
-                        ConnectorPreset::Openrouter
-                    }),
+                    title,
+                    kind: OperationKind::ConnectorSetup(preset),
                     target: None,
-                    fields: vec![
-                        text_field(
-                            "Name",
-                            if is_ollama { "ollama" } else { "openrouter" },
-                            "connector name",
-                        ),
-                        text_field(
-                            "API key environment",
-                            "",
-                            "optional CI environment variable",
-                        ),
-                        submit_field("Save connector"),
-                    ],
+                    fields,
                     selected: 0,
                 }
+            }
+            BrowseAction::ConnectorModels | BrowseAction::ConnectorStatus => {
+                anyhow::bail!("Connector discovery actions run asynchronously")
             }
             BrowseAction::ThemeCreate => OperationForm {
                 title: "Create theme",

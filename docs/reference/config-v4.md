@@ -32,14 +32,21 @@ name = "Alex"
 learning_style = ["visual", "step-by-step"]
 
 [connectors.ollama]
+kind = "ollama"
 base_url = "http://localhost:11434/v1"
+native_base_url = "http://localhost:11434"
 
 [connectors.openrouter]
+kind = "openrouter"
 base_url = "https://openrouter.ai/api/v1"
 credential = "stored:connector/openrouter"
 
 [connectors.openrouter.headers]
 HTTP-Referer = "https://example.edu"
+
+[connectors.codex]
+kind = "codex_app_server"
+executable = "codex"
 
 [models.local-text]
 connector = "ollama"
@@ -61,6 +68,13 @@ pdf = true
 # browser_path = "/path/to/chromium"
 ```
 
+Connectors without an explicit `kind` remain `openai_compatible` for schema-v4
+compatibility. `openrouter` and `ollama` compose that shared generation
+transport while adding provider-native operations. Ollama also stores its
+native API root separately from the `/v1` compatibility root. A
+`codex_app_server` connector uses only `executable`; Codex owns its ChatGPT OAuth
+session and Sfumato never reads or persists those credentials.
+
 Connector `credential`, when present, is an indirect `SecretRef`, never secret
 material. v0.2 supports `stored:<target>` through the operating-system keyring
 and `env:<VARIABLE>` for automation. Stored targets use portable path-like
@@ -73,7 +87,26 @@ Manage local credentials without editing TOML:
 sfumato connector login openrouter
 sfumato connector auth-status openrouter
 sfumato connector logout openrouter
+sfumato connector capabilities openrouter
+sfumato connector models openrouter
+sfumato connector status openrouter
 ```
+
+Configure a local Codex connector and text profile with:
+
+```bash
+codex login
+sfumato connector setup codex
+sfumato connector models codex
+sfumato model add codex --connector codex --id default --capability text --capability code
+sfumato model use text codex --project university
+```
+
+`model = "default"` resolves the authenticated model marked as default by
+`model/list`. A concrete model ID from `sfumato connector models codex` may be
+used instead and is validated before the thread starts. Codex connectors support
+text/code profiles only; image generation continues to use a capability-specific
+connector.
 
 ## Registry Example
 
@@ -114,8 +147,8 @@ remain provider-owned strings and are not slug-normalized.
 ## Field Contract
 
 - `user.name` is optional; `user.learning_style` is a non-empty string array.
-- `connectors.<name>` contains `base_url`, optional indirect `credential`, and
-  optional string `headers`. A connector name is a portable token.
+- `connectors.<name>` selects generic OpenAI compatibility, native OpenRouter,
+  native Ollama, or local Codex App Server. A connector name is a portable token.
 - `models.<name>` contains connector name, provider model ID, non-empty unique
   capabilities, and a flat persisted `options` table. The adapter converts that
   table into capability-specific `TextModelOptions` and `ImageModelOptions`

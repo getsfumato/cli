@@ -99,6 +99,73 @@ pub(super) fn spawn_edit(
     })
 }
 
+pub(super) fn spawn_connector_query(
+    application: Arc<SfumatoApplication>,
+    connector: String,
+    models: bool,
+    sender: Sender<UiMessage>,
+) {
+    tokio::spawn(async move {
+        let result = if models {
+            application
+                .list_connector_models(&connector, OperationContext::detached())
+                .await
+                .map(|models| {
+                    models
+                        .into_iter()
+                        .filter(|model| !model.hidden)
+                        .map(|model| {
+                            let mut detail = model.description.unwrap_or_default();
+                            if !model.metadata.is_empty() {
+                                detail.push_str("\n\nMetadata:\n");
+                                for (name, value) in model.metadata {
+                                    detail.push_str(&format!("- {name}: {value}\n"));
+                                }
+                            }
+                            BrowseRow {
+                                title: model.id,
+                                subtitle: format!(
+                                    "{} -> {}{}",
+                                    model.input_modalities.join(", "),
+                                    model.output_modalities.join(", "),
+                                    model
+                                        .context_length
+                                        .map(|value| format!(" / {value} tokens"))
+                                        .unwrap_or_default(),
+                                ),
+                                detail,
+                                active: model.is_default,
+                            }
+                        })
+                        .collect()
+                })
+        } else {
+            application
+                .connector_status(&connector, OperationContext::detached())
+                .await
+                .map(|status| {
+                    status
+                        .fields
+                        .into_iter()
+                        .map(|field| BrowseRow {
+                            title: field.name,
+                            subtitle: field.value.clone(),
+                            detail: format!(
+                                "{} / {}\n\n{}",
+                                status.connector, status.kind, field.value
+                            ),
+                            active: false,
+                        })
+                        .collect()
+                })
+        }
+        .map_err(|error| error.to_string());
+        let _ = sender
+            .send(UiMessage::ConnectorQueryFinished { connector, result })
+            .await;
+    });
+}
+
 struct UiOperationEventSink {
     job_id: u64,
     sender: Sender<UiMessage>,
@@ -241,10 +308,17 @@ pub(super) fn execute_operation(
             let description = optional_field(form, "Description");
             let project = optional_field(form, "Project");
             let asset = application.add_project_asset(
-                &path,
-                name.as_deref(),
-                description.as_deref(),
-                project.as_deref(),
+                sfumato_core::application::AddProjectAssetCommand {
+                    source: path,
+                    name,
+                    description,
+                    alt_text: None,
+                    tags: Vec::new(),
+                    generation_prompt: None,
+                    theme: None,
+                    all_themes: false,
+                    project,
+                },
             )?;
             Ok(format!("Added project artifact '{}'", asset.name))
         }
@@ -372,10 +446,24 @@ pub(super) fn load_section(
             .list_connectors()?
             .into_iter()
             .map(|connector| {
-                let detail = toml::to_string_pretty(&application.show_connector(&connector.name)?)?;
+                let mut detail =
+                    toml::to_string_pretty(&application.show_connector(&connector.name)?)?;
+                let capabilities = application.connector_capabilities(&connector.name)?;
+                detail.push_str("\nNative features:\n");
+                if capabilities.features.is_empty() {
+                    detail.push_str("- none\n");
+                } else {
+                    for feature in capabilities.features {
+                        detail.push_str(&format!("- {}\n", feature.as_str()));
+                    }
+                }
+                detail.push_str("\nCLI discovery: sfumato connector models ");
+                detail.push_str(&connector.name);
+                detail.push_str("\nCLI status: sfumato connector status ");
+                detail.push_str(&connector.name);
                 Ok(BrowseRow {
                     title: connector.name,
-                    subtitle: connector.base_url,
+                    subtitle: format!("{} / {}", connector.kind, connector.target),
                     detail,
                     active: false,
                 })
@@ -414,12 +502,27 @@ pub(super) fn load_section(
             .map(|asset| {
                 Ok(BrowseRow {
                     title: asset.name,
-                    subtitle: asset.media_type,
+                    subtitle: asset
+                        .variants
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     detail: format!(
                         "{}\nSHA-256: {}\nFile: {}",
-                        asset.description,
-                        asset.content_hash,
-                        asset.path.display()
+                        asset.metadata.description,
+                        asset
+                            .variants
+                            .values()
+                            .map(|variant| &variant.content_hash[..12])
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        asset
+                            .variants
+                            .values()
+                            .map(|variant| variant.path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     ),
                     active: false,
                 })

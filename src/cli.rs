@@ -137,6 +137,8 @@ pub enum TemplateCommands {
 pub enum ArtifactCommands {
     #[command(about = "Copy and register a reusable project artifact")]
     Add(ArtifactAddArgs),
+    #[command(about = "Edit artifact metadata or reassign a themed variant")]
+    Edit(ArtifactEditArgs),
     #[command(about = "List reusable artifacts for a project")]
     List(ArtifactProjectArgs),
     #[command(about = "Show one reusable project artifact")]
@@ -152,6 +154,40 @@ pub struct ArtifactAddArgs {
     pub name: Option<String>,
     #[arg(long)]
     pub description: Option<String>,
+    #[arg(long, help = "Accessible description used when embedding the artifact")]
+    pub alt_text: Option<String>,
+    #[arg(long = "tag", help = "Repeatable semantic metadata tag")]
+    pub tags: Vec<String>,
+    #[arg(
+        long,
+        help = "Reusable image-generation recipe for missing theme variants"
+    )]
+    pub prompt: Option<String>,
+    #[arg(long, conflicts_with = "all_themes")]
+    pub theme: Option<String>,
+    #[arg(long, help = "Mark this file as compatible with every theme")]
+    pub all_themes: bool,
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ArtifactEditArgs {
+    pub name: String,
+    #[arg(long)]
+    pub description: Option<String>,
+    #[arg(long)]
+    pub alt_text: Option<String>,
+    #[arg(long = "tag", help = "Replace all semantic tags")]
+    pub tags: Vec<String>,
+    #[arg(long, conflicts_with = "clear_prompt")]
+    pub prompt: Option<String>,
+    #[arg(long)]
+    pub clear_prompt: bool,
+    #[arg(long, requires = "to_theme")]
+    pub from_theme: Option<String>,
+    #[arg(long, requires = "from_theme")]
+    pub to_theme: Option<String>,
     #[arg(long)]
     pub project: Option<String>,
 }
@@ -219,6 +255,12 @@ pub enum ProjectCommands {
 pub enum ConnectorCommands {
     List,
     Show(ConnectorShowArgs),
+    #[command(about = "Show native features exposed by a connector")]
+    Capabilities(ConnectorShowArgs),
+    #[command(about = "Discover models available through a connector's native catalog")]
+    Models(ConnectorShowArgs),
+    #[command(about = "Show native account, usage, or local runtime status")]
+    Status(ConnectorShowArgs),
     Setup(ConnectorSetupArgs),
     #[command(about = "Securely save a connector credential in the operating-system keyring")]
     Login(ConnectorShowArgs),
@@ -472,7 +514,10 @@ pub struct SlidesArgs {
     #[arg(long)]
     pub title: Option<String>,
 
-    #[arg(long, help = "Reusable slide structure to fill with generated content")]
+    #[arg(
+        long,
+        help = "Opt in to a reusable slide structure for this generation"
+    )]
     pub template: Option<String>,
 
     #[arg(
@@ -516,7 +561,7 @@ pub struct PageArgs {
     #[arg(long)]
     pub title: Option<String>,
 
-    #[arg(long, help = "Reusable page structure to fill with generated content")]
+    #[arg(long, help = "Opt in to a reusable page structure for this generation")]
     pub template: Option<String>,
 
     #[arg(
@@ -582,6 +627,7 @@ pub enum ConfigScope {
 pub enum ConnectorPreset {
     Ollama,
     Openrouter,
+    Codex,
 }
 
 #[cfg(test)]

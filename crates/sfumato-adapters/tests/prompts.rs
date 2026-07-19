@@ -54,8 +54,12 @@ fn representative_variables() -> PromptVariables {
             json!([{
                 "name": "logo",
                 "description": "University logo",
+                "alt_text": "University emblem",
+                "tags": ["branding"],
+                "theme": "*",
                 "media_type": "image/png",
-                "reference": "images/logo.png"
+                "reference": "images/logo.png",
+                "content_hash": "abc123"
             }]),
         ),
         (
@@ -88,6 +92,17 @@ fn representative_variables() -> PromptVariables {
         (
             "requested_prompt",
             json!("A visual comparison of even and odd functions"),
+        ),
+        ("artifact_name", json!("spectrum")),
+        (
+            "artifact_description",
+            json!("Square-wave harmonic spectrum"),
+        ),
+        ("artifact_alt_text", json!("Odd harmonic amplitude bars")),
+        ("artifact_tags", json!(["fourier", "spectrum"])),
+        (
+            "generation_recipe",
+            json!("Draw odd harmonic bars with decreasing amplitude"),
         ),
     ] {
         values.insert(key.to_string(), value);
@@ -187,7 +202,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "2c00f5134d5d10017965f949c962252be36d6bcba3607f797e63f8b1d0590c01"
+        "2c036431e3acede84025a59d8af94e2c0380468dd4916ded16174b57803f6ca8"
     );
 }
 

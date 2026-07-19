@@ -30,7 +30,7 @@ mod view;
 #[cfg(test)]
 use view::{stage_label, visible_field_range};
 
-use effects::{execute_operation, load_section};
+use effects::{execute_operation, load_section, spawn_connector_query};
 use model::*;
 use sfumato_core::{
     application::SfumatoApplication,
@@ -156,6 +156,9 @@ fn section_actions(section: Section) -> &'static [BrowseAction] {
         Section::Connectors => &[
             BrowseAction::ConnectorOllama,
             BrowseAction::ConnectorOpenrouter,
+            BrowseAction::ConnectorCodex,
+            BrowseAction::ConnectorModels,
+            BrowseAction::ConnectorStatus,
         ],
         Section::Themes => &[
             BrowseAction::ThemeCreate,
