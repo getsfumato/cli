@@ -57,6 +57,16 @@ pub enum Commands {
         #[command(subcommand)]
         command: PluginCommands,
     },
+    #[command(about = "Configure optional model-facing generation tools")]
+    Tool {
+        #[command(subcommand)]
+        command: ToolCommands,
+    },
+    #[command(about = "Install and diagnose local video renderers")]
+    Renderer {
+        #[command(subcommand)]
+        command: RendererCommands,
+    },
     Generate {
         #[command(subcommand)]
         command: GenerateCommands,
@@ -85,6 +95,54 @@ pub enum GenerateCommands {
     Slides(SlidesArgs),
     #[command(visible_alias = "pages")]
     Page(PageArgs),
+    Video(VideoArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ToolCommands {
+    List(PluginProjectArgs),
+    Enable(ToolProjectArgs),
+    Disable(ToolProjectArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ToolProjectArgs {
+    #[arg(value_enum)]
+    pub tool: GenerationToolArg,
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum GenerationToolArg {
+    ImageGen,
+    VideoGen,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RendererCommands {
+    List,
+    Install(RendererNameArgs),
+    Remove(RendererNameArgs),
+    Doctor(RendererDoctorArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RendererNameArgs {
+    #[arg(value_enum)]
+    pub renderer: LocalVideoRendererArg,
+}
+
+#[derive(Debug, Args)]
+pub struct RendererDoctorArgs {
+    #[arg(value_enum)]
+    pub renderer: Option<LocalVideoRendererArg>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum LocalVideoRendererArg {
+    Hyperframe,
+    Manim,
 }
 
 #[derive(Debug, Subcommand)]
@@ -549,6 +607,20 @@ pub struct SlidesArgs {
 
     #[arg(long)]
     pub json: bool,
+
+    #[arg(
+        long = "tool",
+        value_enum,
+        help = "Enable an optional generation tool for this request"
+    )]
+    pub tools: Vec<GenerationToolArg>,
+
+    #[arg(
+        long = "disable-tool",
+        value_enum,
+        help = "Disable a project generation tool for this request"
+    )]
+    pub disabled_tools: Vec<GenerationToolArg>,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -585,10 +657,28 @@ pub struct PageArgs {
     #[arg(long, value_name = "PROFILE")]
     pub review_model: Option<String>,
 
-    #[arg(long = "plugin", visible_alias = "ui", value_name = "ID")]
+    #[arg(
+        long = "plugin",
+        value_name = "ID",
+        help = "Enable an installed utility plugin"
+    )]
     pub plugins: Vec<String>,
 
-    #[arg(long, help = "Use the installed Shadcn UI plugin")]
+    #[arg(
+        long = "disable-plugin",
+        value_name = "ID",
+        help = "Disable one project utility plugin for this request"
+    )]
+    pub disabled_plugins: Vec<String>,
+
+    #[arg(
+        long,
+        value_name = "ID|none",
+        help = "Override the exclusive project UI library"
+    )]
+    pub ui: Option<String>,
+
+    #[arg(long, hide = true, help = "Deprecated: use --ui shadcn")]
     pub shadcn: bool,
 
     #[arg(long)]
@@ -596,6 +686,79 @@ pub struct PageArgs {
 
     #[arg(long)]
     pub json: bool,
+
+    #[arg(
+        long = "tool",
+        value_enum,
+        help = "Enable an optional generation tool for this request"
+    )]
+    pub tools: Vec<GenerationToolArg>,
+
+    #[arg(
+        long = "disable-tool",
+        value_enum,
+        help = "Disable a project generation tool for this request"
+    )]
+    pub disabled_tools: Vec<GenerationToolArg>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum VideoEngineArg {
+    Hyperframe,
+    Manim,
+    Model,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum VideoAudioArg {
+    Auto,
+    On,
+    Off,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct VideoArgs {
+    pub inputs: Vec<PathBuf>,
+    #[arg(long, required = true)]
+    pub instruction: String,
+    #[arg(long)]
+    pub title: Option<String>,
+    #[arg(long, value_enum)]
+    pub engine: VideoEngineArg,
+    #[arg(long, required = true)]
+    pub duration: u32,
+    #[arg(long, help = "Publish the final MP4 under <folder>/_sfumato/videos")]
+    pub out: Option<PathBuf>,
+    #[arg(long)]
+    pub dry_run: bool,
+    #[arg(long)]
+    pub project: Option<String>,
+    #[arg(long)]
+    pub theme: Option<String>,
+    #[arg(long = "model", value_name = "CAPABILITY=PROFILE")]
+    pub model_overrides: Vec<String>,
+    #[arg(long, value_name = "PROFILE")]
+    pub review_model: Option<String>,
+    #[arg(long)]
+    pub no_review: bool,
+    #[arg(long)]
+    pub json: bool,
+    #[arg(long)]
+    pub resolution: Option<String>,
+    #[arg(long)]
+    pub aspect_ratio: Option<String>,
+    #[arg(long, help = "Local renderer frame rate (defaults to 30)")]
+    pub fps: Option<u32>,
+    #[arg(long, help = "Local renderer quality: draft, standard, or high")]
+    pub quality: Option<String>,
+    #[arg(long, value_enum)]
+    pub audio: Option<VideoAudioArg>,
+    #[arg(long)]
+    pub allow_code_execution: bool,
+    #[arg(long = "tool", value_enum)]
+    pub tools: Vec<GenerationToolArg>,
+    #[arg(long = "disable-tool", value_enum)]
+    pub disabled_tools: Vec<GenerationToolArg>,
 }
 
 #[derive(Clone, Debug, Args)]

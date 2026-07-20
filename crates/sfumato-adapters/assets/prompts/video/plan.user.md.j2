@@ -1,0 +1,40 @@
+Create a {{ duration_seconds }} second {{ engine }} video plan for this instruction:
+
+{{ instruction }}
+
+Project: {{ project }}
+Working directory: {{ project_root }}
+Requested title: {% if title_provided %}{{ title }}{% else %}choose a concise educational title{% endif %}
+Output: {{ resolution }}, {{ aspect_ratio }}
+
+Theme {{ theme_name }}:
+- Colors: {{ theme_colors }}
+- Fonts: {{ theme_fonts }}
+
+Project instructions:
+{{ project_instructions }}
+
+Grounding sources:
+{{ source_bundle }}
+
+Reusable artifacts:
+{% if reusable_assets %}
+{% for asset in reusable_assets %}
+- {{ asset.name }}: `{{ asset.reference }}` — {{ asset.description }}
+{% endfor %}
+{% else %}
+None.
+{% endif %}
+
+Image generation is {{ "available" if image_generation_available else "unavailable" }}. Reuse suitable existing artifacts before requesting a new image.
+
+Return exactly:
+{
+  "title": "...",
+  "objective": "...",
+  "scenes": [{"id":"scene-1","start_seconds":0,"duration_seconds":4,"content":"...","visual":"...","artifacts":[]}],
+  "artifacts": [],
+  "visual_direction": "...",
+  "remote_prompt": "a complete motion/camera/style prompt when engine is model; otherwise an empty string"
+}
+Scene timing must remain within {{ duration_seconds }} seconds.

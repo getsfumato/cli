@@ -54,7 +54,7 @@ impl OpenAiCompatibleConnector {
         )
     }
 
-    async fn post(&self, path: &str) -> Result<RequestBuilder> {
+    pub(crate) async fn post(&self, path: &str) -> Result<RequestBuilder> {
         let mut request = self.client.post(self.endpoint(path));
         if let Some(reference) = &self.config.credential {
             let api_key = self.secrets.resolve(reference).await?;
@@ -147,6 +147,16 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
             )?) as Box<dyn ImageGenerationProvider>)
         })();
         result.map_err(|error| SfumatoError::config(format_args!("{error:#}")))
+    }
+
+    fn video(
+        &self,
+        _config: &EffectiveConfig,
+        _profile: &ModelProfile,
+    ) -> SfumatoResult<Box<dyn sfumato_core::providers::VideoGenerationProvider>> {
+        Err(SfumatoError::config(
+            "Video generation requires a provider-native connector such as OpenRouter",
+        ))
     }
 }
 

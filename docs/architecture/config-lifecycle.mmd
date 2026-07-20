@@ -1,9 +1,11 @@
-%% Schema-v4 read, resolution, and optimistic mutation lifecycle.
+%% Schema-v5 read, v4 migration, resolution, and optimistic mutation lifecycle.
 flowchart TD
     START["Resolve operation configuration"] --> READ_GLOBAL["Read global config and registry without mutation"]
-    READ_GLOBAL --> VERSION{"schema_version is 4?"}
-    VERSION -- no --> READ_ERROR["Return typed config error and preserve bytes"]
-    VERSION -- yes --> DTO["Strictly deserialize deny-unknown-fields DTOs"]
+    READ_GLOBAL --> VERSION{"schema_version"}
+    VERSION -->|4| MIGRATE["backup .v4.bak and atomically migrate"]
+    MIGRATE --> DTO
+    VERSION -->|other| READ_ERROR["Return typed config error and preserve bytes"]
+    VERSION -->|5| DTO["Strictly deserialize deny-unknown-fields DTOs"]
     DTO --> SELECT["Select explicit or active project"]
     SELECT --> READ_PROJECT["Read project.toml without mutation"]
     READ_PROJECT --> MERGE["Merge global, project, and command overrides"]

@@ -17,6 +17,18 @@ required = [
 ]
 
 [[prompts]]
+id = "video.generation.user"
+path = "video/generation.user.md.j2"
+required = [
+  "requested_prompt",
+  "accessible_description",
+  "theme_name",
+  "theme_colors",
+  "theme_fonts",
+  "project_instructions",
+]
+
+[[prompts]]
 id = "artifact.regeneration.user"
 path = "artifact/regeneration.user.md.j2"
 required = [
@@ -291,6 +303,7 @@ required = [
   "title",
   "title_provided",
   "image_generation_available",
+  "video_generation_available",
   "source_bundle",
   "plugins",
 ]
@@ -369,4 +382,59 @@ required = [
 [[prompts]]
 id = "page.tool-exhausted.user"
 path = "page/tool-exhausted.user.md.j2"
+required = ["max_tool_rounds"]
+
+[[prompts]]
+id = "video.plan.system"
+path = "video/plan.system.md.j2"
+required = ["learning_style"]
+
+[[prompts]]
+id = "video.plan.user"
+path = "video/plan.user.md.j2"
+required = ["project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "engine", "duration_seconds", "resolution", "aspect_ratio", "title", "title_provided", "reusable_assets", "image_generation_available"]
+
+[[prompts]]
+id = "video.review.system"
+path = "video/review.system.md.j2"
+required = []
+
+[[prompts]]
+id = "video.review.user"
+path = "video/review.user.md.j2"
+required = ["instruction", "source_bundle", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "plan_snapshot"]
+
+[[prompts]]
+id = "video.hyperframe.system"
+path = "video/hyperframe.system.md.j2"
+required = []
+
+[[prompts]]
+id = "video.hyperframe.user"
+path = "video/hyperframe.user.md.j2"
+required = ["plan_snapshot", "theme_name", "theme_colors", "theme_fonts", "resolution", "fps"]
+
+[[prompts]]
+id = "video.manim.system"
+path = "video/manim.system.md.j2"
+required = []
+
+[[prompts]]
+id = "video.manim.user"
+path = "video/manim.user.md.j2"
+required = ["plan_snapshot", "theme_name", "theme_colors", "theme_fonts", "resolution", "fps"]
+
+[[prompts]]
+id = "video.source-repair.system"
+path = "video/source-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "video.source-repair.user"
+path = "video/source-repair.user.md.j2"
+required = ["engine", "source_snapshot", "validation_error"]
+
+[[prompts]]
+id = "video.tool-exhausted.user"
+path = "video/tool-exhausted.user.md.j2"
 required = ["max_tool_rounds"]

@@ -19,6 +19,7 @@ pub struct GenerationRequest {
 pub enum ResourceKind {
     Slides,
     Page,
+    Video,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, Serialize, PartialEq, Eq)]
@@ -43,6 +44,7 @@ pub enum PageIssueKind {
     RuntimeError,
     RejectedPromise,
     MissingImage,
+    MissingVideo,
     BlankContent,
     HorizontalOverflow,
     UnrenderedMath,
@@ -112,6 +114,64 @@ pub struct GenerationOutput {
     pub review: SlideReviewSummary,
     /// Prompt templates that contributed to model requests in this run.
     pub prompts: Vec<PromptProvenance>,
+}
+
+/// Review and validation state for a generated video.
+#[derive(Clone, Debug, Serialize)]
+pub struct VideoReviewSummary {
+    /// Whether semantic review was requested.
+    pub enabled: bool,
+    /// Semantic plan review status.
+    pub semantic_review: ReviewStatus,
+    /// Renderer-source repair status.
+    pub source_repair: ReviewStatus,
+    /// Final MP4 inspection status.
+    pub media_inspection: ReviewStatus,
+}
+
+impl VideoReviewSummary {
+    /// Creates the initial review state.
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            semantic_review: if enabled {
+                ReviewStatus::Pending
+            } else {
+                ReviewStatus::Skipped
+            },
+            source_repair: ReviewStatus::NotNeeded,
+            media_inspection: ReviewStatus::Pending,
+        }
+    }
+}
+
+/// Machine-readable output for standalone video generation.
+#[derive(Debug, Serialize)]
+pub struct VideoGenerationOutput {
+    /// Selected project.
+    pub project: String,
+    /// Generated educational title.
+    pub title: String,
+    /// Selected video engine.
+    pub engine: sfumato_domain::VideoEngine,
+    /// Committed MP4 path.
+    pub video_path: PathBuf,
+    /// Model profiles selected by role or capability.
+    pub models: BTreeMap<String, String>,
+    /// Tools exposed to the planner.
+    pub tools: Vec<GenerationToolSummary>,
+    /// Reusable artifacts selected by the plan.
+    pub project_assets: Vec<ProjectAssetReference>,
+    /// Files in the committed immutable revision.
+    pub artifacts: Vec<PathBuf>,
+    /// Published processed artifacts.
+    pub published_artifacts: Vec<PathBuf>,
+    /// Review and validation state.
+    pub review: VideoReviewSummary,
+    /// Prompt provenance.
+    pub prompts: Vec<PromptProvenance>,
+    /// Non-fatal workflow warnings.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

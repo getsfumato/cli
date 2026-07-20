@@ -1,0 +1,10 @@
+schema_version = 1
+
+[renderers.hyperframe]
+package = "hyperframes"
+version = "0.7.62"
+runtime_packages = { gsap = "3.15.0" }
+
+[renderers.manim]
+package = "manim"
+version = "0.20.1"

@@ -10,7 +10,10 @@ secret references, and operation-level consistency.
 
 ## Decision
 
-All three TOML documents use `schema_version = 4` and deny unknown fields.
+All three TOML documents originally used schema 4. The multimodal resource
+split amends this decision with schema 5: page UI/utilities, generation tools,
+and generated-code security now have separate project tables. Schema v4 is the
+only automatically migrated version and receives an atomic `.v4.bak` backup.
 Connector API keys become optional indirect `SecretRef` values such as
 `stored:connector/openrouter` and `env:OPENROUTER_API_KEY`; raw secret material
 is invalid in v4. Interactive local setup defaults to the native operating
@@ -47,4 +50,4 @@ validate it, and use the same atomic replacement path.
   reset or a future, separately designed migration.
 - Prompt customization remains portable without config path indirection.
 
-The normative fields and reset rules are in [Config v4](../reference/config-v4.md).
+The normative fields and migration rules are in [Config v5](../reference/config-v5.md).

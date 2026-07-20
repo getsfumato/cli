@@ -51,6 +51,7 @@ fn profile() -> ModelProfile {
                 aspect_ratio: Some("3:2".to_string()),
                 output_format: Some("png".to_string()),
             },
+            video: Default::default(),
         },
     }
 }

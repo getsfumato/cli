@@ -3,7 +3,10 @@
 use std::{
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, bail};
@@ -16,15 +19,18 @@ use sfumato_core::{
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
         ImageGenerationRequest, ToolDefinition, ToolExecutionRequest, ToolExecutor,
-        ToolFunctionDefinition,
+        ToolFunctionDefinition, VideoGenerationRequest,
     },
-    tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig, ToolSet},
+    tools::{
+        GenerationToolFactory, GenerationToolsRequest, ImageToolConfig, ToolSet, VideoToolConfig,
+    },
 };
 use sha2::{Digest, Sha256};
 
 const MAX_DIRECTORY_ENTRIES: usize = 200;
 const MAX_FILE_BYTES: u64 = 128 * 1024;
 const MAX_GENERATED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_GENERATED_VIDEO_BYTES: usize = 512 * 1024 * 1024;
 
 /// Builds filesystem-backed tools for one generation operation.
 #[derive(Clone, Copy, Debug, Default)]
@@ -253,6 +259,112 @@ impl ImageGenerationTool {
 struct GenerationToolExecutor {
     filesystem: FilesystemToolExecutor,
     image: Option<ImageGenerationTool>,
+    video: Option<VideoGenerationTool>,
+}
+
+struct VideoGenerationTool {
+    config: VideoToolConfig,
+    prompt_catalog: Arc<dyn PromptCatalog>,
+    artifacts: Arc<Mutex<Vec<PathBuf>>>,
+    prompts: Arc<Mutex<Vec<PromptProvenance>>>,
+    used: AtomicBool,
+}
+
+#[derive(Serialize)]
+struct VideoPromptContext<'a> {
+    requested_prompt: &'a str,
+    accessible_description: &'a str,
+    theme_name: &'a str,
+    theme_colors: String,
+    theme_fonts: String,
+    project_instructions: &'a str,
+}
+
+impl VideoGenerationTool {
+    async fn execute(
+        &self,
+        arguments: &Value,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<String> {
+        if self.used.swap(true, Ordering::AcqRel) {
+            bail!("sfumato_video_gen can be called at most once per page generation");
+        }
+        let requested_prompt = string_arg(arguments, "prompt")?;
+        let accessible_description = string_arg(arguments, "accessible_description")?;
+        let context = VideoPromptContext {
+            requested_prompt: &requested_prompt,
+            accessible_description: &accessible_description,
+            theme_name: &self.config.theme.manifest.name,
+            theme_colors: format_tokens(&self.config.theme.manifest.tokens.colors),
+            theme_fonts: format_tokens(&self.config.theme.manifest.tokens.fonts),
+            project_instructions: self
+                .config
+                .project_instructions
+                .as_deref()
+                .unwrap_or_default(),
+        };
+        let rendered = self.prompt_catalog.render(PromptRenderRequest {
+            id: PromptId::VideoGenerationUser,
+            variables: PromptVariables::from_serializable(&context)?,
+        })?;
+        self.prompts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Generated video prompt registry is unavailable"))?
+            .push(rendered.provenance);
+        let options = &self.config.options;
+        let response = self
+            .config
+            .provider
+            .generate_video(
+                VideoGenerationRequest {
+                    prompt: rendered.text,
+                    duration_seconds: options.duration_seconds.unwrap_or(5),
+                    resolution: options.resolution.clone().unwrap_or_else(|| "720p".into()),
+                    aspect_ratio: options
+                        .aspect_ratio
+                        .clone()
+                        .unwrap_or_else(|| "16:9".into()),
+                    generate_audio: options
+                        .audio
+                        .map(|audio| !matches!(audio, sfumato_core::config::VideoAudioMode::Off)),
+                    seed: options.seed,
+                    references: self.config.references.clone(),
+                },
+                operation,
+                stage,
+            )
+            .await?;
+        if response.bytes.len() > MAX_GENERATED_VIDEO_BYTES {
+            bail!(
+                "Generated video exceeds the {} byte limit",
+                MAX_GENERATED_VIDEO_BYTES
+            );
+        }
+        if response.media_type != "video/mp4" && response.media_type != "application/octet-stream" {
+            bail!(
+                "Unsupported generated video media type '{}'",
+                response.media_type
+            );
+        }
+        let content_hash = format!("{:x}", Sha256::digest(&response.bytes));
+        let filename = format!("video-{}.mp4", &content_hash[..24]);
+        let path = self.config.output_dir.join(&filename);
+        fs::create_dir_all(&self.config.output_dir)?;
+        fs::write(&path, response.bytes)?;
+        self.artifacts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Generated video artifact registry is unavailable"))?
+            .push(path.clone());
+        Ok(json!({
+            "path": path,
+            "html_path": format!("{}/{filename}", self.config.reference_prefix),
+            "accessible_description": accessible_description,
+            "media_type": "video/mp4",
+            "model_profile": self.config.profile_name,
+        })
+        .to_string())
+    }
 }
 
 #[async_trait]
@@ -271,6 +383,21 @@ impl ToolExecutor for GenerationToolExecutor {
                     SfumatoError::tool(
                         ErrorClass::Permanent,
                         "No image model is configured for this project",
+                    )
+                    .at_stage(stage)
+                })?
+                .execute(&request.arguments, operation, stage)
+                .await
+                .map_err(|error| tool_error(error, stage));
+        }
+        if request.name == "sfumato_video_gen" {
+            return self
+                .video
+                .as_ref()
+                .ok_or_else(|| {
+                    SfumatoError::tool(
+                        ErrorClass::Permanent,
+                        "No video model is configured for this page",
                     )
                     .at_stage(stage)
                 })?
@@ -300,6 +427,7 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
                 project_root,
                 sources,
                 image,
+                video,
                 prompt_catalog,
             } = request;
             let mut roots = vec![project_root];
@@ -334,11 +462,22 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
                     prompts: prompts.clone(),
                 }
             });
+            let video = video.map(|config| {
+                definitions.push(video_generation_tool(&descriptions));
+                VideoGenerationTool {
+                    config,
+                    prompt_catalog: prompt_catalog.clone(),
+                    artifacts: artifacts.clone(),
+                    prompts: prompts.clone(),
+                    used: AtomicBool::new(false),
+                }
+            });
             Ok(ToolSet {
                 definitions,
                 executor: Arc::new(GenerationToolExecutor {
                     filesystem: FilesystemToolExecutor::new(roots)?,
                     image,
+                    video,
                 }),
                 artifacts,
                 prompts,
@@ -366,6 +505,9 @@ struct ToolDescriptions {
     image_generation: String,
     image_prompt: String,
     image_alt_text: String,
+    video_generation: String,
+    video_prompt: String,
+    video_accessible_description: String,
 }
 
 fn list_directory_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
@@ -423,6 +565,27 @@ fn image_generation_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
                     }
                 },
                 "required": ["prompt"]
+            }),
+        },
+    }
+}
+
+fn video_generation_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
+    ToolDefinition {
+        kind: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "sfumato_video_gen".to_string(),
+            description: descriptions.video_generation.clone(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string", "description": descriptions.video_prompt },
+                    "accessible_description": {
+                        "type": "string",
+                        "description": descriptions.video_accessible_description
+                    }
+                },
+                "required": ["prompt", "accessible_description"]
             }),
         },
     }

@@ -27,3 +27,55 @@ fn maps_openrouter_modalities_context_and_pricing() {
     assert_eq!(model.context_length, Some(128_000));
     assert_eq!(model.metadata["image_price"], "0.04");
 }
+
+#[test]
+fn validates_video_capabilities_before_submission() {
+    let model = VideoModel {
+        id: "provider/video".into(),
+        supported_durations: vec![5, 8],
+        supported_resolutions: vec!["720p".into()],
+        supported_aspect_ratios: vec!["16:9".into()],
+        supported_parameters: vec!["input_references".into()],
+        generate_audio: Some(false),
+    };
+    let mut request = VideoGenerationRequest {
+        prompt: "Animate a waveform".into(),
+        duration_seconds: 5,
+        resolution: "720p".into(),
+        aspect_ratio: "16:9".into(),
+        generate_audio: Some(false),
+        seed: None,
+        references: Vec::new(),
+    };
+
+    assert!(model.supports_input_references());
+    validate_video_request(&model, &request).unwrap();
+
+    request.generate_audio = Some(true);
+    assert!(
+        validate_video_request(&model, &request)
+            .unwrap_err()
+            .to_string()
+            .contains("native audio")
+    );
+}
+
+#[test]
+fn serializes_openrouter_video_request_without_empty_references() {
+    let payload = CreateVideoRequest {
+        model: "provider/video".into(),
+        prompt: "Animate a waveform".into(),
+        duration: 5,
+        resolution: "720p".into(),
+        aspect_ratio: "16:9".into(),
+        generate_audio: None,
+        seed: Some(42),
+        input_references: Vec::new(),
+    };
+
+    let value = serde_json::to_value(payload).unwrap();
+
+    assert_eq!(value["seed"], 42);
+    assert!(value.get("input_references").is_none());
+    assert!(value.get("generate_audio").is_none());
+}

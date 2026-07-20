@@ -1,18 +1,22 @@
 use super::*;
 
 #[test]
-fn v4_round_trip_preserves_flat_options_and_nested_runtime_types() {
+fn v5_round_trip_preserves_flat_options_and_nested_runtime_types() {
     let mut config = GlobalConfig::default_config();
     let profile = config.models.get_mut("local-text").unwrap();
     profile.options.text.top_p = Some(0.8);
     profile.options.image.quality = Some("high".to_string());
+    profile.options.video.duration_seconds = Some(8);
+    profile.options.video.resolution = Some("720p".into());
 
     let rendered = toml::to_string_pretty(&GlobalConfigDto::from_domain(&config)).unwrap();
 
-    assert!(rendered.starts_with("schema_version = 4\n"));
+    assert!(rendered.starts_with("schema_version = 5\n"));
     assert!(rendered.contains("temperature = 0.4"));
     assert!(rendered.contains("top_p = 0.8"));
     assert!(rendered.contains("quality = \"high\""));
+    assert!(rendered.contains("video_duration_seconds = 8"));
+    assert!(rendered.contains("video_resolution = \"720p\""));
     assert!(!rendered.contains("[models.local-text.options.text]"));
     assert!(!rendered.contains("[models.local-text.options.image]"));
 
@@ -23,6 +27,11 @@ fn v4_round_trip_preserves_flat_options_and_nested_runtime_types() {
     assert_eq!(
         parsed_profile.options.image.quality.as_deref(),
         Some("high")
+    );
+    assert_eq!(parsed_profile.options.video.duration_seconds, Some(8));
+    assert_eq!(
+        parsed_profile.options.video.resolution.as_deref(),
+        Some("720p")
     );
 }
 
@@ -145,11 +154,13 @@ fn project_and_registry_versions_are_owned_by_persistence_dtos() {
         publish_dir: None,
         model_defaults: BTreeMap::new(),
         model_roles: BTreeMap::new(),
-        plugins: Vec::new(),
+        page: PageDefaults::default(),
+        generation_tools: GenerationToolDefaults::default(),
+        security: ProjectSecurityConfig::default(),
         marp: None,
     };
     let rendered = toml::to_string_pretty(&ProjectConfigDto::from_domain(&project)).unwrap();
-    assert!(rendered.starts_with("schema_version = 4\n"));
+    assert!(rendered.starts_with("schema_version = 5\n"));
     assert_eq!(
         toml::from_str::<ProjectConfigDto>(&rendered)
             .unwrap()

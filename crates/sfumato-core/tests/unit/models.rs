@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    config::{ProjectConfig, ProjectRegistry, RegisteredProject},
+    config::{ProjectConfig, ProjectRegistry, RegisteredProject, VideoAudioMode},
     repositories::{GlobalConfigRepository, ProjectRepository},
     themes::DEFAULT_THEME,
 };
@@ -122,7 +122,9 @@ fn project(name: &str) -> ProjectConfig {
         publish_dir: None,
         model_defaults: Default::default(),
         model_roles: Default::default(),
-        plugins: Vec::new(),
+        page: crate::config::PageDefaults::default(),
+        generation_tools: crate::config::GenerationToolDefaults::default(),
+        security: crate::config::ProjectSecurityConfig::default(),
         marp: None,
     }
 }
@@ -244,11 +246,23 @@ fn parses_capabilities_and_typed_options() {
         "temperature=0.3".to_string(),
         "max_tokens=8000".to_string(),
         "quality=high".to_string(),
+        "video_duration_seconds=8".to_string(),
+        "video_resolution=720p".to_string(),
+        "video_aspect_ratio=16:9".to_string(),
+        "video_audio=auto".to_string(),
+        "video_poll_interval_seconds=15".to_string(),
+        "video_timeout_seconds=900".to_string(),
     ])
     .unwrap();
     assert_eq!(options.text.temperature, Some(0.3));
     assert_eq!(options.text.max_tokens, Some(8000));
     assert_eq!(options.image.quality.as_deref(), Some("high"));
+    assert_eq!(options.video.duration_seconds, Some(8));
+    assert_eq!(options.video.resolution.as_deref(), Some("720p"));
+    assert_eq!(options.video.aspect_ratio.as_deref(), Some("16:9"));
+    assert_eq!(options.video.audio, Some(VideoAudioMode::Auto));
+    assert_eq!(options.video.poll_interval_seconds, Some(15));
+    assert_eq!(options.video.timeout_seconds, Some(900));
     assert!(parse_options(&["unknown=value".to_string()]).is_err());
 }
 

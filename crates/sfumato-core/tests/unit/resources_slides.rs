@@ -20,7 +20,9 @@ fn effective_config() -> EffectiveConfig {
         models: global.models,
         model_defaults: global.defaults.0,
         model_roles: global.model_roles,
-        plugins: Vec::new(),
+        page: crate::config::PageDefaults::default(),
+        generation_tools: crate::config::GenerationToolDefaults::default(),
+        security: crate::config::ProjectSecurityConfig::default(),
         marp: global.marp,
     }
 }

@@ -39,6 +39,33 @@ classDiagram
         +apply_browser_repair_patch(patch)
         +render()
     }
+    class VideoPlanDocument {
+        -engine
+        -title
+        -objective
+        -duration_seconds
+        -scenes
+        -artifacts
+        -visual_direction
+        -remote_prompt
+        -revision
+        +snapshot()
+        +apply_patch(patch)
+        +render()
+    }
+    class VideoSourceDocument {
+        -engine
+        -files
+        -revision
+        +snapshot()
+        +apply_patch(patch)
+        +render()
+    }
+    class VideoEngine {
+        Hyperframe
+        Manim
+        Model
+    }
     class ReviewableDocument {
         <<trait>>
         +snapshot()
@@ -101,6 +128,10 @@ classDiagram
 
     ReviewableDocument <|.. DeckDocument
     ReviewableDocument <|.. PageDocument
+    ReviewableDocument <|.. VideoPlanDocument
+    ReviewableDocument <|.. VideoSourceDocument
+    VideoPlanDocument --> VideoEngine
+    VideoSourceDocument --> VideoEngine
     DeckDocument *-- SlideDocument
     DeckDocument *-- SlideId
     SlideDocument *-- SlideElement

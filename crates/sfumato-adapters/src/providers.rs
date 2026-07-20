@@ -13,6 +13,7 @@ use sfumato_core::{
     providers::{
         ConnectorCapabilities, ConnectorCapability, ConnectorIntrospection, ConnectorModelSummary,
         ConnectorStatus, ImageGenerationProvider, ProviderFactory, TextGenerationProvider,
+        VideoGenerationProvider,
     },
     secrets::SecretResolver,
 };
@@ -90,6 +91,27 @@ impl ProviderFactory for AdapterProviderFactory {
             )),
         }
     }
+
+    fn video(
+        &self,
+        config: &EffectiveConfig,
+        profile: &ModelProfile,
+    ) -> SfumatoResult<Box<dyn VideoGenerationProvider>> {
+        if !profile.capabilities.contains(&Capability::Video) {
+            return Err(SfumatoError::config(
+                "Selected model profile does not support video generation",
+            ));
+        }
+        match Self::connector(config, profile)? {
+            ConnectorConfig::OpenRouter(connector) => Ok(Box::new(
+                OpenRouterConnector::new(&profile.connector, connector, self.secrets.clone())?
+                    .video_provider(profile.clone()),
+            )),
+            _ => Err(SfumatoError::config(
+                "Video generation currently requires an OpenRouter connector",
+            )),
+        }
+    }
 }
 
 #[async_trait]
@@ -102,6 +124,7 @@ impl ConnectorIntrospection for AdapterProviderFactory {
                     ConnectorCapability::ModelCatalog,
                     ConnectorCapability::Account,
                     ConnectorCapability::Usage,
+                    ConnectorCapability::VideoGeneration,
                 ],
             ),
             NativeConnector::Ollama(_) => (

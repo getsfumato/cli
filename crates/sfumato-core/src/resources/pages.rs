@@ -15,7 +15,7 @@ use crate::{
     artifacts::{
         ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
     },
-    config::{Capability, EffectiveConfig, ModelRole},
+    config::{Capability, EffectiveConfig, GenerationToolKind, ModelRole},
     errors::{
         ErrorClass, OperationStage, ResultContext as Context, SfumatoError, SfumatoResult as Result,
     },
@@ -30,18 +30,18 @@ use crate::{
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
         GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
-        TextGenerationRequest, ToolDefinition,
+        TextGenerationRequest, ToolDefinition, VideoGenerationProvider,
     },
     renderers::{AssembledPage, PageAssembler, PageAssemblyRequest, PageInspector},
     repositories::ThemeRepository,
     sources::{SourceDocument, SourceReader},
     templates::GenerationTemplate,
     themes::ThemePackage,
-    tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
+    tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig, VideoToolConfig},
 };
 
 use super::{
-    DryRunImageProvider,
+    DryRunImageProvider, DryRunVideoProvider,
     project_assets::{
         PrepareProjectAssetsRequest, prepare_project_assets, referenced_generated_assets,
         retain_referenced_generated_assets,
@@ -104,6 +104,7 @@ struct PagePromptContext {
     title: String,
     title_provided: bool,
     image_generation_available: bool,
+    video_generation_available: bool,
     source_bundle: String,
     plugins: Vec<PagePromptPlugin>,
     page_snapshot: String,
@@ -134,6 +135,7 @@ struct PageContextInput<'a> {
     project_instructions: &'a str,
     source_bundle: &'a str,
     image_generation_available: bool,
+    video_generation_available: bool,
     plugins: &'a [PagePluginPackage],
     max_tool_rounds: usize,
     template: Option<&'a GenerationTemplate>,
@@ -192,6 +194,7 @@ pub(crate) async fn generate_page(
                 .join("resources/pages/dry-run")
         });
     let images_dir = staging_root.join("assets/images");
+    let videos_dir = staging_root.join("assets/videos");
     operation.emit(
         OperationStage::ReadSources,
         OperationEventKind::Started,
@@ -208,8 +211,7 @@ pub(crate) async fn generate_page(
     );
 
     let image_selection = config
-        .model_defaults
-        .contains_key(&Capability::Image)
+        .generation_tool_enabled(GenerationToolKind::ImageGen)
         .then(|| config.resolve_model(Capability::Image))
         .transpose()?;
     let image_provider = image_selection
@@ -239,6 +241,28 @@ pub(crate) async fn generate_page(
     .await?;
     let reusable_asset_references = prepared_assets.references();
     let reusable_asset_paths = prepared_assets.allowed_paths();
+    let video_selection = config
+        .generation_tool_enabled(GenerationToolKind::VideoGen)
+        .then(|| config.resolve_model(Capability::Video))
+        .transpose()?;
+    let video_provider = video_selection
+        .map(|(_, profile)| {
+            if dry_run {
+                Ok::<Option<Arc<dyn VideoGenerationProvider>>, SfumatoError>(None)
+            } else {
+                provider_factory
+                    .video(&config, profile)
+                    .map(Arc::from)
+                    .map(Some)
+            }
+        })
+        .transpose()?
+        .flatten();
+    let video_references = if video_selection.is_some() && !dry_run {
+        prepared_assets.materialize_all(workspace.as_ref())?
+    } else {
+        Vec::new()
+    };
     let image = image_selection
         .map(|(name, _)| {
             let provider = image_provider
@@ -261,13 +285,30 @@ pub(crate) async fn generate_page(
         project_root: config.project_root.clone(),
         sources: request.sources.clone(),
         image,
+        video: video_selection.map(|(name, profile)| VideoToolConfig {
+            provider: video_provider.unwrap_or_else(|| Arc::new(DryRunVideoProvider)),
+            profile_name: name.to_string(),
+            output_dir: videos_dir,
+            reference_prefix: "assets/videos".into(),
+            theme: theme.clone(),
+            project_instructions: project_instructions
+                .as_ref()
+                .map(|value| value.content.clone()),
+            references: video_references,
+            options: profile.options.video.clone(),
+        }),
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let tool_summaries = summarize_tools(&tool_set.definitions);
     let review_tools = tool_set
         .definitions
         .iter()
-        .filter(|tool| tool.function.name != "sfumato_image_gen")
+        .filter(|tool| {
+            !matches!(
+                tool.function.name.as_str(),
+                "sfumato_image_gen" | "sfumato_video_gen"
+            )
+        })
         .cloned()
         .collect::<Vec<_>>();
 
@@ -282,6 +323,9 @@ pub(crate) async fn generate_page(
     if let Some((name, _)) = image_selection {
         models.insert("image".into(), name.to_string());
     }
+    if let Some((name, _)) = video_selection {
+        models.insert("video".into(), name.to_string());
+    }
     let max_tool_rounds = draft_profile.options.tool_rounds();
     let base_context = page_context(PageContextInput {
         config: &config,
@@ -294,6 +338,7 @@ pub(crate) async fn generate_page(
             .unwrap_or_default(),
         source_bundle: &source_bundle,
         image_generation_available: image_selection.is_some(),
+        video_generation_available: video_selection.is_some(),
         plugins: &plugins,
         max_tool_rounds,
         template: template.as_ref(),
@@ -311,6 +356,7 @@ pub(crate) async fn generate_page(
     let mut compact_context = base_context.clone();
     compact_context.source_bundle = compact_source_bundle;
     compact_context.image_generation_available = false;
+    compact_context.video_generation_available = false;
     let compact_request = render_page_request(
         prompt_catalog.as_ref(),
         PromptId::PageCompactDraftSystem,
@@ -372,6 +418,16 @@ pub(crate) async fn generate_page(
         Err(error) => return Err(error),
     };
     let generated_tool_assets = tool_set.generated_artifacts()?;
+    let generated_image_assets = generated_tool_assets
+        .iter()
+        .filter(|path| path.extension().and_then(|value| value.to_str()) != Some("mp4"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let generated_video_assets = generated_tool_assets
+        .iter()
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("mp4"))
+        .cloned()
+        .collect::<Vec<_>>();
     let mut generated_assets = reusable_asset_paths.clone();
     generated_assets.extend(generated_tool_assets.clone());
     prompts.extend(tool_set.generated_prompts()?);
@@ -462,8 +518,16 @@ pub(crate) async fn generate_page(
     let initial_asset_text = page_asset_text(&page);
     let (initial_project_paths, _) =
         prepared_assets.materialize_referenced(&initial_asset_text, workspace.as_ref())?;
-    let initial_generated_paths =
-        referenced_generated_assets(&generated_tool_assets, &initial_asset_text, "assets/images");
+    let mut initial_generated_paths = referenced_generated_assets(
+        &generated_image_assets,
+        &initial_asset_text,
+        "assets/images",
+    );
+    initial_generated_paths.extend(referenced_generated_assets(
+        &generated_video_assets,
+        &initial_asset_text,
+        "assets/videos",
+    ));
     let mut initial_inspection_assets = initial_project_paths;
     initial_inspection_assets.extend(initial_generated_paths);
     let assembled = validate_page(&page_assembler, &page, &theme, &plugins, &generated_assets)?;
@@ -543,11 +607,16 @@ pub(crate) async fn generate_page(
             let candidate_asset_text = page_asset_text(&candidate);
             let (candidate_project_paths, _) = prepared_assets
                 .materialize_referenced(&candidate_asset_text, workspace.as_ref())?;
-            let candidate_generated_paths = referenced_generated_assets(
-                &generated_tool_assets,
+            let mut candidate_generated_paths = referenced_generated_assets(
+                &generated_image_assets,
                 &candidate_asset_text,
                 "assets/images",
             );
+            candidate_generated_paths.extend(referenced_generated_assets(
+                &generated_video_assets,
+                &candidate_asset_text,
+                "assets/videos",
+            ));
             let mut candidate_inspection_assets = candidate_project_paths;
             candidate_inspection_assets.extend(candidate_generated_paths);
             stage_inspection_assets(
@@ -631,10 +700,16 @@ pub(crate) async fn generate_page(
     {
         workspace.remove_file(path)?;
     }
-    let _used_generated_assets = retain_referenced_generated_assets(
-        generated_tool_assets,
+    let _used_generated_images = retain_referenced_generated_assets(
+        generated_image_assets,
         &final_asset_text,
         "assets/images",
+        workspace.as_ref(),
+    )?;
+    let _used_generated_videos = retain_referenced_generated_assets(
+        generated_video_assets,
+        &final_asset_text,
+        "assets/videos",
         workspace.as_ref(),
     )?;
     let title = page.title().to_string();
@@ -738,6 +813,7 @@ fn page_context(input: PageContextInput<'_>) -> PagePromptContext {
         project_instructions,
         source_bundle,
         image_generation_available,
+        video_generation_available,
         plugins,
         max_tool_rounds,
         template,
@@ -759,6 +835,7 @@ fn page_context(input: PageContextInput<'_>) -> PagePromptContext {
         title: title.unwrap_or_default().into(),
         title_provided: title.is_some(),
         image_generation_available,
+        video_generation_available,
         source_bundle: source_bundle.into(),
         plugins: plugins
             .iter()
@@ -892,7 +969,15 @@ fn stage_inspection_assets(
         let filename = asset
             .file_name()
             .context("Generated page asset does not have a filename")?;
-        workspace.copy_file(asset, &inspection_root.join("assets/images").join(filename))?;
+        let kind = if asset.extension().and_then(|value| value.to_str()) == Some("mp4") {
+            "videos"
+        } else {
+            "images"
+        };
+        workspace.copy_file(
+            asset,
+            &inspection_root.join("assets").join(kind).join(filename),
+        )?;
     }
     Ok(())
 }
@@ -955,6 +1040,7 @@ fn issue_score(issues: &[PageInspectionIssue]) -> u64 {
         .map(|issue| match issue.kind {
             PageIssueKind::RuntimeError | PageIssueKind::RejectedPromise => 100_000,
             PageIssueKind::MissingImage
+            | PageIssueKind::MissingVideo
             | PageIssueKind::BlankContent
             | PageIssueKind::UnrenderedMath => 50_000,
             PageIssueKind::HorizontalOverflow => u64::from(issue.overflow_px.max(1)),
@@ -968,6 +1054,7 @@ fn fatal_issue(issue: &PageInspectionIssue) -> bool {
         PageIssueKind::RuntimeError
             | PageIssueKind::RejectedPromise
             | PageIssueKind::MissingImage
+            | PageIssueKind::MissingVideo
             | PageIssueKind::BlankContent
             | PageIssueKind::UnrenderedMath
     )

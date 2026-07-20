@@ -9,7 +9,7 @@ flowchart TB
 
     subgraph Core["sfumato-core crate: application policy and ports"]
         APP["SfumatoApplication"]
-        GENERATE["Generate slides workflow"]
+        GENERATE["Generate slides, page, and video workflows"]
         EDIT["Edit slides workflow"]
         SERVICES["Project, model, connector, theme, prompt, and config services"]
         AGENT["AgentRunner"]
@@ -18,20 +18,20 @@ flowchart TB
     end
 
     subgraph Domain["sfumato-domain crate: pure invariants"]
-        DECK["DeckDocument and ReviewableDocument"]
+        DECK["DeckDocument, PageDocument, Video documents, and ReviewableDocument"]
         VALUES["Validated names, capabilities, SecretRef, and revisions"]
         MANIFEST["ArtifactManifest and review snapshots"]
     end
 
     subgraph Adapters["sfumato-adapters crate: infrastructure"]
-        CONFIG["Schema-v4 TOML repositories"]
+        CONFIG["Schema-v5 TOML repositories and v4 migration"]
         PROMPTS["Layered MiniJinja PromptCatalog"]
         OPENAI["OpenAI-compatible text and image transport"]
-        OPENROUTER["OpenRouter native catalog and usage"]
+        OPENROUTER["OpenRouter text, image, and async video transport"]
         OLLAMA["Ollama native catalog and runtime"]
         CODEX["Codex App Server JSON-RPC provider"]
-        TOOLS["Filesystem and image-generation tools"]
-        RENDERERS["Marp, Mermaid, browser, and layout adapters"]
+        TOOLS["Filesystem, image-generation, and page video-generation tools"]
+        RENDERERS["Marp, Mermaid, browser, Hyperframes, Manim, and ffprobe adapters"]
         ARTIFACTS["FilesystemArtifactStore"]
         SECRETS["SystemSecretStore"]
     end
@@ -39,7 +39,7 @@ flowchart TB
     subgraph External["External systems"]
         API["Ollama, OpenRouter, and compatible APIs"]
         DISK["Config, project roots, themes, and artifact revisions"]
-        PROCESSES["codex, marp, mmdc, and browser processes"]
+        PROCESSES["codex, marp, mmdc, browser, hyperframes, manim, and ffmpeg processes"]
         KEYRING["macOS Keychain or native OS credential store"]
     end
 

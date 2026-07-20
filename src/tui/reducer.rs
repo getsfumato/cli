@@ -100,12 +100,18 @@ pub(super) fn reduce_message(app: &mut App, message: UiMessage) {
 impl App {
     pub(super) fn new(picker: Picker, application: Arc<SfumatoApplication>) -> Self {
         let (sender, messages) = channel(256);
-        let page_plugins = application
+        let installed_plugins = application
             .list_installed_page_plugins()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let page_ui = installed_plugins
+            .iter()
+            .filter(|plugin| plugin.category == sfumato_core::page_plugins::PagePluginCategory::Ui)
+            .map(|plugin| plugin.id.clone())
+            .collect();
+        let page_utilities = installed_plugins
             .into_iter()
             .filter(|plugin| {
-                plugin.category != sfumato_core::page_plugins::PagePluginCategory::Runtime
+                plugin.category == sfumato_core::page_plugins::PagePluginCategory::Utility
             })
             .map(|plugin| plugin.id)
             .collect();
@@ -120,7 +126,7 @@ impl App {
             browse_detail_scroll: 0,
             connector_query_source: None,
             operation: None,
-            form: GenerateForm::with_plugins(page_plugins),
+            form: GenerateForm::with_plugins(page_ui, page_utilities),
             edit_form: EditForm::default(),
             resource_operation: ResourceOperation::Generate,
             activities: Vec::new(),
@@ -800,6 +806,7 @@ impl App {
     }
 
     pub(super) fn move_form_choice(&mut self, forward: bool) {
+        let field_id = self.form.field_id(self.form.selected);
         match self.form.fields.get_mut(self.form.selected) {
             Some(FormField::Select {
                 options, selected, ..
@@ -821,18 +828,23 @@ impl App {
             }
             _ => {}
         }
+        if field_id == Some(GenerateFieldId::Resource) {
+            self.form.switch_resource_from_selector();
+        } else if field_id == Some(GenerateFieldId::Engine) {
+            self.form.switch_video_engine_from_selector();
+        }
     }
 
     pub(super) fn start_generation(&mut self) {
-        let is_page = self.form.is_page();
         enum PreparedGeneration {
             Slides(SlidesArgs),
             Page(PageArgs),
+            Video(VideoArgs),
         }
-        let prepared = if is_page {
-            self.form.to_page_args().map(PreparedGeneration::Page)
-        } else {
-            self.form.to_args().map(PreparedGeneration::Slides)
+        let prepared = match self.form.resource {
+            GenerateResource::Slides => self.form.to_slides_args().map(PreparedGeneration::Slides),
+            GenerateResource::Page => self.form.to_page_args().map(PreparedGeneration::Page),
+            GenerateResource::Video => self.form.to_video_args().map(PreparedGeneration::Video),
         };
         let prepared = match prepared {
             Ok(prepared) => prepared,
@@ -848,10 +860,10 @@ impl App {
         self.result = None;
         self.image = None;
         self.status = None;
-        self.resource_operation = if is_page {
-            ResourceOperation::GeneratePage
-        } else {
-            ResourceOperation::Generate
+        self.resource_operation = match self.form.resource {
+            GenerateResource::Slides => ResourceOperation::Generate,
+            GenerateResource::Page => ResourceOperation::GeneratePage,
+            GenerateResource::Video => ResourceOperation::GenerateVideo,
         };
         self.transition(Screen::Running);
 
@@ -865,6 +877,9 @@ impl App {
             }
             PreparedGeneration::Slides(args) => {
                 effects::spawn_generation(job_id, application, args, sink, operation, sender)
+            }
+            PreparedGeneration::Video(args) => {
+                effects::spawn_video_generation(job_id, application, args, sink, operation, sender)
             }
         });
     }
@@ -942,7 +957,9 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Backspace => self.transition(Screen::Home),
             KeyCode::Enter => self.transition(match self.resource_operation {
-                ResourceOperation::Generate | ResourceOperation::GeneratePage => Screen::Generate,
+                ResourceOperation::Generate
+                | ResourceOperation::GeneratePage
+                | ResourceOperation::GenerateVideo => Screen::Generate,
                 ResourceOperation::Edit => Screen::Edit,
             }),
             KeyCode::Up | KeyCode::Char('k') => {

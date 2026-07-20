@@ -9,11 +9,12 @@ use crate::{
     cli::{
         ArtifactCommands, Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs,
         ConfigShowArgs, ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, EditCommands,
-        EditSlidesArgs, GenerateCommands, InitProjectArgs, InitTarget, ModelAddArgs, ModelCommands,
-        ModelEditArgs, ModelNameArgs, ModelUseArgs, PageArgs, PluginCommands, ProjectCommands,
-        ProjectNameArgs, ProjectShowArgs, PromptCommands, PromptCustomizeArgs, PromptProjectArgs,
-        PromptScope, PromptShowArgs, SlidesArgs, TemplateCommands, TemplateKindArg, ThemeCommands,
-        ThemeUseArgs,
+        EditSlidesArgs, GenerateCommands, GenerationToolArg, InitProjectArgs, InitTarget,
+        LocalVideoRendererArg, ModelAddArgs, ModelCommands, ModelEditArgs, ModelNameArgs,
+        ModelUseArgs, PageArgs, PluginCommands, ProjectCommands, ProjectNameArgs, ProjectShowArgs,
+        PromptCommands, PromptCustomizeArgs, PromptProjectArgs, PromptScope, PromptShowArgs,
+        RendererCommands, SlidesArgs, TemplateCommands, TemplateKindArg, ThemeCommands,
+        ThemeUseArgs, ToolCommands, VideoArgs, VideoAudioArg, VideoEngineArg,
     },
     init::InitService,
     presentation::{Cell, print_table},
@@ -21,9 +22,9 @@ use crate::{
 use sfumato_core::{
     application::{
         AddProjectAssetCommand, EditSlidesCommand, GeneratePageCommand, GenerateSlidesCommand,
-        SfumatoApplication, UpdateProjectAssetCommand,
+        GenerateVideoCommand, SfumatoApplication, UpdateProjectAssetCommand,
     },
-    config::{Capability, ConfigOverrides},
+    config::{Capability, ConfigOverrides, GenerationToolKind, VideoAudioMode},
     config_editor::ConfigTarget,
     connectors::ConnectorPreset as CoreConnectorPreset,
     generation::{GenerationRequest, ResourceKind},
@@ -32,6 +33,7 @@ use sfumato_core::{
     providers::TextGenerationEvent,
     resources::pages::GeneratePageResult,
     resources::slides::{EditSlidesRequest, EditSlidesResult, GenerateSlidesResult},
+    resources::videos::{GenerateVideoRequest, GenerateVideoResult},
     secrets::SecretValue,
     templates::TemplateKind,
 };
@@ -55,6 +57,8 @@ impl RunnableCommand for Commands {
             Self::Artifact { command } => command.run(application).await,
             Self::Prompt { command } => command.run(application).await,
             Self::Plugin { command } => command.run(application).await,
+            Self::Tool { command } => command.run(application).await,
+            Self::Renderer { command } => command.run(application).await,
             Self::Generate { command } => command.run(application).await,
             Self::Edit { command } => command.run(application).await,
         }
@@ -327,6 +331,114 @@ impl RunnableCommand for PluginCommands {
                 Ok(())
             }
         }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for ToolCommands {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        match self {
+            Self::List(args) => {
+                let statuses = application.list_generation_tools(args.project)?;
+                print_table(
+                    &["TOOL", "PROJECT", "MODEL"],
+                    statuses
+                        .into_iter()
+                        .map(|status| {
+                            vec![
+                                Cell::primary(status.tool.as_str()),
+                                if status.enabled {
+                                    Cell::success("enabled")
+                                } else {
+                                    Cell::muted("disabled")
+                                },
+                                if status.model_configured {
+                                    Cell::success("configured")
+                                } else {
+                                    Cell::warning("missing")
+                                },
+                            ]
+                        })
+                        .collect(),
+                );
+            }
+            Self::Enable(args) => {
+                let tool = generation_tool(args.tool);
+                let project =
+                    application.set_generation_tool(tool, true, args.project.as_deref())?;
+                println!("Enabled {} for project {}", tool.as_str(), project.name);
+            }
+            Self::Disable(args) => {
+                let tool = generation_tool(args.tool);
+                let project =
+                    application.set_generation_tool(tool, false, args.project.as_deref())?;
+                println!("Disabled {} for project {}", tool.as_str(), project.name);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for RendererCommands {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        let operation = OperationContext::detached();
+        let statuses = match self {
+            Self::List => application.list_renderers(&operation).await?,
+            Self::Install(args) => vec![
+                application
+                    .install_renderer(local_renderer(args.renderer), &operation)
+                    .await?,
+            ],
+            Self::Remove(args) => vec![application.remove_renderer(local_renderer(args.renderer))?],
+            Self::Doctor(args) => {
+                application
+                    .doctor_renderers(args.renderer.map(local_renderer), &operation)
+                    .await?
+            }
+        };
+        print_renderer_statuses(statuses);
+        Ok(())
+    }
+}
+
+fn print_renderer_statuses(statuses: Vec<sfumato_core::renderers::RendererStatus>) {
+    print_table(
+        &["RENDERER", "VERSION", "INSTALLED", "HEALTH", "DETAILS"],
+        statuses
+            .into_iter()
+            .map(|status| {
+                vec![
+                    Cell::primary(status.id),
+                    Cell::muted(status.version),
+                    if status.installed {
+                        Cell::success("yes")
+                    } else {
+                        Cell::warning("no")
+                    },
+                    if status.healthy {
+                        Cell::success("healthy")
+                    } else {
+                        Cell::warning("unavailable")
+                    },
+                    Cell::new(status.details.join("; ")),
+                ]
+            })
+            .collect(),
+    );
+}
+
+fn generation_tool(tool: GenerationToolArg) -> GenerationToolKind {
+    match tool {
+        GenerationToolArg::ImageGen => GenerationToolKind::ImageGen,
+        GenerationToolArg::VideoGen => GenerationToolKind::VideoGen,
+    }
+}
+
+fn local_renderer(renderer: LocalVideoRendererArg) -> &'static str {
+    match renderer {
+        LocalVideoRendererArg::Hyperframe => "hyperframe",
+        LocalVideoRendererArg::Manim => "manim",
     }
 }
 
@@ -895,6 +1007,7 @@ impl RunnableCommand for GenerateCommands {
         match self {
             Self::Slides(args) => args.run(application).await,
             Self::Page(args) => args.run(application).await,
+            Self::Video(args) => args.run(application).await,
         }
     }
 }
@@ -935,6 +1048,7 @@ pub(crate) async fn execute_page(
         reviewer_model: args.review_model,
         publish_dir: args.out,
         pdf: false,
+        tool_overrides: parse_tool_overrides(&args.tools, &args.disabled_tools)?,
     };
     let request = GenerationRequest {
         instruction: args.instruction,
@@ -943,10 +1057,14 @@ pub(crate) async fn execute_page(
         project: args.project,
         model_overrides,
     };
-    let mut plugins = args.plugins;
-    if args.shadcn {
-        plugins.push("shadcn".to_string());
-    }
+    let plugins = args.plugins;
+    let ui = if args.shadcn {
+        eprintln!("Warning: --shadcn is deprecated; use --ui shadcn.");
+        Some("shadcn".to_string())
+    } else {
+        args.ui
+            .map(|ui| if ui == "none" { String::new() } else { ui })
+    };
     Ok(application
         .generate_page(GeneratePageCommand {
             operation,
@@ -955,11 +1073,146 @@ pub(crate) async fn execute_page(
             title: args.title,
             template: args.template,
             plugins,
+            disabled_plugins: args.disabled_plugins,
+            ui,
             dry_run: args.dry_run,
             review: !args.no_review,
             event_sink,
         })
         .await?)
+}
+
+#[async_trait]
+impl RunnableCommand for VideoArgs {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        let json = self.json;
+        let dry_run = self.dry_run;
+        let event_sink =
+            (!json && !dry_run)
+                .then_some(Arc::new(render_generation_event)
+                    as Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
+        match execute_video(&application, self, event_sink, OperationContext::detached()).await {
+            Ok(result) => render_video_result(result, json, dry_run),
+            Err(error) if json => {
+                println!("{}", json_operation_error(&error));
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+pub(crate) async fn execute_video(
+    application: &SfumatoApplication,
+    args: VideoArgs,
+    event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    operation: OperationContext,
+) -> Result<GenerateVideoResult> {
+    if args.instruction.trim().is_empty() {
+        bail!("Instruction cannot be empty");
+    }
+    let model_overrides = parse_model_overrides(&args.model_overrides)?;
+    let engine = match args.engine {
+        VideoEngineArg::Hyperframe => sfumato_core::renderers::VideoEngine::Hyperframe,
+        VideoEngineArg::Manim => sfumato_core::renderers::VideoEngine::Manim,
+        VideoEngineArg::Model => sfumato_core::renderers::VideoEngine::Model,
+    };
+    let local = !matches!(engine, sfumato_core::renderers::VideoEngine::Model);
+    if local && model_overrides.contains_key(&Capability::Video) {
+        bail!("--model video=... is only valid with --engine model");
+    }
+    if !local && model_overrides.contains_key(&Capability::Code) {
+        bail!("--model code=... is only valid with --engine hyperframe or --engine manim");
+    }
+    if !local && (args.fps.is_some() || args.quality.is_some()) {
+        bail!("--fps and --quality are only valid with Hyperframe or Manim");
+    }
+    if args.allow_code_execution && !matches!(engine, sfumato_core::renderers::VideoEngine::Manim) {
+        bail!("--allow-code-execution is only valid with --engine manim");
+    }
+    let resolution = args
+        .resolution
+        .unwrap_or_else(|| if local { "1080p".into() } else { "720p".into() });
+    let aspect_ratio = args.aspect_ratio.unwrap_or_else(|| "16:9".into());
+    let audio = match args.audio {
+        Some(VideoAudioArg::Auto) => VideoAudioMode::Auto,
+        Some(VideoAudioArg::On) => VideoAudioMode::On,
+        Some(VideoAudioArg::Off) => VideoAudioMode::Off,
+        None if local => VideoAudioMode::Off,
+        None => VideoAudioMode::Auto,
+    };
+    let config = ConfigOverrides {
+        project: args.project.clone(),
+        theme: args.theme,
+        model_overrides: model_overrides.clone(),
+        reviewer_model: args.review_model,
+        publish_dir: args.out,
+        pdf: false,
+        tool_overrides: parse_tool_overrides(&args.tools, &args.disabled_tools)?,
+    };
+    let request = GenerationRequest {
+        instruction: args.instruction,
+        sources: args.inputs,
+        resource_kind: ResourceKind::Video,
+        project: args.project,
+        model_overrides,
+    };
+    Ok(application
+        .generate_video(GenerateVideoCommand {
+            operation,
+            config,
+            request,
+            video: GenerateVideoRequest {
+                engine,
+                title: args.title,
+                duration_seconds: args.duration,
+                resolution,
+                aspect_ratio,
+                fps: args.fps.unwrap_or(30),
+                quality: args.quality.unwrap_or_else(|| "high".into()),
+                audio,
+                allow_code_execution: args.allow_code_execution,
+            },
+            dry_run: args.dry_run,
+            review: !args.no_review,
+            event_sink,
+        })
+        .await?)
+}
+
+fn render_video_result(result: GenerateVideoResult, json: bool, dry_run: bool) -> Result<()> {
+    for warning in &result.output.warnings {
+        eprintln!("{warning}");
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result.output)?);
+    } else if dry_run {
+        println!("Project: {}", result.output.project);
+        println!("Engine: {:?}", result.output.engine);
+        println!("Planned MP4: {}", result.video_path.display());
+        if !result.output.models.is_empty() {
+            println!("Models:");
+            for (role, profile) in &result.output.models {
+                println!("- {role}: {profile}");
+            }
+        }
+        if !result.output.tools.is_empty() {
+            println!("Injected tools:");
+            for tool in &result.output.tools {
+                println!("- {}: {}", tool.name, tool.description);
+            }
+        }
+        if let Some(prompt) = result.prompt_preview {
+            println!("\n{prompt}");
+        }
+        println!("Dry run complete; no model, renderer, or artifact store was called.");
+    } else {
+        println!("Wrote {}", result.video_path.display());
+        for path in result.published_paths {
+            println!("Published {}", path.display());
+        }
+    }
+    Ok(())
 }
 
 fn render_page_result(result: GeneratePageResult, json: bool, dry_run: bool) -> Result<()> {
@@ -1059,6 +1312,7 @@ pub(crate) async fn execute_edit_slides(
         reviewer_model: None,
         publish_dir: None,
         pdf: true,
+        tool_overrides: BTreeMap::new(),
     };
     Ok(application
         .edit_slides(EditSlidesCommand {
@@ -1142,6 +1396,7 @@ pub(crate) async fn execute_slides(
         reviewer_model: args.review_model,
         publish_dir: args.out,
         pdf: args.pdf,
+        tool_overrides: parse_tool_overrides(&args.tools, &args.disabled_tools)?,
     };
     let request = GenerationRequest {
         instruction: args.instruction,
@@ -1538,6 +1793,27 @@ fn parse_model_overrides(values: &[String]) -> Result<BTreeMap<Capability, Strin
             ))
         })
         .collect()
+}
+
+fn parse_tool_overrides(
+    enabled: &[GenerationToolArg],
+    disabled: &[GenerationToolArg],
+) -> Result<BTreeMap<GenerationToolKind, bool>> {
+    let mut overrides = BTreeMap::new();
+    for tool in enabled {
+        overrides.insert(generation_tool(*tool), true);
+    }
+    for tool in disabled {
+        let tool = generation_tool(*tool);
+        if overrides.contains_key(&tool) {
+            bail!(
+                "Generation tool '{}' cannot be both enabled and disabled",
+                tool.as_str()
+            );
+        }
+        overrides.insert(tool, false);
+    }
+    Ok(overrides)
 }
 
 #[cfg(test)]

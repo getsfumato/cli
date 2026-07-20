@@ -440,6 +440,8 @@ pub struct PagePluginDefaultChanged {
     pub plugin: String,
     /// New enabled state.
     pub enabled: bool,
+    /// Previous UI library replaced by this selection, when applicable.
+    pub replaced: Option<String>,
 }
 
 /// Supported-plugin metadata and public-CDN materialization port.
@@ -475,6 +477,17 @@ pub trait PagePluginCatalog: Send + Sync {
         let mut visiting = BTreeSet::new();
         for id in ids {
             self.resolve_dependency(&id, &mut complete, &mut visiting, &mut resolved)?;
+        }
+        let ui = resolved
+            .iter()
+            .filter(|plugin| plugin.summary.category == PagePluginCategory::Ui)
+            .map(|plugin| plugin.summary.id.as_str())
+            .collect::<Vec<_>>();
+        if ui.len() > 1 {
+            return Err(SfumatoError::validation(format!(
+                "Pages can use only one UI library; selected {}",
+                ui.join(", ")
+            )));
         }
         Ok(resolved)
     }
@@ -545,10 +558,12 @@ impl PagePluginService {
         let installed = self.store.list()?;
         let registry_state = self.projects.registry()?;
         let enabled = if project.is_some() || registry_state.active.is_some() {
-            self.projects
-                .load(project)?
+            let project = self.projects.load(project)?;
+            project
+                .page
                 .plugins
                 .into_iter()
+                .chain(project.page.ui)
                 .collect::<BTreeSet<_>>()
         } else {
             BTreeSet::new()
@@ -656,19 +671,36 @@ impl PagePluginService {
         project: Option<&str>,
     ) -> SfumatoResult<PagePluginDefaultChanged> {
         validate_plugin_id(id)?;
-        self.store.load(id)?;
+        let package = self.store.load(id)?;
+        if package.summary.category == PagePluginCategory::Runtime {
+            return Err(SfumatoError::validation(format!(
+                "Runtime plugin '{id}' is selected transitively and cannot be enabled directly"
+            )));
+        }
         let snapshot = self.projects.load_snapshot(project)?;
         let mut config = snapshot.value;
-        if !config.plugins.iter().any(|plugin| plugin == id) {
-            config.plugins.push(id.to_string());
-            config.plugins.sort();
-        }
+        let replaced = match package.summary.category {
+            PagePluginCategory::Ui => config
+                .page
+                .ui
+                .replace(id.to_string())
+                .filter(|old| old != id),
+            PagePluginCategory::Utility => {
+                if !config.page.plugins.iter().any(|plugin| plugin == id) {
+                    config.page.plugins.push(id.to_string());
+                    config.page.plugins.sort();
+                }
+                None
+            }
+            PagePluginCategory::Runtime => unreachable!("rejected above"),
+        };
         self.projects
             .save_if_revision(&config, &snapshot.revision)?;
         Ok(PagePluginDefaultChanged {
             project: config.name,
             plugin: id.to_string(),
             enabled: true,
+            replaced,
         })
     }
 
@@ -679,15 +711,29 @@ impl PagePluginService {
         project: Option<&str>,
     ) -> SfumatoResult<PagePluginDefaultChanged> {
         validate_plugin_id(id)?;
+        let package = self.store.load(id)?;
         let snapshot = self.projects.load_snapshot(project)?;
         let mut config = snapshot.value;
-        config.plugins.retain(|plugin| plugin != id);
+        match package.summary.category {
+            PagePluginCategory::Ui => {
+                if config.page.ui.as_deref() == Some(id) {
+                    config.page.ui = None;
+                }
+            }
+            PagePluginCategory::Utility => config.page.plugins.retain(|plugin| plugin != id),
+            PagePluginCategory::Runtime => {
+                return Err(SfumatoError::validation(format!(
+                    "Runtime plugin '{id}' is managed as a dependency and cannot be disabled directly"
+                )));
+            }
+        }
         self.projects
             .save_if_revision(&config, &snapshot.revision)?;
         Ok(PagePluginDefaultChanged {
             project: config.name,
             plugin: id.to_string(),
             enabled: false,
+            replaced: None,
         })
     }
 }

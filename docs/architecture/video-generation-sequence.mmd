@@ -1,0 +1,45 @@
+sequenceDiagram
+    actor User
+    participant UI as CLI or TUI
+    participant App as SfumatoApplication
+    participant Workflow as GenerateVideo
+    participant Prompts as PromptCatalog
+    participant Draft as Text planner
+    participant Review as Reviewer
+    participant Code as Code model
+    participant Remote as VideoGenerationProvider
+    participant Local as VideoRenderer
+    participant Probe as ffprobe
+    participant Store as ArtifactStore
+    participant Publish as WorkspaceFileSystem
+
+    User->>UI: generate video --engine ... --duration ...
+    UI->>App: GenerateVideoCommand
+    App->>Workflow: effective config and outbound ports
+    Workflow->>Prompts: render plan templates with sources, SFUMATO.md, theme, and artifacts
+    Workflow->>Draft: plan with filesystem and optional image tool
+    Draft-->>Workflow: VideoPlanDocument JSON
+    opt review enabled
+        Workflow->>Review: revision snapshot
+        Review-->>Workflow: RFC 6902 plan patch
+    end
+    alt engine is model
+        Workflow->>Remote: validated prompt, options, and supported references
+        Remote-->>Workflow: downloaded MP4
+    else engine is Hyperframes or Manim
+        Workflow->>Prompts: render engine authoring templates
+        Workflow->>Code: reviewed plan and exact renderer contract
+        Code-->>Workflow: VideoSourceDocument JSON
+        Workflow->>Local: static validation and render
+        opt validation or render fails and review is enabled
+            Workflow->>Review: source snapshot and exact error
+            Review-->>Workflow: focused RFC 6902 source patch
+            Workflow->>Local: validate and render once more
+        end
+    end
+    Workflow->>Probe: validate codec, dimensions, duration, and audio
+    Workflow->>Store: commit plan, storyboard, source/assets, and MP4
+    opt output directory selected
+        Workflow->>Publish: atomically publish only slug/slug.mp4
+    end
+    Workflow-->>UI: GenerateVideoResult, provenance, review, and warnings

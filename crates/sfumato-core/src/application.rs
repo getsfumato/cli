@@ -11,7 +11,7 @@ use std::{
 
 use crate::{
     artifacts::ArtifactStore,
-    config::{ConfigOverrides, EffectiveConfig, GlobalConfig},
+    config::{ConfigOverrides, EffectiveConfig, GenerationToolKind, GlobalConfig},
     config_editor::{ConfigEditor, ConfigTarget},
     connectors::{
         ConnectorAuthStatus, ConnectorDetails, ConnectorPreset, ConnectorService, ConnectorSummary,
@@ -38,12 +38,18 @@ use crate::{
         ConnectorCapabilities, ConnectorIntrospection, ConnectorModelSummary, ConnectorStatus,
         ProviderFactory, TextGenerationEvent,
     },
-    renderers::{DiagramRenderer, PageAssembler, PageInspector, SlideRenderer},
+    renderers::{
+        DiagramRenderer, PageAssembler, PageInspector, RendererManager, RendererStatus,
+        SlideRenderer, VideoRenderer,
+    },
     repositories::{GlobalConfigRepository, ProjectRepository, ThemeRepository},
     resources::pages::{GeneratePageOptions, GeneratePageResult, generate_page},
     resources::slides::{
         EditSlidesOptions, EditSlidesRequest, EditSlidesResult, GenerateSlidesOptions,
         GenerateSlidesResult, edit_slides, generate_slides,
+    },
+    resources::videos::{
+        GenerateVideoOptions, GenerateVideoRequest, GenerateVideoResult, generate_video,
     },
     secrets::{SecretStore, SecretValue},
     setup::{SetupService, UserSetupRequest, UserSetupResult},
@@ -101,11 +107,33 @@ pub struct GeneratePageCommand {
     pub template: Option<String>,
     /// Selected installed page plugin identifiers.
     pub plugins: Vec<String>,
+    /// Project utility plugins disabled for this request.
+    pub disabled_plugins: Vec<String>,
+    /// Optional exclusive UI component-library override; an empty string disables project UI.
+    pub ui: Option<String>,
     /// Resolves the request without invoking models or writing artifacts.
     pub dry_run: bool,
     /// Enables semantic and browser-focused model repair.
     pub review: bool,
     /// Optional frontend observer for provider progress events.
+    pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+}
+
+/// Complete request for standalone video generation.
+pub struct GenerateVideoCommand {
+    /// Cancellation, deadline, and event context.
+    pub operation: OperationContext,
+    /// Project, theme, model, output, and tool overrides.
+    pub config: ConfigOverrides,
+    /// Instruction and optional grounding sources.
+    pub request: GenerationRequest,
+    /// Engine-specific generation parameters.
+    pub video: GenerateVideoRequest,
+    /// Resolve prompts and dependencies without model calls or writes.
+    pub dry_run: bool,
+    /// Enable semantic plan review and focused source repair.
+    pub review: bool,
+    /// Optional frontend observer for detailed progress.
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
 }
 
@@ -146,6 +174,10 @@ pub struct SfumatoApplicationDependencies {
     pub page_assembler: Arc<dyn PageAssembler>,
     /// Browser-backed page inspector.
     pub page_inspector: Arc<dyn PageInspector>,
+    /// Hyperframe and Manim renderer adapter.
+    pub video_renderer: Arc<dyn VideoRenderer>,
+    /// Explicit optional-renderer lifecycle.
+    pub renderer_manager: Arc<dyn RendererManager>,
     /// Offline page plugin catalog.
     pub page_plugins: Arc<dyn PagePluginCatalog>,
     /// Supported-plugin metadata and public-CDN materializer.
@@ -190,6 +222,8 @@ pub struct SfumatoApplication {
     slides: Arc<dyn SlideRenderer>,
     page_assembler: Arc<dyn PageAssembler>,
     page_inspector: Arc<dyn PageInspector>,
+    video_renderer: Arc<dyn VideoRenderer>,
+    renderer_manager: Arc<dyn RendererManager>,
     page_plugins: Arc<dyn PagePluginCatalog>,
     page_plugin_source: Arc<dyn PagePluginSource>,
     templates: Arc<dyn GenerationTemplateCatalog>,
@@ -247,6 +281,17 @@ pub struct UpdateProjectAssetCommand {
     pub project: Option<String>,
 }
 
+/// Effective state of one optional model-facing generation tool.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct GenerationToolStatus {
+    /// Stable tool identifier.
+    pub tool: GenerationToolKind,
+    /// Whether the selected project enables the tool.
+    pub enabled: bool,
+    /// Whether a model profile exists for the required capability.
+    pub model_configured: bool,
+}
+
 impl SfumatoApplication {
     /// Creates an application from its outbound ports.
     pub fn new(dependencies: SfumatoApplicationDependencies) -> Self {
@@ -261,6 +306,8 @@ impl SfumatoApplication {
             slides,
             page_assembler,
             page_inspector,
+            video_renderer,
+            renderer_manager,
             page_plugins,
             page_plugin_source,
             templates,
@@ -287,6 +334,8 @@ impl SfumatoApplication {
             slides,
             page_assembler,
             page_inspector,
+            video_renderer,
+            renderer_manager,
             page_plugins,
             page_plugin_source,
             templates,
@@ -359,10 +408,15 @@ impl SfumatoApplication {
             .prompts
             .for_project(&config.project_root)
             .map_err(|error| error.at_stage(OperationStage::RenderPrompt))?;
-        let mut plugins = config.plugins.clone();
+        let mut plugins = config.page.plugins.clone();
+        plugins.retain(|id| !command.disabled_plugins.contains(id));
         plugins.extend(command.plugins);
         plugins.sort();
         plugins.dedup();
+        let ui = command.ui.or(config.page.ui.clone());
+        if let Some(ui) = ui.filter(|value| !value.is_empty()) {
+            plugins.push(ui);
+        }
         generate_page(
             config,
             command.request,
@@ -391,6 +445,107 @@ impl SfumatoApplication {
             },
         )
         .await
+    }
+
+    /// Generates and transactionally commits a standalone MP4 resource.
+    pub async fn generate_video(
+        &self,
+        command: GenerateVideoCommand,
+    ) -> SfumatoResult<GenerateVideoResult> {
+        command.operation.checkpoint(OperationStage::Resolve)?;
+        let config = self
+            .config
+            .resolve(command.config)
+            .map_err(|error| error.at_stage(OperationStage::Resolve))?;
+        let prompt_catalog = self
+            .prompts
+            .for_project(&config.project_root)
+            .map_err(|error| error.at_stage(OperationStage::RenderPrompt))?;
+        generate_video(
+            config,
+            command.request,
+            command.video,
+            GenerateVideoOptions {
+                operation: command.operation,
+                dry_run: command.dry_run,
+                review: command.review,
+                event_sink: command.event_sink,
+                prompt_catalog,
+                artifact_store: Arc::clone(&self.artifacts),
+                provider_factory: Arc::clone(&self.providers),
+                source_reader: Arc::clone(&self.sources),
+                tool_factory: Arc::clone(&self.tools),
+                theme_repository: Arc::clone(&self.themes),
+                video_renderer: Arc::clone(&self.video_renderer),
+                workspace: Arc::clone(&self.workspace),
+                project_asset_catalog: Arc::clone(&self.project_assets),
+            },
+        )
+        .await
+    }
+
+    /// Lists project-scoped optional tools independently from page plugins.
+    pub fn list_generation_tools(
+        &self,
+        project: Option<String>,
+    ) -> SfumatoResult<Vec<GenerationToolStatus>> {
+        let effective = self.config.resolve(ConfigOverrides {
+            project,
+            ..ConfigOverrides::default()
+        })?;
+        Ok([GenerationToolKind::ImageGen, GenerationToolKind::VideoGen]
+            .into_iter()
+            .map(|tool| GenerationToolStatus {
+                tool,
+                enabled: effective.generation_tool_enabled(tool),
+                model_configured: effective.resolve_model(tool.capability()).is_ok(),
+            })
+            .collect())
+    }
+
+    /// Persists one project-scoped generation-tool default.
+    pub fn set_generation_tool(
+        &self,
+        tool: GenerationToolKind,
+        enabled: bool,
+        project: Option<&str>,
+    ) -> SfumatoResult<crate::config::ProjectConfig> {
+        let mut snapshot = self.projects.load_snapshot(project)?;
+        snapshot.value.generation_tools.0.insert(tool, enabled);
+        self.projects
+            .save_if_revision(&snapshot.value, &snapshot.revision)?;
+        Ok(snapshot.value)
+    }
+
+    /// Lists the install and dependency status of optional local video renderers.
+    pub async fn list_renderers(
+        &self,
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<RendererStatus>> {
+        self.renderer_manager.list(operation).await
+    }
+
+    /// Installs one optional local video renderer explicitly.
+    pub async fn install_renderer(
+        &self,
+        id: &str,
+        operation: &OperationContext,
+    ) -> SfumatoResult<RendererStatus> {
+        self.renderer_manager.install(id, operation).await
+    }
+
+    /// Removes one optional local video renderer managed by Sfumato.
+    pub fn remove_renderer(&self, id: &str) -> SfumatoResult<RendererStatus> {
+        self.renderer_manager.remove(id)
+    }
+
+    /// Checks one optional local video renderer and all of its dependencies.
+    pub async fn doctor_renderers(
+        &self,
+        id: Option<&str>,
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<RendererStatus>> {
+        self.renderer_manager.doctor(id, operation).await
     }
 
     /// Lists installed offline page plugins.

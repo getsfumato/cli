@@ -5,6 +5,7 @@ sequenceDiagram
     participant Page as GeneratePage
     participant Assets as ProjectAssetCatalog
     participant Image as Image provider
+    participant Video as Video provider
     participant Prompts as PromptCatalog
     participant Plugins as PagePluginCatalog
     participant Draft as Text provider
@@ -15,7 +16,7 @@ sequenceDiagram
     participant Store as ArtifactStore
     participant Publish as WorkspaceFileSystem
 
-    User->>UI: generate page --instruction ... --plugin ...
+    User->>UI: generate page --instruction ... --ui ... --plugin ...
     UI->>App: GeneratePageCommand
     App->>Page: effective config and outbound ports
     Page->>Plugins: resolve and verify selected runtimes
@@ -27,6 +28,10 @@ sequenceDiagram
     end
     Page->>Prompts: render page draft templates
     Page->>Draft: structured draft plus bounded tools
+    opt video-gen enabled for this page
+        Draft->>Video: one themed video request with reusable artifacts
+        Video-->>Draft: local assets/videos path
+    end
     Draft-->>Page: title, body_html, css, javascript
     Page->>Assemble: parse and statically validate fragments
     opt body contains TeX delimiters
@@ -45,7 +50,7 @@ sequenceDiagram
         Review-->>Page: constrained RFC 6902 patch
         Page->>Browser: measure candidate again
     end
-    Page->>Assemble: retain only images referenced by the final page
+    Page->>Assemble: retain only images and videos referenced by the final page
     Page->>Store: commit immutable page revision
     opt output directory selected
         Page->>Publish: atomically publish _sfumato/pages/slug tree

@@ -15,6 +15,8 @@ classDiagram
             Artifact
             Prompt
             Plugin
+            Tool
+            Renderer
             Generate
             Edit
         }
@@ -38,6 +40,9 @@ classDiagram
     namespace Domain {
         class DeckDocument
         class PageDocument
+        class VideoPlanDocument
+        class VideoSourceDocument
+        class VideoEngine
         class ReviewableDocument {
             <<trait>>
             +snapshot() ReviewSnapshot
@@ -55,6 +60,7 @@ classDiagram
         class SfumatoApplication {
             +generate_slides(command) GenerateSlidesResult
             +generate_page(command) GeneratePageResult
+            +generate_video(command) GenerateVideoResult
             +edit_slides(command) EditSlidesResult
             +list_projects()
             +list_models()
@@ -66,6 +72,7 @@ classDiagram
         class SfumatoApplicationDependencies
         class GenerateSlidesCommand
         class GeneratePageCommand
+        class GenerateVideoCommand
         class EditSlidesCommand
         class AgentRunner {
             +run(model, request, tools, operation) TextModelResponse
@@ -82,6 +89,7 @@ classDiagram
             <<trait>>
             +text(config, profile) TextGenerationProvider
             +image(config, profile) ImageGenerationProvider
+            +video(config, profile) VideoGenerationProvider
         }
         class ConnectorIntrospection {
             <<trait>>
@@ -131,6 +139,22 @@ classDiagram
         class PageInspector {
             <<trait>>
             +inspect(path, browser, operation) PageInspectionIssue
+        }
+        class VideoGenerationProvider {
+            <<trait>>
+            +generate_video(request, operation, stage) VideoGenerationResponse
+        }
+        class VideoRenderer {
+            <<trait>>
+            +render(engine, request, operation)
+            +inspect(path, operation) VideoInspection
+        }
+        class RendererManager {
+            <<trait>>
+            +list(operation) RendererStatus[]
+            +install(id, operation) RendererStatus
+            +remove(id) RendererStatus
+            +doctor(id, operation) RendererStatus[]
         }
         class PagePluginCatalog {
             <<trait>>
@@ -210,6 +234,8 @@ classDiagram
         class MarpCliRenderer
         class StandalonePageAssembler
         class ChromiumPageInspector
+        class OpenRouterVideoProvider
+        class ManagedVideoRenderers
         class FilesystemPagePluginCatalog
         class CdnPagePluginSource
         class SystemSecretStore
@@ -228,14 +254,19 @@ classDiagram
 
     DeckDocument ..|> ReviewableDocument
     PageDocument ..|> ReviewableDocument
+    VideoPlanDocument ..|> ReviewableDocument
+    VideoSourceDocument ..|> ReviewableDocument
+    VideoPlanDocument --> VideoEngine
+    VideoSourceDocument --> VideoEngine
     ArtifactManifest --> RevisionId
     SfumatoApplication *-- SfumatoApplicationDependencies
     SfumatoApplication --> GenerateSlidesCommand
     SfumatoApplication --> GeneratePageCommand
+    SfumatoApplication --> GenerateVideoCommand
     SfumatoApplication --> EditSlidesCommand
     SfumatoApplication --> AgentRunner
     SfumatoApplication --> ProviderFactory
-    SfumatoApplication --> ConnectorModelDiscovery
+    SfumatoApplication --> ConnectorIntrospection
     SfumatoApplication --> SecretStore
     SfumatoApplication --> EffectiveConfigResolver
     SfumatoApplication --> PromptCatalog
@@ -246,6 +277,8 @@ classDiagram
     SfumatoApplication --> PageAssembler
     PageAssembler --> AssembledPage
     SfumatoApplication --> PageInspector
+    SfumatoApplication --> VideoRenderer
+    SfumatoApplication --> RendererManager
     SfumatoApplication --> PagePluginCatalog
     SfumatoApplication --> PagePluginSource
     SfumatoApplication --> GenerationTemplateCatalog
@@ -258,6 +291,7 @@ classDiagram
     SfumatoApplication --> SfumatoError
     GenerateSlidesCommand --> OperationContext
     GeneratePageCommand --> OperationContext
+    GenerateVideoCommand --> OperationContext
     EditSlidesCommand --> OperationContext
     AgentRunner ..|> TextGenerationProvider
     AgentRunner --> TextModel
@@ -280,6 +314,9 @@ classDiagram
     MarpCliRenderer ..|> SlideRenderer
     StandalonePageAssembler ..|> PageAssembler
     ChromiumPageInspector ..|> PageInspector
+    OpenRouterVideoProvider ..|> VideoGenerationProvider
+    ManagedVideoRenderers ..|> VideoRenderer
+    ManagedVideoRenderers ..|> RendererManager
     FilesystemPagePluginCatalog ..|> PagePluginCatalog
     CdnPagePluginSource ..|> PagePluginSource
     SecretStore --|> SecretResolver

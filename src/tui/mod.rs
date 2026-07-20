@@ -46,6 +46,7 @@ use sfumato_core::{
     resources::{
         pages::GeneratePageResult,
         slides::{EditSlidesResult, GenerateSlidesResult},
+        videos::GenerateVideoResult,
     },
     templates::TemplateKind,
 };
@@ -57,13 +58,16 @@ use tokio::{
 use tui_widgets::big_text::{BigText, PixelSize};
 
 use crate::{
-    cli::{EditSlidesArgs, PageArgs, SlidesArgs},
-    commands::{execute_edit_slides, execute_page, execute_slides},
+    cli::{
+        EditSlidesArgs, GenerationToolArg, PageArgs, SlidesArgs, VideoArgs, VideoAudioArg,
+        VideoEngineArg,
+    },
+    commands::{execute_edit_slides, execute_page, execute_slides, execute_video},
 };
 
 const TICK_RATE: Duration = Duration::from_millis(80);
 const NAV_ITEMS: &[(&str, &str)] = &[
-    ("Generate", "Build reviewed slides or an interactive page"),
+    ("Generate", "Build reviewed slides, pages, or videos"),
     ("Edit", "Update an existing generated deck"),
     ("Projects", "Project working directories"),
     ("Models", "Profiles, capabilities, defaults"),

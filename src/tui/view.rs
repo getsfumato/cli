@@ -68,21 +68,23 @@ impl App {
             Screen::Browse(section) => section.title().to_string(),
             Screen::Generate => format!(
                 "Generate / {}",
-                if self.form.is_page() {
-                    "Page"
-                } else {
-                    "Slides"
+                match self.form.resource {
+                    GenerateResource::Slides => "Slides",
+                    GenerateResource::Page => "Page",
+                    GenerateResource::Video => "Video",
                 }
             ),
             Screen::Edit => "Edit / Slides".to_string(),
             Screen::Running => match self.resource_operation {
                 ResourceOperation::Generate => "Generate / In progress".to_string(),
                 ResourceOperation::GeneratePage => "Generate page / In progress".to_string(),
+                ResourceOperation::GenerateVideo => "Generate video / In progress".to_string(),
                 ResourceOperation::Edit => "Edit / In progress".to_string(),
             },
             Screen::Complete => match self.resource_operation {
                 ResourceOperation::Generate => "Generate / Result".to_string(),
                 ResourceOperation::GeneratePage => "Generate page / Result".to_string(),
+                ResourceOperation::GenerateVideo => "Generate video / Result".to_string(),
                 ResourceOperation::Edit => "Edit / Result".to_string(),
             },
         }
@@ -412,9 +414,17 @@ impl App {
             GenerationStage::PageRepair,
             GenerationStage::PageRendering,
         ];
+        let video_stages = [
+            GenerationStage::VideoPlanning,
+            GenerationStage::VideoReview,
+            GenerationStage::VideoAuthoring,
+            GenerationStage::VideoRepair,
+            GenerationStage::VideoRendering,
+        ];
         let stages: &[GenerationStage] = match self.resource_operation {
             ResourceOperation::Generate => &generation_stages,
             ResourceOperation::GeneratePage => &page_stages,
+            ResourceOperation::GenerateVideo => &video_stages,
             ResourceOperation::Edit => &edit_stages,
         };
         let current = self
@@ -768,6 +778,11 @@ pub(super) fn stage_label(stage: GenerationStage) -> &'static str {
         GenerationStage::PageReview => "Page review",
         GenerationStage::PageRepair => "Page repair",
         GenerationStage::PageRendering => "Page rendering",
+        GenerationStage::VideoPlanning => "Video plan",
+        GenerationStage::VideoReview => "Video review",
+        GenerationStage::VideoAuthoring => "Video authoring",
+        GenerationStage::VideoRepair => "Video repair",
+        GenerationStage::VideoRendering => "Video rendering",
     }
 }
 

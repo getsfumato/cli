@@ -71,6 +71,8 @@ pub enum PromptId {
     SlidesLayoutRepairToolExhaustedUser,
     /// User prompt sent to an image-generation model.
     ImageGenerationUser,
+    /// User prompt sent to a page-embedded video-generation model.
+    VideoGenerationUser,
     /// User prompt that reconstructs one logical artifact for a new theme.
     ProjectAssetRegenerationUser,
     /// Model-facing descriptions for the generation tool registry.
@@ -97,6 +99,28 @@ pub enum PromptId {
     PageBrowserRepairUser,
     /// Final user message when page tools are exhausted.
     PageToolExhaustedUser,
+    /// System prompt for an engine-neutral video plan.
+    VideoPlanSystem,
+    /// User prompt for an engine-neutral video plan.
+    VideoPlanUser,
+    /// System prompt for semantic video-plan review.
+    VideoReviewSystem,
+    /// User prompt for semantic video-plan review.
+    VideoReviewUser,
+    /// System prompt for authoring a Hyperframe project.
+    VideoHyperframeSystem,
+    /// User prompt for authoring a Hyperframe project.
+    VideoHyperframeUser,
+    /// System prompt for authoring a Manim scene.
+    VideoManimSystem,
+    /// User prompt for authoring a Manim scene.
+    VideoManimUser,
+    /// System prompt for focused local renderer source repair.
+    VideoSourceRepairSystem,
+    /// User prompt for focused local renderer source repair.
+    VideoSourceRepairUser,
+    /// Final user message when video planning tools are exhausted.
+    VideoToolExhaustedUser,
 }
 
 impl PromptId {
@@ -130,6 +154,7 @@ impl PromptId {
             Self::SlidesEditToolExhaustedUser,
             Self::SlidesLayoutRepairToolExhaustedUser,
             Self::ImageGenerationUser,
+            Self::VideoGenerationUser,
             Self::ProjectAssetRegenerationUser,
             Self::ToolsGenerationDescriptions,
             Self::PageDraftSystem,
@@ -143,6 +168,17 @@ impl PromptId {
             Self::PageBrowserRepairSystem,
             Self::PageBrowserRepairUser,
             Self::PageToolExhaustedUser,
+            Self::VideoPlanSystem,
+            Self::VideoPlanUser,
+            Self::VideoReviewSystem,
+            Self::VideoReviewUser,
+            Self::VideoHyperframeSystem,
+            Self::VideoHyperframeUser,
+            Self::VideoManimSystem,
+            Self::VideoManimUser,
+            Self::VideoSourceRepairSystem,
+            Self::VideoSourceRepairUser,
+            Self::VideoToolExhaustedUser,
         ]
     }
 
@@ -176,6 +212,7 @@ impl PromptId {
             Self::SlidesEditToolExhaustedUser => "slides.edit.tool-exhausted.user",
             Self::SlidesLayoutRepairToolExhaustedUser => "slides.layout-repair.tool-exhausted.user",
             Self::ImageGenerationUser => "image.generation.user",
+            Self::VideoGenerationUser => "video.generation.user",
             Self::ProjectAssetRegenerationUser => "artifact.regeneration.user",
             Self::ToolsGenerationDescriptions => "tools.generation.descriptions",
             Self::PageDraftSystem => "page.draft.system",
@@ -189,6 +226,17 @@ impl PromptId {
             Self::PageBrowserRepairSystem => "page.browser-repair.system",
             Self::PageBrowserRepairUser => "page.browser-repair.user",
             Self::PageToolExhaustedUser => "page.tool-exhausted.user",
+            Self::VideoPlanSystem => "video.plan.system",
+            Self::VideoPlanUser => "video.plan.user",
+            Self::VideoReviewSystem => "video.review.system",
+            Self::VideoReviewUser => "video.review.user",
+            Self::VideoHyperframeSystem => "video.hyperframe.system",
+            Self::VideoHyperframeUser => "video.hyperframe.user",
+            Self::VideoManimSystem => "video.manim.system",
+            Self::VideoManimUser => "video.manim.user",
+            Self::VideoSourceRepairSystem => "video.source-repair.system",
+            Self::VideoSourceRepairUser => "video.source-repair.user",
+            Self::VideoToolExhaustedUser => "video.tool-exhausted.user",
         }
     }
 }

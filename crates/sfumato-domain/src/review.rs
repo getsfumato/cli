@@ -19,6 +19,10 @@ pub enum ReviewFormat {
     Python,
     /// Unstructured plain text.
     PlainText,
+    /// A structured plan for producing a video resource.
+    VideoPlan,
+    /// Renderer-owned source files used to produce a video.
+    VideoSource,
 }
 
 /// Machine-readable mutation policies attached to a review snapshot.
@@ -49,6 +53,10 @@ pub enum ReviewConstraint {
     TestDocumentRevision,
     /// Only the declared page content fields may be replaced.
     PageFieldsOnly,
+    /// Only semantic video-plan fields may be changed.
+    VideoPlanFieldsOnly,
+    /// Only declared renderer source files may be replaced.
+    VideoSourceFilesOnly,
 }
 
 /// A serializable, immutable view of a document that a reviewer may patch.
@@ -136,6 +144,16 @@ pub enum ReviewError {
     /// A patch no longer has the expected page DTO shape.
     #[error("reviewer patch produced an invalid page structure: {source}")]
     InvalidPatchedPage {
+        /// DTO deserialization error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// A video plan or renderer source document violates its invariants.
+    #[error("invalid video document: {0}")]
+    InvalidVideo(String),
+    /// A patch no longer has the expected video DTO shape.
+    #[error("reviewer patch produced an invalid video structure: {source}")]
+    InvalidPatchedVideo {
         /// DTO deserialization error.
         #[source]
         source: serde_json::Error,

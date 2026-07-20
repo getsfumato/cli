@@ -28,7 +28,7 @@ rejected. Each template is limited to 64 KiB. Invalid UTF-8 or an oversize file
 is an error, not a fallback.
 
 `<platform-config>` is the operating-system directory described in
-[Configuration v4](config-v4.md), such as `~/Library/Application Support` on
+[Configuration v5](config-v5.md), such as `~/Library/Application Support` on
 macOS or `$XDG_CONFIG_HOME` on Linux.
 
 ## Stable Prompt IDs
@@ -51,8 +51,16 @@ macOS or `$XDG_CONFIG_HOME` on Linux.
 | Page validation repair | `page.validation-repair.system` | `page.validation-repair.user` |
 | Page review | `page.review.system` | `page.review.user` |
 | Page browser repair | `page.browser-repair.system` | `page.browser-repair.user` |
+| Video plan | `video.plan.system` | `video.plan.user` |
+| Video plan review | `video.review.system` | `video.review.user` |
+| Hyperframes authoring | `video.hyperframe.system` | `video.hyperframe.user` |
+| Manim authoring | `video.manim.system` | `video.manim.user` |
+| Video source repair | `video.source-repair.system` | `video.source-repair.user` |
 
-Image generation uses the user template `image.generation.user`. The image tool
+Image generation uses the user template `image.generation.user`. Page video
+generation uses `video.generation.user`; it receives the requested asset,
+accessible description, active theme tokens, project instructions, and reusable
+artifact references before dispatching the remote video model. The image tool
 renders it with the requested visual, selected theme tokens, and project
 instructions; its provenance is included in the committed revision manifest.
 
@@ -102,6 +110,9 @@ The manifest is authoritative. Common required values are:
 | Page validation repair | Instruction, theme, selected plugins, rejected draft response, and static validation error. |
 | Page review | Instruction, project/theme context, project guidance, sources, and `page_snapshot`. |
 | Page browser repair | Instruction, theme, selected plugins, `page_snapshot`, and structured desktop/mobile `issue_report`. |
+| Video plan | Instruction, sources, project guidance, theme tokens, duration, engine, artifacts, and image-tool availability. |
+| Video authoring | Reviewed plan snapshot plus exact resolution, aspect, FPS, theme, and offline source contract. |
+| Video source repair | Renderer engine, immutable source snapshot, and the static or process validation error. |
 
 Compact variants use compact source/snapshot values selected by the use case.
 Retry variables are always present and indicate whether corrective feedback is

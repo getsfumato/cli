@@ -414,9 +414,26 @@ fn parse_options(values: &[String]) -> Result<ModelOptions> {
             "output_format" => {
                 options.image.output_format = Some(required_option_string(raw, key)?)
             }
+            "video_duration_seconds" => {
+                options.video.duration_seconds = Some(parse_option(raw, key)?)
+            }
+            "video_resolution" => {
+                options.video.resolution = Some(required_option_string(raw, key)?)
+            }
+            "video_aspect_ratio" => {
+                options.video.aspect_ratio = Some(required_option_string(raw, key)?)
+            }
+            "video_audio" => options.video.audio = Some(raw.parse()?),
+            "video_seed" => options.video.seed = Some(parse_option(raw, key)?),
+            "video_poll_interval_seconds" => {
+                options.video.poll_interval_seconds = Some(parse_option(raw, key)?)
+            }
+            "video_timeout_seconds" => {
+                options.video.timeout_seconds = Some(parse_option(raw, key)?)
+            }
             "" => bail!("Model option key cannot be empty"),
             _ => bail!(
-                "Unknown model option '{key}'. Supported options: temperature, max_tokens, max_tool_rounds, top_p, seed, quality, background, size, aspect_ratio, output_format."
+                "Unknown model option '{key}'. Supported options include text/image options and video_duration_seconds, video_resolution, video_aspect_ratio, video_audio, video_seed, video_poll_interval_seconds, video_timeout_seconds."
             ),
         }
     }

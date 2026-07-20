@@ -44,6 +44,7 @@ async fn authenticated_app_server_discovers_a_model_and_executes_a_dynamic_tool(
             options: ModelOptions {
                 text: TextModelOptions::default(),
                 image: Default::default(),
+                video: Default::default(),
             },
         },
         PathBuf::from(env!("CARGO_MANIFEST_DIR")),

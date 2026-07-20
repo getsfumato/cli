@@ -31,6 +31,7 @@ use crate::{
     templates::FilesystemGenerationTemplateCatalog,
     themes::FilesystemThemeRepository,
     tools::FilesystemGenerationToolFactory,
+    videos::ManagedVideoRenderers,
 };
 
 /// Filesystem-backed effective configuration resolver.
@@ -94,6 +95,7 @@ pub fn production_application() -> Result<SfumatoApplication> {
     let secret_resolver: Arc<dyn sfumato_core::secrets::SecretResolver> = secrets.clone();
     let secret_store: Arc<dyn sfumato_core::secrets::SecretStore> = secrets;
     let providers = Arc::new(AdapterProviderFactory::new(secret_resolver));
+    let video_renderers = Arc::new(ManagedVideoRenderers::default_path()?);
     Ok(SfumatoApplication::new(SfumatoApplicationDependencies {
         config: config_resolver,
         prompts: Arc::new(LayeredPromptCatalogFactory),
@@ -105,6 +107,8 @@ pub fn production_application() -> Result<SfumatoApplication> {
         slides: Arc::new(MarpCliRenderer),
         page_assembler: Arc::new(StandalonePageAssembler),
         page_inspector: Arc::new(ChromiumPageInspector),
+        video_renderer: video_renderers.clone(),
+        renderer_manager: video_renderers,
         page_plugins: Arc::new(FilesystemPagePluginCatalog::default_path()?),
         page_plugin_source: Arc::new(CdnPagePluginSource::new()?),
         templates: Arc::new(FilesystemGenerationTemplateCatalog::default_path()?),

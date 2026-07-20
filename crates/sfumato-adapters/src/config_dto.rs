@@ -1,18 +1,19 @@
-//! Persisted schema-v4 configuration documents.
+//! Persisted schema-v5 configuration documents.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sfumato_core::config::{
-    Capability, CodexAppServerConnectorConfig, ConnectorConfig, GlobalConfig, ImageModelOptions,
-    MarpConfig, ModelDefaults, ModelOptions, ModelProfile, ModelRole, OllamaConnectorConfig,
-    OpenAiCompatibleConnectorConfig, OpenRouterConnectorConfig, ProjectConfig, ProjectRegistry,
-    RegisteredProject, SecretRef, TextModelOptions, UserConfig,
+    Capability, CodexAppServerConnectorConfig, ConnectorConfig, GenerationToolDefaults,
+    GenerationToolKind, GlobalConfig, ImageModelOptions, MarpConfig, ModelDefaults, ModelOptions,
+    ModelProfile, ModelRole, OllamaConnectorConfig, OpenAiCompatibleConnectorConfig,
+    OpenRouterConnectorConfig, PageDefaults, ProjectConfig, ProjectRegistry, ProjectSecurityConfig,
+    RegisteredProject, SecretRef, TextModelOptions, UserConfig, VideoAudioMode, VideoModelOptions,
 };
 
 /// Current persisted configuration schema.
-pub const CONFIG_SCHEMA_VERSION: u32 = 4;
+pub const CONFIG_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -72,7 +73,7 @@ struct ModelProfileDto {
     options: ModelOptionsDto,
 }
 
-/// The v4 file intentionally keeps options flat for human editing. Conversion
+/// The file intentionally keeps options flat for human editing. Conversion
 /// groups them by capability before they enter the application layer.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -97,6 +98,20 @@ struct ModelOptionsDto {
     aspect_ratio: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_duration_seconds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_audio: Option<VideoAudioMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_seed: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_poll_interval_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_timeout_seconds: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -134,9 +149,29 @@ pub(crate) struct ProjectConfigDto {
     #[serde(default)]
     model_roles: BTreeMap<ModelRole, String>,
     #[serde(default)]
-    plugins: Vec<String>,
+    page: PageDefaultsDto,
+    #[serde(default)]
+    generation_tools: BTreeMap<GenerationToolKind, bool>,
+    #[serde(default)]
+    security: ProjectSecurityDto,
     #[serde(default)]
     marp: Option<MarpConfigDto>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PageDefaultsDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ui: Option<String>,
+    #[serde(default)]
+    plugins: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectSecurityDto {
+    #[serde(default)]
+    allow_manim: bool,
 }
 
 impl GlobalConfigDto {
@@ -349,7 +384,14 @@ impl ProjectConfigDto {
             publish_dir: self.publish_dir,
             model_defaults: self.model_defaults,
             model_roles: self.model_roles,
-            plugins: self.plugins,
+            page: PageDefaults {
+                ui: self.page.ui,
+                plugins: self.page.plugins,
+            },
+            generation_tools: GenerationToolDefaults(self.generation_tools),
+            security: ProjectSecurityConfig {
+                allow_manim: self.security.allow_manim,
+            },
             marp: self.marp.map(Into::into),
         };
         project.validate()?;
@@ -364,7 +406,14 @@ impl ProjectConfigDto {
             publish_dir: project.publish_dir.clone(),
             model_defaults: project.model_defaults.clone(),
             model_roles: project.model_roles.clone(),
-            plugins: project.plugins.clone(),
+            page: PageDefaultsDto {
+                ui: project.page.ui.clone(),
+                plugins: project.page.plugins.clone(),
+            },
+            generation_tools: project.generation_tools.0.clone(),
+            security: ProjectSecurityDto {
+                allow_manim: project.security.allow_manim,
+            },
             marp: project.marp.as_ref().map(MarpConfigDto::from),
         }
     }
@@ -387,6 +436,15 @@ impl From<ModelOptionsDto> for ModelOptions {
                 aspect_ratio: options.aspect_ratio,
                 output_format: options.output_format,
             },
+            video: VideoModelOptions {
+                duration_seconds: options.video_duration_seconds,
+                resolution: options.video_resolution,
+                aspect_ratio: options.video_aspect_ratio,
+                audio: options.video_audio,
+                seed: options.video_seed,
+                poll_interval_seconds: options.video_poll_interval_seconds,
+                timeout_seconds: options.video_timeout_seconds,
+            },
         }
     }
 }
@@ -404,6 +462,13 @@ impl From<&ModelOptions> for ModelOptionsDto {
             size: options.image.size.clone(),
             aspect_ratio: options.image.aspect_ratio.clone(),
             output_format: options.image.output_format.clone(),
+            video_duration_seconds: options.video.duration_seconds,
+            video_resolution: options.video.resolution.clone(),
+            video_aspect_ratio: options.video.aspect_ratio.clone(),
+            video_audio: options.video.audio,
+            video_seed: options.video.seed,
+            video_poll_interval_seconds: options.video.poll_interval_seconds,
+            video_timeout_seconds: options.video.timeout_seconds,
         }
     }
 }
@@ -427,7 +492,7 @@ impl From<&MarpConfig> for MarpConfigDto {
 }
 
 fn validate_schema(actual: u32, kind: &str) -> Result<()> {
-    if actual != CONFIG_SCHEMA_VERSION {
+    if !matches!(actual, 4 | CONFIG_SCHEMA_VERSION) {
         bail!(
             "Unsupported {kind} config schema {actual}; Sfumato v0.2 requires schema {CONFIG_SCHEMA_VERSION}"
         );

@@ -115,6 +115,35 @@ fn rejects_remote_and_unregistered_assets() {
 }
 
 #[test]
+fn accepts_a_registered_local_video_asset_and_offline_media_csp() {
+    let (_directory, theme) = theme();
+    let asset_directory = tempfile::tempdir().unwrap();
+    let video = asset_directory.path().join("lesson.mp4");
+    fs::write(&video, b"test-video").unwrap();
+    let page = PageDocument::new(
+        "Animated lesson",
+        r#"<section><video controls preload="metadata" src="assets/videos/lesson.mp4"></video></section>"#,
+        "video { max-width: 100%; height: auto; }",
+        "",
+    )
+    .unwrap();
+
+    let html = StandalonePageAssembler
+        .assemble(PageAssemblyRequest {
+            document: &page,
+            theme: &theme,
+            plugins: &[],
+            allowed_assets: &[video],
+            inspection: false,
+        })
+        .unwrap()
+        .html;
+
+    assert!(html.contains("media-src 'self' data:"));
+    assert!(html.contains("assets/videos/lesson.mp4"));
+}
+
+#[test]
 fn accepts_semantic_header_without_confusing_it_with_head() {
     let (_directory, theme) = theme();
     let page = PageDocument::new(

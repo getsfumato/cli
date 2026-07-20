@@ -25,6 +25,26 @@ fn representative_variables() -> PromptVariables {
         ("title", json!("Fourier Series")),
         ("title_provided", json!(true)),
         ("image_generation_available", json!(true)),
+        ("video_generation_available", json!(true)),
+        (
+            "accessible_description",
+            json!("Animated Fourier decomposition"),
+        ),
+        ("engine", json!("hyperframe")),
+        ("duration_seconds", json!(15)),
+        ("resolution", json!("1080p")),
+        ("aspect_ratio", json!("16:9")),
+        ("width", json!(1920)),
+        ("height", json!(1080)),
+        ("fps", json!(30)),
+        (
+            "plan_snapshot",
+            json!({"revision": "video-plan-r1", "scenes": []}),
+        ),
+        (
+            "source_snapshot",
+            json!({"revision": "video-source-r1", "files": {}}),
+        ),
         (
             "source_bundle",
             json!("SOURCE: notes.md\nGrounded evidence"),
@@ -202,7 +222,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "2c036431e3acede84025a59d8af94e2c0380468dd4916ded16174b57803f6ca8"
+        "eb87408c571685e30244cfab216836e01d7a6deb60f6ddd98e289b7f5392026b"
     );
 }
 

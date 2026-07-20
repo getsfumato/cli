@@ -10,7 +10,7 @@
 | V02-004 | Strict layered prompts with deterministic provenance. | `PromptId`, `PromptCatalog`, `LayeredPromptCatalog`, prompt assets. | `tests/prompts.rs`: parity, strict render, precedence, traversal, symlink, size, customization, aggregate hash. |
 | V02-005 | One cancellation-aware generation use case. | `SfumatoApplication::generate_slides`, slide stage modules. | Draft compaction, structural repair, Mermaid repair, review, layout, rendering, and publication tests. |
 | V02-006 | Guarded content-only editing. | `SfumatoApplication::edit_slides`, `SlideDeckDocument`. | Patch allowlist, structural rejection, revision guard, focused replacement, and preservation tests. |
-| V02-007 | Strict schema-v4 config and indirect secrets. | Adapter DTOs/stores, `SecretRef`, `SecretResolver`, `SecretStore`, and `EffectiveConfig`. | Round trip, keyring lifecycle, provider resolution, side-effect-free read, legacy/future rejection, stale revision, concurrent edit, and redaction tests. |
+| V02-007 | Strict schema-v5 config, v4 migration, and indirect secrets. | Adapter DTOs/stores, `SecretRef`, `SecretResolver`, `SecretStore`, and `EffectiveConfig`. | Migration backup, round trip, keyring lifecycle, provider resolution, side-effect-free v5 read, future rejection, stale revision, concurrent edit, and redaction tests. |
 | V02-008 | Stable typed application errors. | `ErrorCode`, `ErrorClass`, `OperationStage`, `SfumatoError`. | Error contract tests; `sfumato-core` contains no `anyhow` dependency or usage. |
 | V02-009 | Cancellation/deadlines through provider, tools, processes, and retries. | `OperationContext`, `AgentRunner`, adapter runtime guards, bounded TUI jobs. | Agent cancellation, runtime deadline, process termination, and stale-job tests. |
 | V02-010 | Immutable transactional artifacts. | `ArtifactStore`, `FilesystemArtifactStore`, versioned resource layout. | Commit, drop rollback, pointer rollback, symlink/path rejection, duplicate/reserved path, and concurrent commit tests. |
@@ -29,6 +29,8 @@
 | V02-023 | Themes exchange Google DESIGN.md tokens. | `FilesystemThemeRepository::{import_design,export_design}`. | Round-trip, adapter generation, invalid color/version, and duplicate-section tests. |
 | V02-024 | React UI libraries remain offline during generation and catalog-driven. | `PagePluginCatalog` dependency resolution and user-installed React/UI runtimes. | Dependency-order/hash tests and feature-gated real Chromium mounting test. |
 | V02-025 | Connectors compose shared generation transports with optional native operations. | `ProviderFactory`, `ConnectorIntrospection`, OpenRouter/Ollama/Codex adapters. | Config round trips, native response mapping, CLI parsing, asynchronous TUI effects, and credential-free transcript tests. |
+| V02-026 | Page UI, utilities, runtimes, and generation tools are independent. | `PageDefaults`, `PagePluginCategory`, `GenerationToolKind`, page resolver, typed TUI fields. | Exclusive-UI, tool-precedence, resource-form, and CLI parsing tests. |
+| V02-027 | Standalone videos share planning but use explicit non-fallback engines. | `VideoPlanDocument`, `VideoSourceDocument`, `GenerateVideo`, `VideoRenderer`, `VideoGenerationProvider`. | Domain patch, source validation, publishing, option parsing, prompt snapshot, and adapter tests. |
 
 Material contract changes require an ADR amendment, a traceability update, and a
 test that fails against the previous behavior.

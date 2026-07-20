@@ -191,6 +191,15 @@ impl PreparedProjectAssets {
             .collect()
     }
 
+    pub fn materialize_all(&self, workspace: &dyn WorkspaceFileSystem) -> Result<Vec<PathBuf>> {
+        let mut paths = Vec::with_capacity(self.assets.len());
+        for asset in &self.assets {
+            workspace.copy_file(&asset.source, &asset.destination)?;
+            paths.push(asset.destination.clone());
+        }
+        Ok(paths)
+    }
+
     pub fn materialize_referenced(
         &self,
         document: &str,

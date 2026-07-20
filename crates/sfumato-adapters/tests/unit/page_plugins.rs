@@ -45,7 +45,11 @@ fn package(id: &str, version: &str, dependencies: Vec<String>) -> DownloadedPage
         name: id.into(),
         version: version.into(),
         api_global: format!("window.SfumatoPlugins.{id}"),
-        category: sfumato_core::page_plugins::PagePluginCategory::Ui,
+        category: if id == "react" {
+            sfumato_core::page_plugins::PagePluginCategory::Runtime
+        } else {
+            sfumato_core::page_plugins::PagePluginCategory::Ui
+        },
         dependencies,
         runtime_hash: format!("{:x}", Sha256::digest(runtime.as_bytes())),
         runtime_javascript: runtime,
@@ -104,4 +108,20 @@ fn rejects_unknown_installed_plugins() {
     let catalog = FilesystemPagePluginCatalog::new(directory.path().to_path_buf());
     let error = catalog.load("unknown").unwrap_err();
     assert!(error.to_string().contains("not installed"));
+}
+
+#[test]
+fn rejects_resolving_two_ui_libraries_together() {
+    let directory = tempfile::tempdir().unwrap();
+    let catalog = FilesystemPagePluginCatalog::new(directory.path().to_path_buf());
+    catalog.install(package("shadcn", "1", Vec::new())).unwrap();
+    catalog
+        .install(package("materialui", "1", Vec::new()))
+        .unwrap();
+
+    let error = catalog
+        .resolve(&["shadcn".into(), "materialui".into()])
+        .unwrap_err();
+
+    assert!(error.to_string().contains("only one UI library"));
 }

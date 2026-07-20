@@ -12,7 +12,9 @@ fn effective_config() -> EffectiveConfig {
         models: global.models,
         model_defaults: global.defaults.0,
         model_roles: global.model_roles,
-        plugins: Vec::new(),
+        page: PageDefaults::default(),
+        generation_tools: GenerationToolDefaults::default(),
+        security: ProjectSecurityConfig::default(),
         marp: global.marp,
     }
 }
@@ -151,4 +153,32 @@ fn reviewer_override_wins_over_project_and_user_roles() {
         Some("command".to_string()),
     );
     assert_eq!(merged.get(&ModelRole::Reviewer).unwrap(), "command");
+}
+
+#[test]
+fn command_generation_tool_override_wins_over_project_default() {
+    let merged = merge_tool_defaults(
+        BTreeMap::from([
+            (GenerationToolKind::ImageGen, true),
+            (GenerationToolKind::VideoGen, false),
+        ]),
+        BTreeMap::from([
+            (GenerationToolKind::ImageGen, false),
+            (GenerationToolKind::VideoGen, true),
+        ]),
+    );
+
+    assert_eq!(merged.get(&GenerationToolKind::ImageGen), Some(&false));
+    assert_eq!(merged.get(&GenerationToolKind::VideoGen), Some(&true));
+}
+
+#[test]
+fn image_tool_defaults_to_model_availability_and_video_stays_off() {
+    let mut config = effective_config();
+    config
+        .model_defaults
+        .insert(Capability::Image, "image".into());
+
+    assert!(config.generation_tool_enabled(GenerationToolKind::ImageGen));
+    assert!(!config.generation_tool_enabled(GenerationToolKind::VideoGen));
 }

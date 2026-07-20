@@ -17,7 +17,7 @@ fn test_application() -> Arc<SfumatoApplication> {
 fn generation_form_requires_an_instruction() {
     let form = GenerateForm::default();
 
-    assert!(form.to_args().is_err());
+    assert!(form.to_slides_args().is_err());
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn generation_form_builds_capability_override_and_sources() {
         }
     }
 
-    let args = form.to_args().unwrap();
+    let args = form.to_slides_args().unwrap();
 
     assert_eq!(
         args.inputs,
@@ -55,22 +55,23 @@ fn generation_form_builds_capability_override_and_sources() {
 
 #[test]
 fn generation_form_builds_a_page_with_multiple_catalog_plugins() {
-    let mut form =
-        GenerateForm::with_plugins(vec!["lottie".into(), "motion".into(), "threejs".into()]);
+    let mut form = GenerateForm::with_plugins(
+        vec!["shadcn".into()],
+        vec!["lottie".into(), "motion".into(), "threejs".into()],
+    );
+    if let FormField::Select { selected, .. } = &mut form.fields[0] {
+        *selected = 1;
+    }
+    form.switch_resource_from_selector();
     for field in &mut form.fields {
         match field {
-            FormField::Select {
-                label: "Resource",
-                selected,
-                ..
-            } => *selected = 1,
             FormField::Text {
                 label: "Instruction",
                 value,
                 ..
             } => *value = "Build an interactive transform explorer".into(),
             FormField::MultiSelect {
-                label: "Page plugins",
+                label: "Utility plugins",
                 selected,
                 ..
             } => {
@@ -81,9 +82,114 @@ fn generation_form_builds_a_page_with_multiple_catalog_plugins() {
         }
     }
 
-    assert!(form.is_page());
+    assert_eq!(form.resource, GenerateResource::Page);
     let args = form.to_page_args().unwrap();
     assert_eq!(args.plugins, vec!["motion", "threejs"]);
+}
+
+#[test]
+fn generation_form_uses_resource_specific_publication_and_controls() {
+    let mut form = GenerateForm::with_plugins(vec!["shadcn".into()], vec!["motion".into()]);
+    assert!(
+        form.fields
+            .iter()
+            .any(|field| field.label() == "Publish PDF")
+    );
+    assert!(
+        !form
+            .fields
+            .iter()
+            .any(|field| field.label() == "UI library")
+    );
+
+    if let FormField::Select { selected, .. } = &mut form.fields[0] {
+        *selected = 1;
+    }
+    form.switch_resource_from_selector();
+    assert!(
+        form.fields
+            .iter()
+            .any(|field| field.label() == "Publish page")
+    );
+    assert!(
+        form.fields
+            .iter()
+            .any(|field| field.label() == "UI library")
+    );
+    assert!(
+        form.fields
+            .iter()
+            .any(|field| field.label() == "Video generation")
+    );
+    assert!(
+        !form
+            .fields
+            .iter()
+            .any(|field| field.label() == "Publish PDF")
+    );
+
+    if let FormField::Select { selected, .. } = &mut form.fields[0] {
+        *selected = 2;
+    }
+    form.switch_resource_from_selector();
+    assert!(
+        form.fields
+            .iter()
+            .any(|field| field.label() == "Publish MP4")
+    );
+    assert!(
+        !form
+            .fields
+            .iter()
+            .any(|field| field.label() == "UI library")
+    );
+    assert!(
+        !form
+            .fields
+            .iter()
+            .any(|field| field.label() == "Video generation")
+    );
+}
+
+#[test]
+fn video_engine_switches_only_show_applicable_fields() {
+    let mut form = GenerateForm::default();
+    if let FormField::Select { selected, .. } = &mut form.fields[0] {
+        *selected = 2;
+    }
+    form.switch_resource_from_selector();
+
+    assert!(
+        form.fields
+            .iter()
+            .any(|field| field.label() == "Code model")
+    );
+    assert!(form.fields.iter().any(|field| field.label() == "FPS"));
+    assert!(!form.fields.iter().any(|field| field.label() == "Audio"));
+
+    let engine = form
+        .field_ids
+        .iter()
+        .position(|id| *id == GenerateFieldId::Engine)
+        .unwrap();
+    if let FormField::Select { selected, .. } = &mut form.fields[engine] {
+        *selected = 2;
+    }
+    form.switch_video_engine_from_selector();
+
+    assert!(
+        form.fields
+            .iter()
+            .any(|field| field.label() == "Video model")
+    );
+    assert!(form.fields.iter().any(|field| field.label() == "Audio"));
+    assert!(
+        !form
+            .fields
+            .iter()
+            .any(|field| field.label() == "Code model")
+    );
+    assert!(!form.fields.iter().any(|field| field.label() == "FPS"));
 }
 
 #[test]
@@ -124,7 +230,7 @@ fn cli_and_tui_build_equivalent_generation_arguments() {
             .to_string();
         }
     }
-    let tui_args = form.to_args().unwrap();
+    let tui_args = form.to_slides_args().unwrap();
 
     assert_eq!(tui_args.inputs, cli_args.inputs);
     assert_eq!(tui_args.instruction, cli_args.instruction);

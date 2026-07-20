@@ -10,6 +10,7 @@ mod deck;
 mod page;
 mod primitives;
 mod review;
+mod video;
 
 pub use artifact::{
     ARTIFACT_MANIFEST_SCHEMA_VERSION, ArtifactKind, ArtifactManifest, ArtifactManifestError,
@@ -27,4 +28,8 @@ pub use review::{
     MAX_PATCH_OPERATIONS, Patch, PatchOperation, PatchReport, ReviewConstraint, ReviewError,
     ReviewFormat, ReviewSnapshot, ReviewableDocument, ValidationReport, parse_json_patch,
     validate_rfc6902_patch,
+};
+pub use video::{
+    VIDEO_PLAN_SCHEMA_VERSION, VIDEO_SOURCE_SCHEMA_VERSION, VideoEngine, VideoPlanDocument,
+    VideoScene, VideoSourceDocument,
 };

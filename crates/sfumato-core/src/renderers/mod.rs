@@ -1,6 +1,9 @@
 //! Renderer ports used by resource workflows.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -13,6 +16,7 @@ use crate::{
     themes::ThemePackage,
 };
 use sfumato_domain::PageDocument;
+pub use sfumato_domain::VideoEngine;
 
 /// Semantic Mermaid styling derived from a Sfumato theme.
 #[derive(Clone, Debug, Serialize)]
@@ -109,4 +113,93 @@ pub trait PageInspector: Send + Sync {
         browser_path: Option<&Path>,
         operation: &OperationContext,
     ) -> SfumatoResult<Vec<PageInspectionIssue>>;
+}
+
+/// Engine-specific local video rendering parameters.
+#[derive(Clone, Debug)]
+pub struct VideoRenderRequest {
+    /// Hyperframe or Manim source bundle root.
+    pub source_root: PathBuf,
+    /// Final MP4 destination in transaction staging.
+    pub output_path: PathBuf,
+    /// Requested duration in seconds.
+    pub duration_seconds: u32,
+    /// Output width in pixels.
+    pub width: u32,
+    /// Output height in pixels.
+    pub height: u32,
+    /// Output frame rate.
+    pub fps: u32,
+    /// Renderer quality name.
+    pub quality: String,
+}
+
+/// Metadata measured from a rendered MP4.
+#[derive(Clone, Debug, Serialize)]
+pub struct VideoInspection {
+    /// Measured duration in seconds.
+    pub duration_seconds: f64,
+    /// Encoded width.
+    pub width: u32,
+    /// Encoded height.
+    pub height: u32,
+    /// Whether at least one audio stream exists.
+    pub has_audio: bool,
+    /// Primary video codec.
+    pub video_codec: String,
+}
+
+/// Local Hyperframe and Manim process adapter.
+#[async_trait]
+pub trait VideoRenderer: Send + Sync {
+    /// Validates and renders one local generated-code project.
+    async fn render(
+        &self,
+        engine: VideoEngine,
+        request: &VideoRenderRequest,
+        operation: &OperationContext,
+    ) -> SfumatoResult<()>;
+
+    /// Validates that a final file is a playable video with expected shape.
+    async fn inspect(
+        &self,
+        video_path: &Path,
+        operation: &OperationContext,
+    ) -> SfumatoResult<VideoInspection>;
+}
+
+/// Installation and health state for one generated-code renderer.
+#[derive(Clone, Debug, Serialize)]
+pub struct RendererStatus {
+    /// Stable renderer ID.
+    pub id: String,
+    /// Pinned release managed by Sfumato.
+    pub version: String,
+    /// Whether the managed executable is installed.
+    pub installed: bool,
+    /// Whether all external dependencies are currently available.
+    pub healthy: bool,
+    /// Human-readable diagnostics without terminal formatting.
+    pub details: Vec<String>,
+}
+
+/// Explicit lifecycle for optional local renderers.
+#[async_trait]
+pub trait RendererManager: Send + Sync {
+    /// Lists supported renderer packages and health state.
+    async fn list(&self, operation: &OperationContext) -> SfumatoResult<Vec<RendererStatus>>;
+    /// Installs one pinned renderer into Sfumato's managed directory.
+    async fn install(
+        &self,
+        id: &str,
+        operation: &OperationContext,
+    ) -> SfumatoResult<RendererStatus>;
+    /// Removes one managed renderer package.
+    fn remove(&self, id: &str) -> SfumatoResult<RendererStatus>;
+    /// Runs dependency and executable checks.
+    async fn doctor(
+        &self,
+        id: Option<&str>,
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<RendererStatus>>;
 }

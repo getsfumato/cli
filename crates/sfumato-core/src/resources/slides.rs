@@ -183,8 +183,7 @@ pub(crate) async fn generate_slides(
         BTreeMap::from([("documents".to_string(), documents.len().to_string())]),
     );
     let image_selection = config
-        .model_defaults
-        .contains_key(&Capability::Image)
+        .generation_tool_enabled(crate::config::GenerationToolKind::ImageGen)
         .then(|| config.resolve_model(Capability::Image))
         .transpose()?;
     let image_provider = image_selection
@@ -233,6 +232,7 @@ pub(crate) async fn generate_slides(
         project_root: config.project_root.clone(),
         sources: request.sources.clone(),
         image: image_tool,
+        video: None,
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let review_tool_definitions = tool_set

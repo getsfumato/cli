@@ -4,12 +4,19 @@ use sfumato_core::{
     errors::{OperationStage, SfumatoResult},
     operation::OperationContext,
     prompts::{PromptError, PromptOrigin, PromptProvenance, RenderedPrompt},
-    providers::{ImageGenerationProvider, ImageGenerationResponse},
+    providers::{
+        ImageGenerationProvider, ImageGenerationResponse, VideoGenerationProvider,
+        VideoGenerationRequest, VideoGenerationResponse,
+    },
     themes::{THEME_SCHEMA_VERSION, ThemeAdapters, ThemeManifest, ThemePackage, ThemeTokens},
 };
 use std::{collections::BTreeMap, sync::Mutex};
 
 struct MockImageProvider {
+    prompts: Arc<Mutex<Vec<String>>>,
+}
+
+struct MockVideoProvider {
     prompts: Arc<Mutex<Vec<String>>>,
 }
 
@@ -29,7 +36,10 @@ impl PromptCatalog for TestPromptCatalog {
                     "read_file_path": "File path.",
                     "image_generation": "Generate an image.",
                     "image_prompt": "Image prompt.",
-                    "image_alt_text": "Accessible alternative text."
+                    "image_alt_text": "Accessible alternative text.",
+                    "video_generation": "Generate a video.",
+                    "video_prompt": "Video prompt.",
+                    "video_accessible_description": "Accessible video description."
                 })
                 .to_string(),
                 provenance: PromptProvenance {
@@ -81,6 +91,24 @@ impl ImageGenerationProvider for MockImageProvider {
         Ok(ImageGenerationResponse {
             bytes: b"fake-png".to_vec(),
             media_type: "image/png".to_string(),
+        })
+    }
+}
+
+#[async_trait]
+impl VideoGenerationProvider for MockVideoProvider {
+    async fn generate_video(
+        &self,
+        request: VideoGenerationRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
+    ) -> SfumatoResult<VideoGenerationResponse> {
+        self.prompts.lock().unwrap().push(request.prompt);
+        Ok(VideoGenerationResponse {
+            bytes: b"fake-mp4".to_vec(),
+            media_type: "video/mp4".into(),
+            provider_job_id: Some("job-1".into()),
+            cost: Some(0.01),
         })
     }
 }
@@ -200,6 +228,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
                 theme,
                 project_instructions: Some("Use Spanish labels.".to_string()),
             }),
+            video: None,
             prompt_catalog: Arc::new(TestPromptCatalog),
         })
         .unwrap();
@@ -233,7 +262,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
     assert_eq!(tools.generated_artifacts().unwrap().len(), 1);
     assert_eq!(tools.generated_prompts().unwrap().len(), 2);
     assert!(tools.generated_artifacts().unwrap()[0].is_file());
-    let prompt = &prompts.lock().unwrap()[0];
+    let prompt = prompts.lock().unwrap()[0].clone();
     assert!(prompt.contains("Theme: gruvbox"));
     assert!(prompt.contains("background=#282828"));
     assert!(prompt.contains("A labeled unit circle"));
@@ -248,6 +277,7 @@ fn filesystem_only_tools_do_not_declare_image_generation() {
             project_root: temp.path().to_path_buf(),
             sources: Vec::new(),
             image: None,
+            video: None,
             prompt_catalog: Arc::new(TestPromptCatalog),
         })
         .unwrap();
@@ -258,4 +288,93 @@ fn filesystem_only_tools_do_not_declare_image_generation() {
             .iter()
             .all(|tool| tool.function.name != "sfumato_image_gen")
     );
+}
+
+#[tokio::test]
+async fn page_video_tool_injects_theme_tracks_mp4_and_allows_one_call() {
+    let temp = tempfile::tempdir().unwrap();
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let theme = ThemePackage {
+        root: temp.path().to_path_buf(),
+        manifest: ThemeManifest {
+            schema_version: THEME_SCHEMA_VERSION,
+            name: "gruvbox".into(),
+            description: "Test".into(),
+            tokens: ThemeTokens {
+                colors: BTreeMap::from([("accent".into(), "#fabd2f".into())]),
+                fonts: BTreeMap::from([("body".into(), "Inter".into())]),
+            },
+            adapters: ThemeAdapters {
+                marp_css: "marp/theme.css".into(),
+                html: None,
+            },
+        },
+    };
+    let tools = FilesystemGenerationToolFactory
+        .create(GenerationToolsRequest {
+            project_root: temp.path().to_path_buf(),
+            sources: Vec::new(),
+            image: None,
+            video: Some(VideoToolConfig {
+                provider: Arc::new(MockVideoProvider {
+                    prompts: prompts.clone(),
+                }),
+                profile_name: "remote-video".into(),
+                output_dir: temp.path().join("pages/assets/videos"),
+                reference_prefix: "assets/videos".into(),
+                theme,
+                project_instructions: Some("Use Spanish labels.".into()),
+                references: Vec::new(),
+                options: Default::default(),
+            }),
+            prompt_catalog: Arc::new(TestPromptCatalog),
+        })
+        .unwrap();
+
+    assert!(
+        tools
+            .definitions
+            .iter()
+            .any(|tool| tool.function.name == "sfumato_video_gen")
+    );
+    let request = ToolExecutionRequest {
+        name: "sfumato_video_gen".into(),
+        arguments: json!({
+            "prompt": "Animate harmonic synthesis",
+            "accessible_description": "Sine waves combine into a square wave"
+        }),
+    };
+    let result = tools
+        .executor
+        .execute(
+            request.clone(),
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
+        .await
+        .unwrap();
+    let result: Value = serde_json::from_str(&result).unwrap();
+
+    assert!(
+        result["html_path"]
+            .as_str()
+            .unwrap()
+            .starts_with("assets/videos/video-")
+    );
+    assert_eq!(tools.generated_artifacts().unwrap().len(), 1);
+    let prompt = prompts.lock().unwrap()[0].clone();
+    assert!(prompt.contains("Theme: gruvbox"));
+    assert!(prompt.contains("Animate harmonic synthesis"));
+    assert!(prompt.contains("Use Spanish labels."));
+
+    let error = tools
+        .executor
+        .execute(
+            request,
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("at most once"));
 }

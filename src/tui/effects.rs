@@ -71,6 +71,34 @@ pub(super) fn spawn_page_generation(
     })
 }
 
+pub(super) fn spawn_video_generation(
+    job_id: u64,
+    application: Arc<SfumatoApplication>,
+    args: VideoArgs,
+    sink: Arc<dyn Fn(TextGenerationEvent) + Send + Sync>,
+    operation: OperationContext,
+    sender: Sender<UiMessage>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        match execute_video(&application, args, Some(sink), operation).await {
+            Err(error) if is_cancelled_error(&error) => {
+                let _ = sender.send(UiMessage::ResourceCancelled { job_id }).await;
+            }
+            result => {
+                let result = result
+                    .map(ResourceResult::GeneratedVideo)
+                    .map_err(|error| format!("{error:#}"));
+                let _ = sender
+                    .send(UiMessage::ResourceFinished {
+                        job_id,
+                        result: Box::new(result),
+                    })
+                    .await;
+            }
+        }
+    })
+}
+
 pub(super) fn spawn_edit(
     job_id: u64,
     application: Arc<SfumatoApplication>,

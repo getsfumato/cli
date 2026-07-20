@@ -1,0 +1,10 @@
+Engine: {{ engine }}
+Validation or render error:
+{{ validation_error }}
+
+Source snapshot:
+{{ source_snapshot }}
+
+{% if engine == "hyperframe" %}
+Hyperframes repair contract: use a root `<div id="root" data-composition-id="root" data-start="0" data-width="{{ width }}" data-height="{{ height }}">`; load `./vendor/gsap.min.js`; create `gsap.timeline({ paused: true })`; extend it with `tl.set({}, {}, {{ duration_seconds }})`; and assign it to `window.__timelines["root"]`. Do not put composition metadata on `<html>` or use a remote GSAP URL.
+{% endif %}

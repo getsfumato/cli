@@ -25,7 +25,7 @@ sfumato presentation/composition -> sfumato-core application/ports -> sfumato-do
   generation/edit decisions. It also owns secret resolution and management
   ports without choosing a storage backend. It has no `anyhow`, Clap, Ratatui, Inquire,
   Indicatif, Reqwest, or process dependency.
-- **`sfumato-adapters`** implements schema-v4 TOML persistence, layered
+- **`sfumato-adapters`** implements schema-v5 TOML persistence and v4 migration, layered
   MiniJinja prompts, filesystem repositories, composed OpenAI-compatible,
   OpenRouter, Ollama, and local Codex transports,
   native OS credential storage, source/tools, Marp, Mermaid, browser inspection,
@@ -43,6 +43,7 @@ Cargo workspace dependencies enforce this direction.
 - [Prompt resolution](prompt-resolution.mmd): project/user/bundled precedence and provenance.
 - [Generation sequence](generation-sequence.mmd): draft, repair, review, render, commit, and publish.
 - [Page generation sequence](page-generation-sequence.mmd): structured fragments, offline plugins and MathJax, browser repair, commit, and namespaced Obsidian publication.
+- [Video generation sequence](video-generation-sequence.mmd): planning, review, engine-specific authoring, focused repair, MP4 inspection, and publication.
 - [Edit sequence](edit-sequence.mmd): revision-guarded content-only editing.
 - [Config lifecycle](config-lifecycle.mmd): strict v4 reads and atomic revision-aware writes.
 - [Secret resolution](secret-resolution.mmd): secure login, provider lookup, and future cloud replacement.
@@ -95,6 +96,11 @@ Connector transport composition is recorded in
 14. Configuration contains only indirect credential references. Provider
     transports resolve protected values at request time through `SecretResolver`;
     local credential management goes through the native OS store adapter.
+15. Page UI libraries are exclusive; utility plugins are combinable; internal
+    runtimes are dependency-selected; generation tools are a separate policy.
+16. Video generation never falls back between engines. Local generated source
+    receives at most one focused repair, and every final MP4 passes `ffprobe`
+    validation before its artifact transaction commits.
 
 ## Verification Gate
 

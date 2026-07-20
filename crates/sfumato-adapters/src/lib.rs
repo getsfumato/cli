@@ -24,3 +24,4 @@ pub mod sources;
 pub mod templates;
 pub mod themes;
 pub mod tools;
+pub mod videos;

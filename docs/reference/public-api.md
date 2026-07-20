@@ -26,7 +26,8 @@ let result = application
 ```
 
 `generate_slides` returns `SfumatoResult<GenerateSlidesResult>` and
-`generate_page` returns `SfumatoResult<GeneratePageResult>`. Page commands carry
+`generate_page` returns `SfumatoResult<GeneratePageResult>` and `generate_video`
+returns `SfumatoResult<GenerateVideoResult>`. Page commands carry
 generic installed plugin IDs and return the resolved versions and runtime hashes.
 `edit_slides` returns `SfumatoResult<EditSlidesResult>`. The same facade also
 owns project, model, connector, theme, prompt, setup, and configuration use
@@ -39,11 +40,12 @@ cases. CLI and TUI construct the same command DTOs.
 - `EffectiveConfigResolver` and `PromptCatalogFactory`;
 - `PromptManager` and schema-aware `ConfigEditor`;
 - `ArtifactStore`, repositories, and `WorkspaceFileSystem`;
-- `ProviderFactory`, `ConnectorIntrospection`, `TextModel`, and
-  `ImageGenerationProvider`;
+- `ProviderFactory`, `ConnectorIntrospection`, `TextModel`,
+  `ImageGenerationProvider`, and `VideoGenerationProvider`;
 - `SecretResolver` for provider authentication and `SecretStore` for secure
   connector login, status, and logout workflows;
-- `DiagramRenderer`, `SlideRenderer`, `SourceReader`, and `GenerationToolFactory`.
+- `DiagramRenderer`, `SlideRenderer`, `VideoRenderer`, `RendererManager`,
+  `SourceReader`, and `GenerationToolFactory`.
 - `PageAssembler`, `PageInspector`, and `PagePluginCatalog` for standalone pages.
 - `GenerationTemplateCatalog` and `ProjectAssetCatalog` for reusable structure
   and portable project media.
@@ -58,6 +60,8 @@ port boundary.
   snapshots and transactional patch application.
 - `PageDocument` exposes the same revision-guarded contract over `title`,
   `body_html`, `css`, and `javascript`; browser repair cannot change its title.
+- `VideoPlanDocument` guards engine-neutral plans; `VideoSourceDocument` guards
+  focused RFC 6902 changes to Hyperframes or Manim source files.
 - `TextModel::complete` performs one provider turn only for request/response
   transports such as OpenAI-compatible APIs.
 - `CodexAppServerProvider` owns a persistent JSON-RPC App Server process. It
@@ -112,10 +116,12 @@ MathJax with their pinned version and integrity hash. Edit results additionally 
 context compaction, and parent-linked revision artifacts.
 
 The committed `manifest.json` and `current.json` pointer are authoritative.
-Published PDFs and HTML pages are convenience copies and never supersede the
+Published PDFs, HTML pages, and MP4 files are convenience copies and never supersede the
 managed revision. Page publication uses
 `<out>/_sfumato/pages/<slug>/{index.md,index.html,assets/}` so generated content
-is explicit and navigable from Obsidian.
+is explicit and navigable from Obsidian. Video publication writes only
+`<out>/_sfumato/videos/<slug>/<slug>.mp4`; plans and generated source remain in
+the managed immutable revision.
 
 ## Public Surface Policy
 

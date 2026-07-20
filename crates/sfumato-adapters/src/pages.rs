@@ -262,7 +262,14 @@ fn validate_fragment_policy(fragment: &str, allowed_assets: &[std::path::PathBuf
     let allowed = allowed_assets
         .iter()
         .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
-        .map(|name| format!("assets/images/{name}"))
+        .map(|name| {
+            let kind = if name.ends_with(".mp4") {
+                "videos"
+            } else {
+                "images"
+            };
+            format!("assets/{kind}/{name}")
+        })
         .collect::<BTreeSet<_>>();
     for source in quoted_attribute_values(fragment, "src") {
         if source.starts_with("data:") || source.starts_with("blob:") {
@@ -452,6 +459,8 @@ struct BrowserReport {
     errors: Vec<String>,
     rejected_promises: Vec<String>,
     missing_images: Vec<String>,
+    #[serde(default)]
+    missing_videos: Vec<String>,
     blank: bool,
     horizontal_overflow_px: u32,
     #[serde(default)]
@@ -506,6 +515,12 @@ async fn inspect_page(
                 .missing_images
                 .into_iter()
                 .map(|message| page_issue(viewport, PageIssueKind::MissingImage, message, 0)),
+        );
+        issues.extend(
+            report
+                .missing_videos
+                .into_iter()
+                .map(|message| page_issue(viewport, PageIssueKind::MissingVideo, message, 0)),
         );
         issues.extend(
             report
@@ -630,6 +645,9 @@ const INSPECTION_REPORTER: &str = r#"<script data-sfumato-inspection>
     const images = [...document.images];
     const missing = images.filter(image => image.complete && image.naturalWidth === 0)
       .map(image => image.getAttribute('src') || 'unnamed image');
+    const videos = [...document.querySelectorAll('video')];
+    const missingVideos = videos.filter(video => video.error || video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE)
+      .map(video => video.getAttribute('src') || 'unnamed video');
     const visibleMedia = root && root.querySelector('img, svg, canvas, video, audio');
     const text = root ? (root.innerText || '').trim() : '';
     const overflow = Math.max(0, Math.ceil(document.documentElement.scrollWidth - document.documentElement.clientWidth));
@@ -637,6 +655,7 @@ const INSPECTION_REPORTER: &str = r#"<script data-sfumato-inspection>
       errors: window.__sfumatoErrors || [],
       rejected_promises: window.__sfumatoRejectedPromises || [],
       missing_images: missing,
+      missing_videos: missingVideos,
       blank: !root || (!text && !visibleMedia),
       horizontal_overflow_px: overflow,
       unrendered_math: rawMathSnippets(root)

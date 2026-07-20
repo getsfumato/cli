@@ -41,11 +41,34 @@ fn rejects_future_global_config_without_rewriting_it() {
 fn schema_reads_are_side_effect_free() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("config.toml");
-    fs::write(&path, "schema_version = 4\n").unwrap();
+    fs::write(&path, "schema_version = 5\n").unwrap();
 
     read_versioned::<toml::Value>(&path, "global").unwrap();
 
     assert!(!temp.path().join("config.toml.lock").exists());
+}
+
+#[test]
+fn migrates_v4_project_plugins_to_v5_page_defaults_with_backup() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("project.toml");
+    let legacy = "schema_version = 4\nname = \"demo\"\ntheme = \"gruvbox\"\nplugins = [\"shadcn\", \"motion\", \"materialui\"]\n";
+    fs::write(&path, legacy).unwrap();
+
+    let value = read_versioned::<toml::Value>(&path, "project").unwrap();
+
+    assert_eq!(value["schema_version"].as_integer(), Some(5));
+    assert_eq!(value["page"]["ui"].as_str(), Some("materialui"));
+    assert_eq!(value["page"]["plugins"][0].as_str(), Some("motion"));
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("page UI 'shadcn' was replaced by 'materialui'")
+    );
+    assert_eq!(
+        fs::read_to_string(path.with_extension("toml.v4.bak")).unwrap(),
+        legacy
+    );
 }
 
 #[test]

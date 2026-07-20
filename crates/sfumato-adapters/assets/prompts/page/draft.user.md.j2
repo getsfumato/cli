@@ -47,6 +47,10 @@ No JavaScript plugins were selected. Use standard browser APIs only.
 Actively assess where a new purpose-built image would materially improve learning. Call `sfumato_image_gen` whenever it is the clearest medium, even when reusable project artifacts are listed below; those artifacts are options, not an image budget or a restriction. Use every returned artifact path exactly in an `<img>` element with useful alt text.
 {% endif %}
 
+{% if video_generation_available %}
+You may call `sfumato_video_gen` once when motion is materially better than a static explanation. Give it a precise sequence-and-motion prompt plus an accessible description. Embed its returned `html_path` exactly once as `<video controls preload="metadata" src="..."></video>` and provide nearby explanatory text.
+{% endif %}
+
 {% if reusable_assets %}
 ## Reusable project assets
 

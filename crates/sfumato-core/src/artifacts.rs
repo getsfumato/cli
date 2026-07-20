@@ -19,6 +19,8 @@ pub enum ArtifactResourceKind {
     Slides,
     /// A standalone HTML page and optional generated image assets.
     Pages,
+    /// A playable MP4 and its reviewed plan and renderer sources.
+    Videos,
 }
 
 impl ArtifactResourceKind {
@@ -27,6 +29,7 @@ impl ArtifactResourceKind {
         match self {
             Self::Slides => "slides",
             Self::Pages => "pages",
+            Self::Videos => "videos",
         }
     }
 }

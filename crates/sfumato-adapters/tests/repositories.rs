@@ -17,7 +17,7 @@ fn filesystem_global_config_repository_round_trips_config() {
     let loaded = repository.load().unwrap();
     assert_eq!(loaded.models.len(), config.models.len());
     let persisted = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(persisted.starts_with("schema_version = 4\n"));
+    assert!(persisted.starts_with("schema_version = 5\n"));
 }
 
 #[test]

@@ -20,6 +20,7 @@ pub struct ConfigOverrides {
     pub reviewer_model: Option<String>,
     pub publish_dir: Option<PathBuf>,
     pub pdf: bool,
+    pub tool_overrides: BTreeMap<GenerationToolKind, bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -60,9 +61,15 @@ pub struct ProjectConfig {
     pub model_defaults: BTreeMap<Capability, String>,
     #[serde(default)]
     pub model_roles: BTreeMap<ModelRole, String>,
-    /// Page plugins enabled by default for this project.
+    /// Page-only visual extensions.
     #[serde(default)]
-    pub plugins: Vec<String>,
+    pub page: PageDefaults,
+    /// Model-backed tools made available to resource drafters.
+    #[serde(default)]
+    pub generation_tools: GenerationToolDefaults,
+    /// Explicit trust decisions for local generated-code renderers.
+    #[serde(default)]
+    pub security: ProjectSecurityConfig,
     #[serde(default)]
     pub marp: Option<MarpConfig>,
 }
@@ -81,6 +88,7 @@ pub struct ModelProfile {
 pub struct ModelOptions {
     pub text: TextModelOptions,
     pub image: ImageModelOptions,
+    pub video: VideoModelOptions,
 }
 
 /// Options used by text and code generation.
@@ -101,6 +109,124 @@ pub struct ImageModelOptions {
     pub size: Option<String>,
     pub aspect_ratio: Option<String>,
     pub output_format: Option<String>,
+}
+
+/// Options used by asynchronous video-generation models.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct VideoModelOptions {
+    /// Default duration used by the page video-generation tool.
+    pub duration_seconds: Option<u32>,
+    /// Provider resolution such as `720p` or `1080p`.
+    pub resolution: Option<String>,
+    /// Provider aspect ratio such as `16:9`.
+    pub aspect_ratio: Option<String>,
+    /// Native audio preference.
+    pub audio: Option<VideoAudioMode>,
+    /// Optional deterministic seed.
+    pub seed: Option<i64>,
+    /// Poll interval for asynchronous providers.
+    pub poll_interval_seconds: Option<u64>,
+    /// Maximum provider wait time.
+    pub timeout_seconds: Option<u64>,
+}
+
+/// Native audio policy for remote video models.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoAudioMode {
+    /// Let the provider use its model default.
+    Auto,
+    /// Request native generated audio.
+    On,
+    /// Request a silent clip.
+    Off,
+}
+
+impl FromStr for VideoAudioMode {
+    type Err = SfumatoError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "on" | "true" => Ok(Self::On),
+            "off" | "false" => Ok(Self::Off),
+            _ => bail!("Unknown video audio mode '{value}'. Use auto, on, or off."),
+        }
+    }
+}
+
+impl std::fmt::Display for VideoAudioMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        })
+    }
+}
+
+/// Page-specific project defaults.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct PageDefaults {
+    /// At most one component-library plugin selected for pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<String>,
+    /// Composable utility plugins such as Motion or Three.js.
+    #[serde(default)]
+    pub plugins: Vec<String>,
+}
+
+/// A model-backed tool that a generation workflow may expose.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum GenerationToolKind {
+    /// Generate an image and return a local artifact path.
+    ImageGen,
+    /// Generate a video and return a local artifact path.
+    VideoGen,
+}
+
+impl GenerationToolKind {
+    /// Stable CLI and configuration identifier.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ImageGen => "image-gen",
+            Self::VideoGen => "video-gen",
+        }
+    }
+
+    /// Model capability required by the tool.
+    pub const fn capability(self) -> Capability {
+        match self {
+            Self::ImageGen => Capability::Image,
+            Self::VideoGen => Capability::Video,
+        }
+    }
+}
+
+impl FromStr for GenerationToolKind {
+    type Err = SfumatoError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "image-gen" | "image_gen" => Ok(Self::ImageGen),
+            "video-gen" | "video_gen" => Ok(Self::VideoGen),
+            _ => bail!("Unknown generation tool '{value}'. Use image-gen or video-gen."),
+        }
+    }
+}
+
+/// Explicit project defaults for model-backed generation tools.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct GenerationToolDefaults(pub BTreeMap<GenerationToolKind, bool>);
+
+/// Project trust settings for generated-code renderers.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ProjectSecurityConfig {
+    /// Whether generated Manim Python may execute without a command override.
+    #[serde(default)]
+    pub allow_manim: bool,
 }
 
 impl ModelOptions {
@@ -132,6 +258,20 @@ impl ModelOptions {
             };
         }
         replace_image_some!(quality, background, size, aspect_ratio, output_format,);
+        macro_rules! replace_video_some {
+            ($($field:ident),+ $(,)?) => {
+                $(if changes.video.$field.is_some() { self.video.$field = changes.video.$field; })+
+            };
+        }
+        replace_video_some!(
+            duration_seconds,
+            resolution,
+            aspect_ratio,
+            audio,
+            seed,
+            poll_interval_seconds,
+            timeout_seconds,
+        );
     }
 
     pub fn cli_pairs(&self) -> Vec<String> {
@@ -153,6 +293,13 @@ impl ModelOptions {
         push_option!(image, size);
         push_option!(image, aspect_ratio);
         push_option!(image, output_format);
+        push_option!(video, duration_seconds);
+        push_option!(video, resolution);
+        push_option!(video, aspect_ratio);
+        push_option!(video, audio);
+        push_option!(video, seed);
+        push_option!(video, poll_interval_seconds);
+        push_option!(video, timeout_seconds);
         pairs
     }
 }
@@ -295,8 +442,12 @@ pub struct EffectiveConfig {
     pub models: BTreeMap<String, ModelProfile>,
     pub model_defaults: BTreeMap<Capability, String>,
     pub model_roles: BTreeMap<ModelRole, String>,
-    /// Page plugins enabled by the selected project.
-    pub plugins: Vec<String>,
+    /// Page-only visual extension defaults.
+    pub page: PageDefaults,
+    /// Effective model-backed generation-tool policy.
+    pub generation_tools: GenerationToolDefaults,
+    /// Project trust decisions for generated code.
+    pub security: ProjectSecurityConfig,
     pub marp: MarpConfig,
 }
 
@@ -449,6 +600,12 @@ impl GlobalConfig {
             {
                 bail!("Model profile '{name}' token and tool limits must be positive");
             }
+            if profile.options.video.duration_seconds == Some(0)
+                || profile.options.video.poll_interval_seconds == Some(0)
+                || profile.options.video.timeout_seconds == Some(0)
+            {
+                bail!("Model profile '{name}' video duration and time limits must be positive");
+            }
         }
         for (capability, profile_name) in &self.defaults.0 {
             let profile = self.models.get(profile_name).with_context(|| {
@@ -489,11 +646,18 @@ impl ProjectConfig {
             bail!("Project theme cannot be empty");
         }
         let mut plugins = std::collections::BTreeSet::new();
-        for plugin in &self.plugins {
+        if let Some(ui) = &self.page.ui {
+            crate::page_plugins::validate_plugin_id(ui)?;
+            plugins.insert(ui);
+        }
+        for plugin in &self.page.plugins {
             crate::page_plugins::validate_plugin_id(plugin)?;
             if !plugins.insert(plugin) {
                 bail!("Project contains duplicate page plugin '{plugin}'");
             }
+        }
+        for tool in self.generation_tools.0.keys() {
+            let _ = tool.capability();
         }
         Ok(())
     }
@@ -557,7 +721,12 @@ impl EffectiveConfig {
             models: global.models,
             model_defaults,
             model_roles,
-            plugins: project.plugins,
+            page: project.page,
+            generation_tools: GenerationToolDefaults(merge_tool_defaults(
+                project.generation_tools.0,
+                overrides.tool_overrides,
+            )),
+            security: project.security,
             marp,
         })
     }
@@ -624,6 +793,18 @@ impl EffectiveConfig {
             })
             .transpose()
     }
+
+    /// Resolves whether a generation tool is enabled for this operation.
+    pub fn generation_tool_enabled(&self, tool: GenerationToolKind) -> bool {
+        self.generation_tools
+            .0
+            .get(&tool)
+            .copied()
+            .unwrap_or_else(|| {
+                tool == GenerationToolKind::ImageGen
+                    && self.model_defaults.contains_key(&Capability::Image)
+            })
+    }
 }
 
 pub fn validate_project_name(name: &str) -> Result<()> {
@@ -666,6 +847,14 @@ fn merge_model_roles(
 
 fn resolve_theme_name(project_theme: &str, command_theme: Option<String>) -> String {
     command_theme.unwrap_or_else(|| project_theme.to_string())
+}
+
+fn merge_tool_defaults(
+    mut project: BTreeMap<GenerationToolKind, bool>,
+    command: BTreeMap<GenerationToolKind, bool>,
+) -> BTreeMap<GenerationToolKind, bool> {
+    project.extend(command);
+    project
 }
 
 #[cfg(test)]

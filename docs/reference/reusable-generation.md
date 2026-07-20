@@ -79,19 +79,27 @@ Unknown Markdown prose is preserved on import. Invalid colors, unsupported
 versions, duplicate canonical sections, and unsafe output paths fail without
 creating a usable theme.
 
-## React Component Libraries
+## Page Libraries And Utilities
 
-Page component libraries are ordinary CDN-installed page plugins. Supported
+Page component libraries and utility runtimes are CDN-installed page plugins. Supported
 metadata is discoverable with `sfumato plugin list`; downloaded versions live
 under `~/.sfumato/plugins`, outside every Sfumato repository and executable.
 The catalog records version-pinned public CDN URLs, dependency graphs, integrity
 hashes, licenses, model guidance, and deterministic runtime ordering.
 
-`sfumato plugin enable <id>` persists a project default. `--plugin <id>` (or its
-`--ui` alias) adds a plugin for one request. `--shadcn` is a convenience alias
-for adding the `shadcn` plugin. Dependencies such as `react` and `react-dom` are
+`sfumato plugin enable <id>` persists a project default. A UI-category package
+replaces the previous project UI; utility packages remain combinable. Use
+`--ui <id|none>` for the exclusive library and repeat `--plugin <id>` only for
+utilities. The legacy `--shadcn` and UI-through-`--plugin` forms emit a
+deprecation warning for one version. Dependencies such as `react` and `react-dom` are
 installed and loaded first. Installation contacts the declared public CDNs;
 generation itself remains offline and embeds only locally installed runtimes.
+
+Generation tools are not plugins. Manage `image-gen` and `video-gen` with
+`sfumato tool list|enable|disable`, or override them for one request with
+`--tool` and `--disable-tool`. The page-only video tool uses a configured remote
+video model and returns a local relative MP4 path; Hyperframes and Manim are
+standalone renderers and are never exposed as page tools.
 
 Shadcn is source-distributed rather than a browser runtime. Its plugin therefore
 installs hash-pinned official registry definitions plus Tailwind's browser

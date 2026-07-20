@@ -349,7 +349,7 @@ fn generation_does_not_select_a_template_implicitly() {
 }
 
 #[test]
-fn accepts_ui_as_a_generic_page_plugin_alias() {
+fn parses_ui_as_an_exclusive_page_library() {
     let cli = Cli::try_parse_from([
         "sfumato",
         "generate",
@@ -366,7 +366,77 @@ fn accepts_ui_as_a_generic_page_plugin_alias() {
     else {
         panic!("expected generate page command");
     };
-    assert_eq!(args.plugins, vec!["materialui"]);
+    assert_eq!(args.ui.as_deref(), Some("materialui"));
+    assert!(args.plugins.is_empty());
+}
+
+#[test]
+fn parses_video_generation_and_engine_specific_options() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "video",
+        "notes",
+        "--instruction",
+        "Explain Fourier series",
+        "--engine",
+        "manim",
+        "--duration",
+        "20",
+        "--fps",
+        "60",
+        "--quality",
+        "high",
+        "--allow-code-execution",
+        "--model",
+        "code=codex",
+    ])
+    .unwrap();
+    let Some(Commands::Generate {
+        command: GenerateCommands::Video(args),
+    }) = cli.command
+    else {
+        panic!("expected generate video command");
+    };
+
+    assert!(matches!(args.engine, VideoEngineArg::Manim));
+    assert_eq!(args.duration, 20);
+    assert_eq!(args.fps, Some(60));
+    assert_eq!(args.quality.as_deref(), Some("high"));
+    assert!(args.allow_code_execution);
+    assert_eq!(args.model_overrides, vec!["code=codex"]);
+}
+
+#[test]
+fn parses_generation_tool_and_renderer_management() {
+    let tool = Cli::try_parse_from([
+        "sfumato",
+        "tool",
+        "enable",
+        "video-gen",
+        "--project",
+        "university",
+    ])
+    .unwrap();
+    let Some(Commands::Tool {
+        command: ToolCommands::Enable(args),
+    }) = tool.command
+    else {
+        panic!("expected tool enable command");
+    };
+    assert!(matches!(args.tool, GenerationToolArg::VideoGen));
+
+    let renderer = Cli::try_parse_from(["sfumato", "renderer", "doctor", "hyperframe"]).unwrap();
+    let Some(Commands::Renderer {
+        command: RendererCommands::Doctor(args),
+    }) = renderer.command
+    else {
+        panic!("expected renderer doctor command");
+    };
+    assert!(matches!(
+        args.renderer,
+        Some(LocalVideoRendererArg::Hyperframe)
+    ));
 }
 
 #[test]

@@ -1,20 +1,26 @@
 //! OpenRouter-native catalog and API-key usage adapter.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde::{Deserialize, Serialize};
 use sfumato_core::{
-    config::OpenRouterConnectorConfig,
+    config::{ModelProfile, OpenRouterConnectorConfig},
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::OperationContext,
-    providers::{ConnectorModelSummary, ConnectorStatus, ConnectorStatusField},
+    providers::{
+        ConnectorModelSummary, ConnectorStatus, ConnectorStatusField, VideoGenerationProvider,
+        VideoGenerationRequest, VideoGenerationResponse,
+    },
     secrets::SecretResolver,
 };
 
 use crate::{openai_compatible::OpenAiCompatibleConnector, runtime::await_operation};
 
 /// OpenRouter adapter composed around the shared OpenAI-compatible transport.
+#[derive(Clone)]
 pub struct OpenRouterConnector {
     transport: OpenAiCompatibleConnector,
 }
@@ -94,6 +100,305 @@ impl OpenRouterConnector {
         .await;
         native_result(result)
     }
+
+    /// Creates a provider for OpenRouter's asynchronous video API.
+    pub fn video_provider(&self, profile: ModelProfile) -> OpenRouterVideoProvider {
+        OpenRouterVideoProvider {
+            transport: self.transport.clone(),
+            profile,
+        }
+    }
+}
+
+/// OpenRouter-native asynchronous text/image/reference-to-video provider.
+pub struct OpenRouterVideoProvider {
+    transport: OpenAiCompatibleConnector,
+    profile: ModelProfile,
+}
+
+#[async_trait]
+impl VideoGenerationProvider for OpenRouterVideoProvider {
+    async fn generate_video(
+        &self,
+        request: VideoGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> SfumatoResult<VideoGenerationResponse> {
+        native_result(self.generate(request, operation, stage).await)
+    }
+}
+
+impl OpenRouterVideoProvider {
+    async fn generate(
+        &self,
+        request: VideoGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<VideoGenerationResponse> {
+        let model = self.video_model(operation, stage).await?;
+        validate_video_request(&model, &request)?;
+        let input_references = if model.supports_input_references() {
+            request
+                .references
+                .iter()
+                .map(|path| reference_payload(path))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        let payload = CreateVideoRequest {
+            model: self.profile.model.clone(),
+            prompt: request.prompt,
+            duration: request.duration_seconds,
+            resolution: request.resolution,
+            aspect_ratio: request.aspect_ratio,
+            generate_audio: request.generate_audio,
+            seed: request.seed,
+            input_references,
+        };
+        let submit = self.transport.post("videos").await?.json(&payload).send();
+        let response = await_operation(operation, stage, submit).await?;
+        let status = response.status();
+        let body = await_operation(operation, stage, response.text()).await?;
+        if !status.is_success() {
+            bail!("OpenRouter video generation returned HTTP {status}: {body}");
+        }
+        let submitted: VideoJob = serde_json::from_str(&body)
+            .context("OpenRouter video generation returned invalid JSON")?;
+        let poll_seconds = self
+            .profile
+            .options
+            .video
+            .poll_interval_seconds
+            .unwrap_or(10);
+        let timeout_seconds = self.profile.options.video.timeout_seconds.unwrap_or(900);
+        let started = std::time::Instant::now();
+        let completed = loop {
+            operation.checkpoint(stage)?;
+            if started.elapsed() > Duration::from_secs(timeout_seconds) {
+                bail!(
+                    "OpenRouter video job '{}' exceeded {timeout_seconds} seconds",
+                    submitted.id
+                );
+            }
+            let status_request = self
+                .transport
+                .get(&format!("videos/{}", submitted.id))
+                .await?
+                .send();
+            let response = await_operation(operation, stage, status_request).await?;
+            let status = response.status();
+            let body = await_operation(operation, stage, response.text()).await?;
+            if !status.is_success() {
+                bail!("OpenRouter video status returned HTTP {status}: {body}");
+            }
+            let job: VideoJob = serde_json::from_str(&body)
+                .context("OpenRouter video status returned invalid JSON")?;
+            match job.status.as_str() {
+                "completed" => break job,
+                "failed" | "cancelled" | "expired" => {
+                    bail!(
+                        "OpenRouter video job '{}' {}: {}",
+                        job.id,
+                        job.status,
+                        job.error.unwrap_or_else(|| "unknown provider error".into())
+                    );
+                }
+                "pending" | "in_progress" => {}
+                other => bail!("OpenRouter video job returned unknown status '{other}'"),
+            }
+            await_operation(operation, stage, async move {
+                tokio::time::sleep(Duration::from_secs(poll_seconds)).await;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await?;
+        };
+        let download = self
+            .transport
+            .get(&format!("videos/{}/content?index=0", completed.id))
+            .await?
+            .send();
+        let response = await_operation(operation, stage, download).await?;
+        let status = response.status();
+        let media_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("video/mp4")
+            .split(';')
+            .next()
+            .unwrap_or("video/mp4")
+            .to_string();
+        let bytes = await_operation(operation, stage, response.bytes())
+            .await?
+            .to_vec();
+        if !status.is_success() {
+            bail!("OpenRouter video download returned HTTP {status}");
+        }
+        if bytes.is_empty() {
+            bail!("OpenRouter video download returned an empty file");
+        }
+        Ok(VideoGenerationResponse {
+            bytes,
+            media_type,
+            provider_job_id: Some(completed.id),
+            cost: completed.usage.and_then(|usage| usage.cost),
+        })
+    }
+
+    async fn video_model(
+        &self,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<VideoModel> {
+        let request = self.transport.get("videos/models").await?.send();
+        let response = await_operation(operation, stage, request).await?;
+        let status = response.status();
+        let body = await_operation(operation, stage, response.text()).await?;
+        if !status.is_success() {
+            bail!("OpenRouter video model catalog returned HTTP {status}: {body}");
+        }
+        let catalog: VideoModelsResponse = serde_json::from_str(&body)
+            .context("OpenRouter video model catalog returned invalid JSON")?;
+        catalog
+            .data
+            .into_iter()
+            .find(|model| model.id == self.profile.model)
+            .with_context(|| format!("'{}' is not an OpenRouter video model", self.profile.model))
+    }
+}
+
+#[derive(Serialize)]
+struct CreateVideoRequest {
+    model: String,
+    prompt: String,
+    duration: u32,
+    resolution: String,
+    aspect_ratio: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generate_audio: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    input_references: Vec<VideoReference>,
+}
+
+#[derive(Serialize)]
+struct VideoReference {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    image_url: VideoReferenceUrl,
+}
+
+#[derive(Serialize)]
+struct VideoReferenceUrl {
+    url: String,
+}
+
+fn reference_payload(path: &Path) -> Result<VideoReference> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("Could not read video reference {}", path.display()))?;
+    let media_type = match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        other => bail!(
+            "Video reference '{}' has unsupported extension '{other}'",
+            path.display()
+        ),
+    };
+    Ok(VideoReference {
+        kind: "image_url",
+        image_url: VideoReferenceUrl {
+            url: format!("data:{media_type};base64,{}", STANDARD.encode(bytes)),
+        },
+    })
+}
+
+#[derive(Deserialize)]
+struct VideoModelsResponse {
+    data: Vec<VideoModel>,
+}
+
+#[derive(Deserialize)]
+struct VideoModel {
+    id: String,
+    #[serde(default)]
+    supported_durations: Vec<u32>,
+    #[serde(default)]
+    supported_resolutions: Vec<String>,
+    #[serde(default)]
+    supported_aspect_ratios: Vec<String>,
+    #[serde(default)]
+    supported_parameters: Vec<String>,
+    #[serde(default)]
+    generate_audio: Option<bool>,
+}
+
+impl VideoModel {
+    fn supports_input_references(&self) -> bool {
+        self.supported_parameters
+            .iter()
+            .any(|parameter| parameter == "input_references")
+    }
+}
+
+fn validate_video_request(model: &VideoModel, request: &VideoGenerationRequest) -> Result<()> {
+    if !model.supported_durations.is_empty()
+        && !model
+            .supported_durations
+            .contains(&request.duration_seconds)
+    {
+        bail!(
+            "Video model '{}' does not support duration {}s",
+            model.id,
+            request.duration_seconds
+        );
+    }
+    if !model.supported_resolutions.is_empty()
+        && !model.supported_resolutions.contains(&request.resolution)
+    {
+        bail!(
+            "Video model '{}' does not support resolution '{}'",
+            model.id,
+            request.resolution
+        );
+    }
+    if !model.supported_aspect_ratios.is_empty()
+        && !model
+            .supported_aspect_ratios
+            .contains(&request.aspect_ratio)
+    {
+        bail!(
+            "Video model '{}' does not support aspect ratio '{}'",
+            model.id,
+            request.aspect_ratio
+        );
+    }
+    if request.generate_audio == Some(true) && model.generate_audio == Some(false) {
+        bail!("Video model '{}' does not support native audio", model.id);
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct VideoJob {
+    id: String,
+    status: String,
+    error: Option<String>,
+    usage: Option<VideoUsage>,
+}
+
+#[derive(Deserialize)]
+struct VideoUsage {
+    cost: Option<f64>,
 }
 
 fn map_model(model: OpenRouterModel) -> ConnectorModelSummary {

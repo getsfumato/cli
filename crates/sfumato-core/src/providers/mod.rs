@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use thiserror::Error;
 
 use crate::config::{ConnectorConfig, EffectiveConfig, ModelProfile};
@@ -211,6 +211,11 @@ pub enum GenerationStage {
     PageReview,
     PageRepair,
     PageRendering,
+    VideoPlanning,
+    VideoReview,
+    VideoAuthoring,
+    VideoRepair,
+    VideoRendering,
 }
 
 impl GenerationStage {
@@ -228,6 +233,11 @@ impl GenerationStage {
             Self::PageReview => "reviewing page content",
             Self::PageRepair => "repairing page",
             Self::PageRendering => "assembling page artifacts",
+            Self::VideoPlanning => "planning video",
+            Self::VideoReview => "reviewing video plan",
+            Self::VideoAuthoring => "authoring video source",
+            Self::VideoRepair => "repairing video source",
+            Self::VideoRendering => "rendering video",
         }
     }
 }
@@ -520,6 +530,38 @@ pub struct ImageGenerationResponse {
     pub media_type: String,
 }
 
+/// Provider-neutral request for one directly generated video clip.
+#[derive(Clone, Debug)]
+pub struct VideoGenerationRequest {
+    /// Reviewed provider prompt.
+    pub prompt: String,
+    /// Exact requested duration in seconds.
+    pub duration_seconds: u32,
+    /// Requested resolution such as `720p`.
+    pub resolution: String,
+    /// Requested aspect ratio such as `16:9`.
+    pub aspect_ratio: String,
+    /// Native audio preference; `None` preserves provider defaults.
+    pub generate_audio: Option<bool>,
+    /// Optional deterministic seed.
+    pub seed: Option<i64>,
+    /// Local reusable artifacts sent as provider references.
+    pub references: Vec<PathBuf>,
+}
+
+/// Bytes and provider metadata returned for one generated video clip.
+#[derive(Clone, Debug)]
+pub struct VideoGenerationResponse {
+    /// Playable video bytes.
+    pub bytes: Vec<u8>,
+    /// Response media type, normally `video/mp4`.
+    pub media_type: String,
+    /// Asynchronous provider job identifier.
+    pub provider_job_id: Option<String>,
+    /// Provider-reported cost when available.
+    pub cost: Option<f64>,
+}
+
 /// Model metadata discovered from a connector's authenticated catalog.
 #[derive(Clone, Debug, Serialize)]
 pub struct ConnectorModelSummary {
@@ -559,6 +601,8 @@ pub enum ConnectorCapability {
     ModelManagement,
     /// Inspect a local runtime and currently loaded models.
     RuntimeStatus,
+    /// Generate videos through a provider-native asynchronous API.
+    VideoGeneration,
 }
 
 impl ConnectorCapability {
@@ -571,6 +615,7 @@ impl ConnectorCapability {
             Self::ModelDetails => "model_details",
             Self::ModelManagement => "model_management",
             Self::RuntimeStatus => "runtime_status",
+            Self::VideoGeneration => "video_generation",
         }
     }
 }
@@ -636,6 +681,18 @@ pub trait ImageGenerationProvider: Send + Sync {
         stage: OperationStage,
     ) -> SfumatoResult<ImageGenerationResponse>;
 }
+
+/// Port for one asynchronous provider-native video generation.
+#[async_trait]
+pub trait VideoGenerationProvider: Send + Sync {
+    /// Validates model capabilities, generates one clip, and returns its bytes.
+    async fn generate_video(
+        &self,
+        request: VideoGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> SfumatoResult<VideoGenerationResponse>;
+}
 /// Port for resolving model profiles into provider implementations.
 pub trait ProviderFactory: Send + Sync {
     /// Builds a text-generation provider for a resolved profile.
@@ -651,4 +708,11 @@ pub trait ProviderFactory: Send + Sync {
         config: &EffectiveConfig,
         profile: &ModelProfile,
     ) -> SfumatoResult<Box<dyn ImageGenerationProvider>>;
+
+    /// Builds a provider-native video generator for a resolved profile.
+    fn video(
+        &self,
+        config: &EffectiveConfig,
+        profile: &ModelProfile,
+    ) -> SfumatoResult<Box<dyn VideoGenerationProvider>>;
 }

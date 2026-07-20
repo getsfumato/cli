@@ -6,9 +6,10 @@ use std::{
 };
 
 use crate::{
+    config::VideoModelOptions,
     errors::{SfumatoError, SfumatoResult},
     prompts::{PromptCatalog, PromptProvenance},
-    providers::{ImageGenerationProvider, ToolDefinition, ToolExecutor},
+    providers::{ImageGenerationProvider, ToolDefinition, ToolExecutor, VideoGenerationProvider},
     themes::ThemePackage,
 };
 
@@ -59,6 +60,26 @@ pub struct ImageToolConfig {
     pub project_instructions: Option<String>,
 }
 
+/// Optional direct video-generation stage exposed only to page drafters.
+pub struct VideoToolConfig {
+    /// Remote video provider selected for the project.
+    pub provider: Arc<dyn VideoGenerationProvider>,
+    /// Human-readable model profile name used in results.
+    pub profile_name: String,
+    /// Transaction staging directory for generated videos.
+    pub output_dir: PathBuf,
+    /// Relative artifact directory returned to the page drafter.
+    pub reference_prefix: String,
+    /// Resolved project theme used to style the video prompt.
+    pub theme: ThemePackage,
+    /// Optional project-local instructions.
+    pub project_instructions: Option<String>,
+    /// Local reusable image artifacts passed when the model supports references.
+    pub references: Vec<PathBuf>,
+    /// Typed video defaults from the selected profile.
+    pub options: VideoModelOptions,
+}
+
 /// Inputs required to construct one operation-scoped tool set.
 pub struct GenerationToolsRequest {
     /// Project working directory allowed to filesystem tools.
@@ -67,6 +88,8 @@ pub struct GenerationToolsRequest {
     pub sources: Vec<PathBuf>,
     /// Optional image-generation tool configuration.
     pub image: Option<ImageToolConfig>,
+    /// Optional page-only generated-video tool.
+    pub video: Option<VideoToolConfig>,
     /// Catalog used for model-visible tool descriptions and image prompts.
     pub prompt_catalog: Arc<dyn PromptCatalog>,
 }
