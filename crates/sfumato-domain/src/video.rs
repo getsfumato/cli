@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use json_patch::PatchOperation;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 use crate::{
     Patch, PatchReport, ReviewConstraint, ReviewError, ReviewFormat, ReviewSnapshot,
@@ -9,7 +10,7 @@ use crate::{
 };
 
 /// Current schema version for semantic video plans.
-pub const VIDEO_PLAN_SCHEMA_VERSION: u32 = 1;
+pub const VIDEO_PLAN_SCHEMA_VERSION: u32 = 2;
 /// Current schema version for renderer-owned video source documents.
 pub const VIDEO_SOURCE_SCHEMA_VERSION: u32 = 1;
 
@@ -29,6 +30,78 @@ pub enum VideoEngine {
     Model,
 }
 
+/// Creative workflow selected for a Hyperframe production.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoWorkflow {
+    /// Infer the best silent workflow from the supplied brief.
+    #[default]
+    Auto,
+    /// A concept-first educational explanation.
+    Explainer,
+    /// A short silent motion-first unit.
+    MotionGraphics,
+    /// A product or website launch story.
+    ProductLaunch,
+    /// Designed overlays around supplied talking-head footage.
+    TalkingHead,
+    /// A presentation-like sequence of visual beats.
+    Slideshow,
+    /// A custom production that does not fit a specialised workflow.
+    General,
+}
+
+impl VideoWorkflow {
+    /// Stable CLI/prompt spelling for this workflow.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Explainer => "explainer",
+            Self::MotionGraphics => "motion-graphics",
+            Self::ProductLaunch => "product-launch",
+            Self::TalkingHead => "talking-head",
+            Self::Slideshow => "slideshow",
+            Self::General => "general",
+        }
+    }
+}
+
+/// Production direction which turns a semantic scene into a buildable beat.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct VideoSceneProduction {
+    #[serde(default, deserialize_with = "deserialize_text_or_structured")]
+    /// The beat's story function such as hook, proof, or payoff.
+    pub narrative_role: String,
+    #[serde(default, deserialize_with = "deserialize_text_list_or_structured")]
+    /// Copy visible in the rendered frame.
+    pub on_screen_copy: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_text_or_structured")]
+    /// The primary visual focal point.
+    pub focal_element: String,
+    #[serde(default, deserialize_with = "deserialize_text_or_structured")]
+    /// Video-frame layout strategy.
+    pub layout: String,
+    #[serde(default, deserialize_with = "deserialize_text_list_or_structured")]
+    /// Background, midground, and foreground layers to author.
+    pub layers: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_text_list_or_structured")]
+    /// Named seek-safe motion rules selected for this beat.
+    pub motion_rules: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_text_or_structured")]
+    /// Deliberate beat entrance.
+    pub entrance: String,
+    #[serde(default, deserialize_with = "deserialize_text_or_structured")]
+    /// Deliberate beat exit.
+    pub exit: String,
+    #[serde(default, deserialize_with = "deserialize_text_or_structured")]
+    /// Transition toward the following beat.
+    pub transition: String,
+    #[serde(default, deserialize_with = "deserialize_text_list_or_structured")]
+    /// Visual facts a reviewer can verify in a snapshot.
+    pub acceptance: Vec<String>,
+}
+
 /// One timed semantic scene in a generated video.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -40,12 +113,43 @@ pub struct VideoScene {
     /// Scene duration in seconds.
     pub duration_seconds: f32,
     /// Teaching content communicated by the scene.
+    #[serde(deserialize_with = "deserialize_text_or_structured")]
     pub content: String,
     /// Visual composition and motion direction.
+    #[serde(deserialize_with = "deserialize_text_or_structured")]
     pub visual: String,
     /// Reusable project artifact references selected for the scene.
     #[serde(default)]
     pub artifacts: Vec<String>,
+    /// Buildable composition, motion, and acceptance direction.
+    #[serde(default)]
+    pub production: VideoSceneProduction,
+}
+
+fn deserialize_text_or_structured<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(structured_text)
+}
+
+fn deserialize_text_list_or_structured<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::Array(values) => values.into_iter().map(structured_text).collect(),
+        Value::Null => Vec::new(),
+        value => vec![structured_text(value)],
+    })
+}
+
+fn structured_text(value: Value) -> String {
+    match value {
+        Value::String(value) => value,
+        value => value.to_string(),
+    }
 }
 
 /// Revision-guarded semantic plan shared by every video engine.
@@ -62,6 +166,14 @@ pub struct VideoPlanDocument {
     artifacts: Vec<String>,
     visual_direction: String,
     remote_prompt: String,
+    #[serde(default)]
+    workflow: VideoWorkflow,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    narrative_arc: String,
+    #[serde(default)]
+    design_direction: String,
 }
 
 impl VideoPlanDocument {
@@ -88,10 +200,60 @@ impl VideoPlanDocument {
             artifacts,
             visual_direction: visual_direction.into().trim().to_owned(),
             remote_prompt: remote_prompt.into().trim().to_owned(),
+            workflow: VideoWorkflow::Auto,
+            message: "Unspecified message".into(),
+            narrative_arc: "Unspecified narrative arc".into(),
+            design_direction: "Use the requested theme".into(),
         };
         document.refresh_revision();
         document.validate_document()?;
         Ok(document)
+    }
+
+    /// Creates a plan with the persisted Hyperframe production direction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_pipeline(
+        engine: VideoEngine,
+        title: impl Into<String>,
+        objective: impl Into<String>,
+        duration_seconds: u32,
+        scenes: Vec<VideoScene>,
+        artifacts: Vec<String>,
+        visual_direction: impl Into<String>,
+        remote_prompt: impl Into<String>,
+        workflow: VideoWorkflow,
+        message: impl Into<String>,
+        narrative_arc: impl Into<String>,
+        design_direction: impl Into<String>,
+    ) -> Result<Self, ReviewError> {
+        let mut document = Self::new(
+            engine,
+            title,
+            objective,
+            duration_seconds,
+            scenes,
+            artifacts,
+            visual_direction,
+            remote_prompt,
+        )?;
+        document.set_pipeline(workflow, message, narrative_arc, design_direction)?;
+        Ok(document)
+    }
+
+    /// Applies the production metadata drafted by the Hyperframe pipeline.
+    pub fn set_pipeline(
+        &mut self,
+        workflow: VideoWorkflow,
+        message: impl Into<String>,
+        narrative_arc: impl Into<String>,
+        design_direction: impl Into<String>,
+    ) -> Result<(), ReviewError> {
+        self.workflow = workflow;
+        self.message = message.into().trim().to_owned();
+        self.narrative_arc = narrative_arc.into().trim().to_owned();
+        self.design_direction = design_direction.into().trim().to_owned();
+        self.refresh_revision();
+        self.validate_document().map(|_| ())
     }
 
     /// Returns the optimistic-concurrency revision.
@@ -126,6 +288,22 @@ impl VideoPlanDocument {
     pub fn remote_prompt(&self) -> &str {
         &self.remote_prompt
     }
+    /// Returns the selected production workflow.
+    pub const fn workflow(&self) -> VideoWorkflow {
+        self.workflow
+    }
+    /// Returns the single message the production must communicate.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+    /// Returns the high-level story arc.
+    pub fn narrative_arc(&self) -> &str {
+        &self.narrative_arc
+    }
+    /// Returns the normalized design direction.
+    pub fn design_direction(&self) -> &str {
+        &self.design_direction
+    }
 
     fn refresh_revision(&mut self) {
         let mut value = self.clone();
@@ -145,6 +323,16 @@ impl VideoPlanDocument {
             MAX_TEXT_CHARS,
             true,
         )?;
+        if self.engine == VideoEngine::Hyperframe {
+            validate_text("message", &self.message, MAX_TEXT_CHARS, true)?;
+            validate_text("narrative_arc", &self.narrative_arc, MAX_TEXT_CHARS, true)?;
+            validate_text(
+                "design_direction",
+                &self.design_direction,
+                MAX_TEXT_CHARS,
+                true,
+            )?;
+        }
         if self.engine == VideoEngine::Model {
             validate_text("remote_prompt", &self.remote_prompt, MAX_TEXT_CHARS, true)?;
         }
@@ -170,6 +358,7 @@ impl VideoPlanDocument {
             }
             validate_text("scene content", &scene.content, MAX_TEXT_CHARS, true)?;
             validate_text("scene visual", &scene.visual, MAX_TEXT_CHARS, true)?;
+            validate_scene_production(&scene.production)?;
         }
         let mut expected = self.clone();
         expected.refresh_revision();
@@ -420,6 +609,10 @@ fn is_plan_path(path: &str) -> bool {
         "/artifacts",
         "/visual_direction",
         "/remote_prompt",
+        "/workflow",
+        "/message",
+        "/narrative_arc",
+        "/design_direction",
     ]
     .iter()
     .any(|allowed| path == *allowed || path.starts_with(&format!("{allowed}/")))
@@ -436,10 +629,43 @@ fn changed_plan_fields(left: &VideoPlanDocument, right: &VideoPlanDocument) -> V
             left.visual_direction != right.visual_direction,
         ),
         ("remote_prompt", left.remote_prompt != right.remote_prompt),
+        ("workflow", left.workflow != right.workflow),
+        ("message", left.message != right.message),
+        ("narrative_arc", left.narrative_arc != right.narrative_arc),
+        (
+            "design_direction",
+            left.design_direction != right.design_direction,
+        ),
     ]
     .into_iter()
     .filter_map(|(name, changed)| changed.then_some(name.to_owned()))
     .collect()
+}
+
+fn validate_scene_production(value: &VideoSceneProduction) -> Result<(), ReviewError> {
+    for (field, text) in [
+        ("scene narrative_role", &value.narrative_role),
+        ("scene focal_element", &value.focal_element),
+        ("scene layout", &value.layout),
+        ("scene entrance", &value.entrance),
+        ("scene exit", &value.exit),
+        ("scene transition", &value.transition),
+    ] {
+        validate_text(field, text, MAX_TEXT_CHARS, false)?;
+    }
+    if value.motion_rules.len() > 4 {
+        return invalid_video("each scene may select at most four motion rules");
+    }
+    for text in value
+        .on_screen_copy
+        .iter()
+        .chain(value.layers.iter())
+        .chain(value.motion_rules.iter())
+        .chain(value.acceptance.iter())
+    {
+        validate_text("scene production value", text, MAX_TEXT_CHARS, false)?;
+    }
+    Ok(())
 }
 
 fn validate_text(

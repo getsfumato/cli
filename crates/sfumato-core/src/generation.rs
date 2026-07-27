@@ -125,8 +125,44 @@ pub struct VideoReviewSummary {
     pub semantic_review: ReviewStatus,
     /// Renderer-source repair status.
     pub source_repair: ReviewStatus,
+    /// Snapshot/contact-sheet visual review status.
+    pub visual_review: ReviewStatus,
     /// Final MP4 inspection status.
     pub media_inspection: ReviewStatus,
+}
+
+/// How snapshot evidence was reviewed for a Hyperframe production.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoVisualReviewMode {
+    /// No visual review was requested.
+    Disabled,
+    /// Snapshots are waiting for an explicit human approval.
+    HumanApprovalRequired,
+    /// An image-capable reviewer inspected the contact sheet.
+    Automated,
+    /// Snapshots exist, but no compatible image reviewer was configured.
+    EvidenceOnly,
+}
+
+/// Managed, immutable Hyperframe review session returned by a paused run.
+#[derive(Clone, Debug, Serialize)]
+pub struct VideoReviewSession {
+    /// Identifier accepted by `sfumato video preview` and `sfumato video approve`.
+    pub review_id: String,
+    /// Current session state.
+    pub status: String,
+    /// Root containing the exact source bundle and visual evidence.
+    pub root: PathBuf,
+}
+
+/// Structured result of an automated visual review when one was available.
+#[derive(Clone, Debug, Serialize)]
+pub struct VideoVisualReport {
+    /// Whether the result permits rendering.
+    pub approved: bool,
+    /// Snapshot-level findings. Empty means no automated findings were produced.
+    pub findings: Vec<String>,
 }
 
 impl VideoReviewSummary {
@@ -140,6 +176,7 @@ impl VideoReviewSummary {
                 ReviewStatus::Skipped
             },
             source_repair: ReviewStatus::NotNeeded,
+            visual_review: ReviewStatus::Skipped,
             media_inspection: ReviewStatus::Pending,
         }
     }
@@ -168,6 +205,12 @@ pub struct VideoGenerationOutput {
     pub published_artifacts: Vec<PathBuf>,
     /// Review and validation state.
     pub review: VideoReviewSummary,
+    /// Visual-review path used for this production.
+    pub visual_review_mode: VideoVisualReviewMode,
+    /// Persisted session when rendering has been paused for a human.
+    pub review_session: Option<VideoReviewSession>,
+    /// Automated visual-review findings, if an image reviewer was configured.
+    pub visual_report: Option<VideoVisualReport>,
     /// Prompt provenance.
     pub prompts: Vec<PromptProvenance>,
     /// Non-fatal workflow warnings.

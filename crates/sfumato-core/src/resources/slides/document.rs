@@ -186,6 +186,7 @@ pub(super) fn normalize_marp_markdown(
 ) -> Result<String> {
     let mut markdown = strip_code_fence(generated.trim()).to_string();
     markdown = sanitize_marp_markdown(&markdown);
+    markdown = normalize_marp_math_delimiters(&markdown);
     markdown = promote_marp_frontmatter(markdown);
     let body = body_without_frontmatter(&markdown);
 
@@ -201,6 +202,196 @@ pub(super) fn normalize_marp_markdown(
     markdown = ensure_title_slide(markdown, title)?;
 
     Ok(markdown)
+}
+
+/// Converts paired LaTeX-style math delimiters into Marp's dollar syntax.
+///
+/// Code fences and inline code are protected because their delimiters are
+/// examples or program text, not formulas intended for MathJax rendering.
+pub(super) fn normalize_marp_math_delimiters(markdown: &str) -> String {
+    let protected = markdown_code_ranges(markdown);
+    let mut output = String::with_capacity(markdown.len());
+    let mut cursor = 0;
+    let mut protected_index = 0;
+
+    while cursor < markdown.len() {
+        while protected
+            .get(protected_index)
+            .is_some_and(|range| range.end <= cursor)
+        {
+            protected_index += 1;
+        }
+
+        if let Some(range) = protected.get(protected_index)
+            && range.start == cursor
+        {
+            output.push_str(&markdown[range.clone()]);
+            cursor = range.end;
+            continue;
+        }
+
+        let segment_end = protected
+            .get(protected_index)
+            .map(|range| range.start)
+            .unwrap_or(markdown.len());
+        let remaining = &markdown[cursor..segment_end];
+        let delimiter = if remaining.starts_with("\\[") {
+            Some(("\\]", "$$"))
+        } else if remaining.starts_with("\\(") {
+            Some(("\\)", "$"))
+        } else {
+            None
+        };
+
+        if let Some((closing, replacement)) = delimiter
+            && !is_escaped_delimiter(markdown, cursor)
+            && let Some(closing_start) =
+                find_unescaped_delimiter(markdown, cursor + 2, segment_end, closing)
+        {
+            output.push_str(replacement);
+            output.push_str(&markdown[cursor + 2..closing_start]);
+            output.push_str(replacement);
+            cursor = closing_start + 2;
+            continue;
+        }
+
+        let character = markdown[cursor..]
+            .chars()
+            .next()
+            .expect("cursor remains on a character boundary");
+        output.push(character);
+        cursor += character.len_utf8();
+    }
+
+    output
+}
+
+fn markdown_code_ranges(markdown: &str) -> Vec<std::ops::Range<usize>> {
+    let mut fenced = Vec::new();
+    let mut open_fence: Option<(char, usize, usize)> = None;
+    let mut cursor = 0;
+
+    for line in markdown.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\n', '\r']).trim_start();
+        if let Some((marker, length)) = markdown_code_fence(trimmed) {
+            match open_fence {
+                Some((open_marker, open_length, start))
+                    if marker == open_marker && length >= open_length =>
+                {
+                    fenced.push(start..cursor + line.len());
+                    open_fence = None;
+                }
+                None => open_fence = Some((marker, length, cursor)),
+                _ => {}
+            }
+        }
+        cursor += line.len();
+    }
+
+    if let Some((_, _, start)) = open_fence {
+        fenced.push(start..markdown.len());
+    }
+
+    let mut protected = fenced.clone();
+    let bytes = markdown.as_bytes();
+    let mut position = 0;
+    let mut fenced_index = 0;
+    while position < bytes.len() {
+        while fenced
+            .get(fenced_index)
+            .is_some_and(|range| range.end <= position)
+        {
+            fenced_index += 1;
+        }
+        if let Some(range) = fenced.get(fenced_index)
+            && range.start <= position
+        {
+            position = range.end;
+            continue;
+        }
+        if bytes[position] != b'`' {
+            position += 1;
+            continue;
+        }
+
+        let run = backtick_run(bytes, position);
+        if let Some(end) = find_matching_backtick_run(bytes, position + run, run, &fenced) {
+            protected.push(position..end + run);
+            position = end + run;
+        } else {
+            position += run;
+        }
+    }
+
+    protected.sort_by_key(|range| range.start);
+    protected
+}
+
+fn backtick_run(bytes: &[u8], start: usize) -> usize {
+    bytes[start..]
+        .iter()
+        .take_while(|byte| **byte == b'`')
+        .count()
+}
+
+fn find_matching_backtick_run(
+    bytes: &[u8],
+    mut cursor: usize,
+    expected: usize,
+    fenced: &[std::ops::Range<usize>],
+) -> Option<usize> {
+    let mut fenced_index = 0;
+    while cursor < bytes.len() {
+        while fenced
+            .get(fenced_index)
+            .is_some_and(|range| range.end <= cursor)
+        {
+            fenced_index += 1;
+        }
+        if let Some(range) = fenced.get(fenced_index)
+            && range.start <= cursor
+        {
+            return None;
+        }
+        if bytes[cursor] == b'`' {
+            let run = backtick_run(bytes, cursor);
+            if run == expected {
+                return Some(cursor);
+            }
+            cursor += run;
+        } else {
+            cursor += 1;
+        }
+    }
+    None
+}
+
+fn find_unescaped_delimiter(
+    markdown: &str,
+    mut cursor: usize,
+    end: usize,
+    delimiter: &str,
+) -> Option<usize> {
+    while cursor < end {
+        let relative = markdown[cursor..end].find(delimiter)?;
+        let found = cursor + relative;
+        if !is_escaped_delimiter(markdown, found) {
+            return Some(found);
+        }
+        cursor = found + 1;
+    }
+    None
+}
+
+fn is_escaped_delimiter(markdown: &str, delimiter_start: usize) -> bool {
+    let bytes = markdown.as_bytes();
+    let mut cursor = delimiter_start;
+    let mut preceding_backslashes = 0;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        preceding_backslashes += 1;
+        cursor -= 1;
+    }
+    preceding_backslashes % 2 == 1
 }
 
 pub(super) fn close_unclosed_mermaid_fences(markdown: &str) -> String {
@@ -436,6 +627,7 @@ pub(super) fn slide_ranges(markdown: &str) -> Result<Vec<SlideRange>> {
 pub(super) fn normalize_slide_replacement(generated: &str) -> Result<String> {
     let mut fragment = strip_code_fence(generated.trim()).trim().to_string();
     fragment = sanitize_marp_markdown(&fragment).trim().to_string();
+    fragment = normalize_marp_math_delimiters(&fragment);
 
     let fences = markdown_fences(&fragment);
     if fences.len() >= 2

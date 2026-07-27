@@ -49,7 +49,8 @@ use crate::{
         GenerateSlidesResult, edit_slides, generate_slides,
     },
     resources::videos::{
-        GenerateVideoOptions, GenerateVideoRequest, GenerateVideoResult, generate_video,
+        ApproveVideoReviewOptions, GenerateVideoOptions, GenerateVideoRequest, GenerateVideoResult,
+        approve_video_review, generate_video,
     },
     secrets::{SecretStore, SecretValue},
     setup::{SetupService, UserSetupRequest, UserSetupResult},
@@ -135,6 +136,24 @@ pub struct GenerateVideoCommand {
     pub review: bool,
     /// Optional frontend observer for detailed progress.
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+}
+
+/// Renders a previously paused and manually approved Hyperframe review session.
+pub struct ApproveVideoReviewCommand {
+    /// Cancellation and deadline context for the final render.
+    pub operation: OperationContext,
+    /// Project and output overrides.
+    pub config: ConfigOverrides,
+    /// Immutable session selected for approval.
+    pub review_id: String,
+}
+
+/// Locates a persisted Hyperframe review session for a preview frontend.
+pub struct PreviewVideoReviewCommand {
+    /// Project used to resolve managed review storage.
+    pub config: ConfigOverrides,
+    /// Immutable session selected for preview.
+    pub review_id: String,
 }
 
 /// Complete request for the focused slide-editing use case.
@@ -482,6 +501,57 @@ impl SfumatoApplication {
             },
         )
         .await
+    }
+
+    /// Renders the exact source bundle persisted by `--visual-review`.
+    pub async fn approve_video_review(
+        &self,
+        command: ApproveVideoReviewCommand,
+    ) -> SfumatoResult<GenerateVideoResult> {
+        command.operation.checkpoint(OperationStage::Resolve)?;
+        let publish_root_override = command.config.publish_dir.is_some();
+        let config = self
+            .config
+            .resolve(command.config)
+            .map_err(|error| error.at_stage(OperationStage::Resolve))?;
+        approve_video_review(
+            config,
+            &command.review_id,
+            ApproveVideoReviewOptions {
+                operation: command.operation,
+                artifact_store: Arc::clone(&self.artifacts),
+                video_renderer: Arc::clone(&self.video_renderer),
+                workspace: Arc::clone(&self.workspace),
+                publish_root_override,
+            },
+        )
+        .await
+    }
+
+    /// Returns the immutable session source directory used by Hyperframes preview.
+    pub fn preview_video_review(
+        &self,
+        command: PreviewVideoReviewCommand,
+    ) -> SfumatoResult<PathBuf> {
+        if command.review_id.is_empty()
+            || command.review_id.contains(['/', '\\'])
+            || command.review_id.contains("..")
+        {
+            return Err(SfumatoError::validation("Invalid video review identifier"));
+        }
+        let config = self.config.resolve(command.config)?;
+        let root = self
+            .artifacts
+            .project_root(&config.project_name)?
+            .join("review-sessions")
+            .join(command.review_id)
+            .join("source");
+        if !self.workspace.is_file(&root.join("index.html")) {
+            return Err(SfumatoError::validation(
+                "Video review session is missing its Hyperframe source",
+            ));
+        }
+        Ok(root)
     }
 
     /// Lists project-scoped optional tools independently from page plugins.

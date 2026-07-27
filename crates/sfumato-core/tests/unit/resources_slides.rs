@@ -415,6 +415,81 @@ fn normalizes_existing_math_frontmatter_to_mathjax() {
 }
 
 #[test]
+fn normalizes_latex_style_math_delimiters_for_marp() {
+    let config = effective_config();
+    let markdown = normalize_marp_markdown(
+        r#"---
+marp: true
+---
+
+# Impedancia
+
+---
+
+## Relacion
+
+La relacion \(V/I\) define la impedancia.
+
+\[
+Z_0 = \sqrt{L/C}
+\]"#,
+        &config,
+        "Impedancia",
+    )
+    .unwrap();
+
+    assert!(markdown.contains("La relacion $V/I$ define la impedancia."));
+    assert!(markdown.contains("$$\nZ_0 = \\sqrt{L/C}\n$$"));
+    assert!(!markdown.contains("\\("));
+    assert!(!markdown.contains("\\["));
+}
+
+#[test]
+fn math_normalization_preserves_code_mermaid_and_escaped_examples() {
+    let markdown = r#"Formula \(x + y\).
+
+Inline code: `\(literal\)`.
+
+```text
+\[
+literal block
+\]
+```
+
+```mermaid
+flowchart LR
+A["\(literal label\)"]
+```
+
+Escaped example: \\(not math\\)."#;
+
+    let normalized = normalize_marp_math_delimiters(markdown);
+
+    assert!(normalized.starts_with("Formula $x + y$."));
+    assert!(normalized.contains("`\\(literal\\)`"));
+    assert!(normalized.contains("\\[\nliteral block\n\\]"));
+    assert!(normalized.contains("A[\"\\(literal label\\)\"]"));
+    assert!(normalized.contains(r"\\(not math\\)"));
+}
+
+#[test]
+fn math_normalization_leaves_unpaired_delimiters_unchanged() {
+    let markdown = "An unmatched \\( delimiter and \\[ block.";
+
+    assert_eq!(normalize_marp_math_delimiters(markdown), markdown);
+}
+
+#[test]
+fn unclosed_inline_code_does_not_protect_math_after_a_fence() {
+    let markdown = "Unclosed `example\n\n```text\n\\(code\\)\n```\n\nFormula \\(x + 1\\).";
+
+    let normalized = normalize_marp_math_delimiters(markdown);
+
+    assert!(normalized.contains("```text\n\\(code\\)\n```"));
+    assert!(normalized.ends_with("Formula $x + 1$."));
+}
+
+#[test]
 fn promotes_late_marp_frontmatter_and_preserves_title_slide() {
     let config = effective_config();
     let markdown = normalize_marp_markdown(

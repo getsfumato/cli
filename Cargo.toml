@@ -26,6 +26,7 @@ ratatui-image = { version = "11.0.6", default-features = false, features = ["cro
 serde_json = "1.0"
 sfumato-core = { path = "crates/sfumato-core" }
 sfumato-adapters = { path = "crates/sfumato-adapters" }
+sfumato-domain = { path = "crates/sfumato-domain" }
 tachyonfx = "0.25.1"
 tokio = { version = "1.48", features = ["macros", "process", "rt-multi-thread", "sync", "time"] }
 toml = "0.9"

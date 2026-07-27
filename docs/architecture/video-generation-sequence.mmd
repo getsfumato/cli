@@ -16,7 +16,7 @@ sequenceDiagram
     User->>UI: generate video --engine ... --duration ...
     UI->>App: GenerateVideoCommand
     App->>Workflow: effective config and outbound ports
-    Workflow->>Prompts: render plan templates with sources, SFUMATO.md, theme, and artifacts
+    Workflow->>Prompts: route workflow; render design, storyboard, and plan templates
     Workflow->>Draft: plan with filesystem and optional image tool
     Draft-->>Workflow: VideoPlanDocument JSON
     opt review enabled
@@ -30,7 +30,12 @@ sequenceDiagram
         Workflow->>Prompts: render engine authoring templates
         Workflow->>Code: reviewed plan and exact renderer contract
         Code-->>Workflow: VideoSourceDocument JSON
-        Workflow->>Local: static validation and render
+        Workflow->>Local: static validation and deterministic snapshots
+        opt visual review requested
+            Workflow-->>UI: persist review session, publish root, and contact sheet
+            User->>UI: approve exact review session
+        end
+        Workflow->>Local: render approved source
         opt validation or render fails and review is enabled
             Workflow->>Review: source snapshot and exact error
             Review-->>Workflow: focused RFC 6902 source patch
@@ -39,7 +44,7 @@ sequenceDiagram
     end
     Workflow->>Probe: validate codec, dimensions, duration, and audio
     Workflow->>Store: commit plan, storyboard, source/assets, and MP4
-    opt output directory selected
+    opt output directory selected, saved with review, or overridden on approval
         Workflow->>Publish: atomically publish only slug/slug.mp4
     end
     Workflow-->>UI: GenerateVideoResult, provenance, review, and warnings

@@ -31,5 +31,5 @@ pub use review::{
 };
 pub use video::{
     VIDEO_PLAN_SCHEMA_VERSION, VIDEO_SOURCE_SCHEMA_VERSION, VideoEngine, VideoPlanDocument,
-    VideoScene, VideoSourceDocument,
+    VideoScene, VideoSceneProduction, VideoSourceDocument, VideoWorkflow,
 };

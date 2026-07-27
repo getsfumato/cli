@@ -6,6 +6,9 @@ Project: {{ project }}
 Working directory: {{ project_root }}
 Requested title: {% if title_provided %}{{ title }}{% else %}choose a concise educational title{% endif %}
 Output: {{ resolution }}, {{ aspect_ratio }}
+Workflow requested: {{ workflow }}
+Captured URLs: {{ urls }}
+Managed Hyperframe catalog: {{ catalog }}
 
 Theme {{ theme_name }}:
 - Colors: {{ theme_colors }}
@@ -32,9 +35,14 @@ Return exactly:
 {
   "title": "...",
   "objective": "...",
-  "scenes": [{"id":"scene-1","start_seconds":0,"duration_seconds":4,"content":"...","visual":"...","artifacts":[]}],
+  "workflow": "explainer|motion-graphics|product-launch|talking-head|slideshow|general",
+  "message": "the one thing the viewer should retain",
+  "narrative_arc": "hook → explanation → payoff",
+  "design_direction": "palette, typography, focal hierarchy, depth and guardrails",
+  "scenes": [{"id":"scene-1","start_seconds":0,"duration_seconds":4,"content":"...","visual":"...","artifacts":[],"production":{"narrative_role":"hook","on_screen_copy":["..."],"focal_element":"...","layout":"split-left","layers":["background","midground","foreground"],"motion_rules":["rule-a","rule-b"],"entrance":"...","exit":"...","transition":"...","acceptance":["..."]}}],
   "artifacts": [],
   "visual_direction": "...",
   "remote_prompt": "a complete motion/camera/style prompt when engine is model; otherwise an empty string"
 }
 Scene timing must remain within {{ duration_seconds }} seconds.
+Select at most four motion_rules per scene. Use only managed catalog IDs named above when selecting reusable blocks. Every scene must have a deliberate entrance and every boundary a transition unless a hard cut is explicitly justified.

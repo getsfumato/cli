@@ -152,6 +152,28 @@ pub struct VideoInspection {
 /// Local Hyperframe and Manim process adapter.
 #[async_trait]
 pub trait VideoRenderer: Send + Sync {
+    /// Validates renderer source before a costly final encode.
+    async fn validate(
+        &self,
+        _engine: VideoEngine,
+        _request: &VideoRenderRequest,
+        _operation: &OperationContext,
+    ) -> SfumatoResult<()> {
+        Ok(())
+    }
+
+    /// Captures deterministic visual evidence at requested timeline positions.
+    async fn snapshot(
+        &self,
+        _engine: VideoEngine,
+        _request: &VideoRenderRequest,
+        _timestamps: &[f32],
+        _output_dir: &Path,
+        _operation: &OperationContext,
+    ) -> SfumatoResult<Vec<PathBuf>> {
+        Ok(Vec::new())
+    }
+
     /// Validates and renders one local generated-code project.
     async fn render(
         &self,

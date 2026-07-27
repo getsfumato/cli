@@ -31,6 +31,12 @@ fn representative_variables() -> PromptVariables {
             json!("Animated Fourier decomposition"),
         ),
         ("engine", json!("hyperframe")),
+        ("workflow", json!("explainer")),
+        ("urls", json!(["https://example.com/source"])),
+        (
+            "catalog",
+            json!("managed catalog v1: data-chart, code-snippet, lower-third"),
+        ),
         ("duration_seconds", json!(15)),
         ("resolution", json!("1080p")),
         ("aspect_ratio", json!("16:9")),
@@ -204,6 +210,34 @@ fn draft_prompts_require_content_only_output_when_a_template_is_selected() {
 }
 
 #[test]
+fn every_slide_markdown_prompt_requires_marp_dollar_math_delimiters() {
+    let catalog = LayeredPromptCatalog::new(None, None);
+    for id in [
+        PromptId::SlidesDraftUser,
+        PromptId::SlidesCompactDraftUser,
+        PromptId::SlidesValidationRepairUser,
+        PromptId::SlidesReviewUser,
+        PromptId::SlidesCompactReviewUser,
+        PromptId::SlidesLayoutRepairUser,
+        PromptId::SlidesCompactLayoutRepairUser,
+        PromptId::SlidesEditUser,
+        PromptId::SlidesCompactEditUser,
+    ] {
+        let rendered = catalog
+            .render(PromptRenderRequest {
+                id,
+                variables: representative_variables(),
+            })
+            .unwrap_or_else(|error| panic!("could not render {id}: {error}"));
+
+        assert!(rendered.text.contains("Use only dollar-sign delimiters"));
+        assert!(rendered.text.contains("`$...$`"));
+        assert!(rendered.text.contains("`$$...$$`"));
+        assert!(rendered.text.contains("Never use LaTeX-style `\\(...\\)`"));
+    }
+}
+
+#[test]
 fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
     let catalog = LayeredPromptCatalog::new(None, None);
     let mut aggregate = String::new();
@@ -222,7 +256,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "eb87408c571685e30244cfab216836e01d7a6deb60f6ddd98e289b7f5392026b"
+        "701863b37e7bc7013255e734fee546dc0a9b207286a061c8827ea41a4aea5199"
     );
 }
 

@@ -67,6 +67,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: RendererCommands,
     },
+    #[command(about = "Preview or approve a paused Hyperframe video review")]
+    Video {
+        #[command(subcommand)]
+        command: VideoCommands,
+    },
     Generate {
         #[command(subcommand)]
         command: GenerateCommands,
@@ -96,6 +101,35 @@ pub enum GenerateCommands {
     #[command(visible_alias = "pages")]
     Page(PageArgs),
     Video(VideoArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VideoCommands {
+    Preview(VideoReviewArgs),
+    Approve(VideoApproveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct VideoReviewArgs {
+    pub review_id: String,
+    #[arg(long)]
+    pub project: Option<String>,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct VideoApproveArgs {
+    pub review_id: String,
+    #[arg(long)]
+    pub project: Option<String>,
+    #[arg(
+        long,
+        help = "Override the saved destination and publish under <folder>/_sfumato/videos"
+    )]
+    pub out: Option<PathBuf>,
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -716,15 +750,35 @@ pub enum VideoAudioArg {
     Off,
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum VideoWorkflowArg {
+    #[default]
+    Auto,
+    Explainer,
+    MotionGraphics,
+    ProductLaunch,
+    TalkingHead,
+    Slideshow,
+    General,
+}
+
 #[derive(Clone, Debug, Args)]
 pub struct VideoArgs {
     pub inputs: Vec<PathBuf>,
+    #[arg(
+        long = "url",
+        value_name = "URL",
+        help = "Capture a website as a managed Hyperframe source"
+    )]
+    pub urls: Vec<String>,
     #[arg(long, required = true)]
     pub instruction: String,
     #[arg(long)]
     pub title: Option<String>,
     #[arg(long, value_enum)]
     pub engine: VideoEngineArg,
+    #[arg(long, value_enum, default_value_t = VideoWorkflowArg::Auto)]
+    pub workflow: VideoWorkflowArg,
     #[arg(long, required = true)]
     pub duration: u32,
     #[arg(long, help = "Publish the final MP4 under <folder>/_sfumato/videos")]
@@ -741,6 +795,11 @@ pub struct VideoArgs {
     pub review_model: Option<String>,
     #[arg(long)]
     pub no_review: bool,
+    #[arg(
+        long,
+        help = "Pause after contact-sheet review; use `sfumato video approve` to render"
+    )]
+    pub visual_review: bool,
     #[arg(long)]
     pub json: bool,
     #[arg(long)]

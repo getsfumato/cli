@@ -111,7 +111,9 @@ The manifest is authoritative. Common required values are:
 | Page review | Instruction, project/theme context, project guidance, sources, and `page_snapshot`. |
 | Page browser repair | Instruction, theme, selected plugins, `page_snapshot`, and structured desktop/mobile `issue_report`. |
 | Video plan | Instruction, sources, project guidance, theme tokens, duration, engine, artifacts, and image-tool availability. |
-| Video authoring | Reviewed plan snapshot plus exact resolution, aspect, FPS, theme, and offline source contract. |
+| Video authoring | Reviewed production plan (workflow, DESIGN direction, storyboard beats, catalog allowlist) plus exact resolution, aspect, FPS, theme, and offline source contract. |
+| Video planning | Workflow intent, URL references, sources, theme, managed catalog summary, and the strict v2 plan schema. |
+| Video visual review | Reviewed plan, deterministic snapshot/contact-sheet paths, renderer diagnostics, and one focused repair budget. |
 | Video source repair | Renderer engine, immutable source snapshot, and the static or process validation error. |
 
 Compact variants use compact source/snapshot values selected by the use case.

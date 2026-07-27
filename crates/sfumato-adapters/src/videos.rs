@@ -23,6 +23,7 @@ use walkdir::WalkDir;
 use crate::runtime::run_command;
 
 const RENDERER_MANIFEST: &str = include_str!("../assets/video-renderers/manifest.toml");
+const HYPERFRAME_CATALOG: &str = include_str!("../assets/video-catalog/manifest.json");
 const REQUIRED_HYPERFRAMES_CHECKS: &[&str] = &["Node.js", "FFmpeg", "FFprobe", "Chrome"];
 const ADVISORY_HYPERFRAMES_CHECKS: &[&str] = &["Version"];
 
@@ -109,6 +110,20 @@ fn renderer_package(id: &str) -> Result<ManagedRendererPackage> {
         .with_context(|| format!("Unknown renderer '{id}'. Use hyperframe or manim."))
 }
 
+fn collect_pngs(root: &Path) -> std::collections::BTreeSet<PathBuf> {
+    WalkDir::new(root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("png"))
+        })
+        .collect()
+}
+
 /// Filesystem/process implementation for optional local video renderers.
 #[derive(Clone, Debug)]
 pub struct ManagedVideoRenderers {
@@ -137,6 +152,10 @@ impl ManagedVideoRenderers {
     fn hyperframe_gsap_runtime(&self) -> PathBuf {
         self.root
             .join("hyperframe/node_modules/gsap/dist/gsap.min.js")
+    }
+
+    fn hyperframe_catalog(&self) -> PathBuf {
+        self.root.join("hyperframe/catalog/manifest.json")
     }
 
     fn manim_executable(&self) -> PathBuf {
@@ -187,6 +206,17 @@ impl ManagedVideoRenderers {
                 "managed runtime missing: gsap; run `sfumato renderer install hyperframe` again"
                     .into(),
             );
+        }
+        if id == "hyperframe" && installed {
+            match fs::read_to_string(self.hyperframe_catalog()) {
+                Ok(value) if value == HYPERFRAME_CATALOG => {}
+                _ => {
+                    healthy = false;
+                    details.push(
+                        "managed Hyperframe catalog is missing or incompatible; run `sfumato renderer install hyperframe` again".into(),
+                    );
+                }
+            }
         }
         if id == "hyperframe" && installed {
             let mut doctor = Command::new(&executable);
@@ -268,6 +298,10 @@ impl RendererManager for ManagedVideoRenderers {
                             "Hyperframe installation",
                         )
                         .await?;
+                        let catalog = self.hyperframe_catalog();
+                        let parent = catalog.parent().expect("catalog has parent");
+                        fs::create_dir_all(parent)?;
+                        fs::write(catalog, HYPERFRAME_CATALOG)?;
                     }
                     "manim" => {
                         let package = renderer_package(id)?;
@@ -347,6 +381,40 @@ impl RendererManager for ManagedVideoRenderers {
 
 #[async_trait]
 impl VideoRenderer for ManagedVideoRenderers {
+    async fn validate(
+        &self,
+        engine: VideoEngine,
+        request: &VideoRenderRequest,
+        operation: &OperationContext,
+    ) -> SfumatoResult<()> {
+        let result = match engine {
+            VideoEngine::Hyperframe => self.validate_hyperframe(request, operation).await,
+            VideoEngine::Manim => Ok(()),
+            VideoEngine::Model => Err(anyhow::anyhow!(
+                "Direct model videos do not use a local renderer"
+            )),
+        };
+        managed_result(result, OperationStage::Render)
+    }
+
+    async fn snapshot(
+        &self,
+        engine: VideoEngine,
+        request: &VideoRenderRequest,
+        timestamps: &[f32],
+        output_dir: &Path,
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<PathBuf>> {
+        let result = match engine {
+            VideoEngine::Hyperframe => {
+                self.snapshot_hyperframe(request, timestamps, output_dir, operation)
+                    .await
+            }
+            VideoEngine::Manim | VideoEngine::Model => Ok(Vec::new()),
+        };
+        managed_result(result, OperationStage::InspectLayout)
+    }
+
     async fn render(
         &self,
         engine: VideoEngine,
@@ -376,7 +444,7 @@ impl VideoRenderer for ManagedVideoRenderers {
 }
 
 impl ManagedVideoRenderers {
-    async fn render_hyperframe(
+    async fn validate_hyperframe(
         &self,
         request: &VideoRenderRequest,
         operation: &OperationContext,
@@ -394,21 +462,71 @@ impl ManagedVideoRenderers {
         let vendor = request.source_root.join("vendor");
         fs::create_dir_all(&vendor)?;
         fs::copy(gsap, vendor.join("gsap.min.js"))?;
-        for subcommand in ["lint", "check"] {
-            let mut command = Command::new(&executable);
-            command
-                .arg(subcommand)
-                .env("HYPERFRAMES_NO_UPDATE_CHECK", "1")
-                .env("HYPERFRAMES_NO_TELEMETRY", "1")
-                .current_dir(&request.source_root);
-            checked(
-                &mut command,
-                operation,
-                OperationStage::Render,
-                &format!("Hyperframe {subcommand}"),
-            )
-            .await?;
+        let mut command = Command::new(&executable);
+        command
+            .arg("check")
+            .env("HYPERFRAMES_NO_UPDATE_CHECK", "1")
+            .env("HYPERFRAMES_NO_TELEMETRY", "1")
+            .current_dir(&request.source_root);
+        checked(
+            &mut command,
+            operation,
+            OperationStage::Render,
+            "Hyperframe check",
+        )
+        .await
+    }
+
+    async fn snapshot_hyperframe(
+        &self,
+        request: &VideoRenderRequest,
+        timestamps: &[f32],
+        output_dir: &Path,
+        operation: &OperationContext,
+    ) -> Result<Vec<PathBuf>> {
+        if timestamps.is_empty() {
+            return Ok(Vec::new());
         }
+        let executable = self.hyperframe_executable();
+        let before = collect_pngs(&request.source_root);
+        let at = timestamps
+            .iter()
+            .map(|value| format!("{value:.3}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut command = Command::new(&executable);
+        command
+            .args(["snapshot", "--at", &at])
+            .env("HYPERFRAMES_NO_UPDATE_CHECK", "1")
+            .env("HYPERFRAMES_NO_TELEMETRY", "1")
+            .current_dir(&request.source_root);
+        checked(
+            &mut command,
+            operation,
+            OperationStage::InspectLayout,
+            "Hyperframe snapshot",
+        )
+        .await?;
+        fs::create_dir_all(output_dir)?;
+        let mut copied = Vec::new();
+        for path in collect_pngs(&request.source_root) {
+            if before.contains(&path) {
+                continue;
+            }
+            let destination = output_dir.join(path.file_name().unwrap_or_default());
+            fs::copy(&path, &destination)?;
+            copied.push(destination);
+        }
+        Ok(copied)
+    }
+
+    async fn render_hyperframe(
+        &self,
+        request: &VideoRenderRequest,
+        operation: &OperationContext,
+    ) -> Result<()> {
+        self.validate_hyperframe(request, operation).await?;
+        let executable = self.hyperframe_executable();
         let mut render = Command::new(&executable);
         render
             .arg("render")

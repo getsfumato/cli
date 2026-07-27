@@ -9,6 +9,10 @@ select reusable themes, model defaults, page plugins, and model-backed tools.
 Generated resources are stored as immutable revisions under `~/.sfumato` and
 may publish processed PDF, HTML, or MP4 files into an Obsidian vault.
 
+Hyperframe videos use a production pipeline with workflow routing, storyboarded
+scene direction, managed visual blocks, deterministic snapshots, and an optional
+human review pause. See [the video guide](docs/guide/07-generate-videos.md).
+
 ## Quick Start
 
 Build the workspace:

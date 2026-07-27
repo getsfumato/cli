@@ -33,6 +33,7 @@ Template source (read-only structure):
 {% endif %}
 - Do not include `style:`, inline CSS, or generated theme CSS in Marp frontmatter.
 - Set Marp math rendering to MathJax with `math: mathjax`.
+{% include "shared/marp-math-contract.md.j2" %}
 - Use slide separators with ---.
 - Include a title slide.
 - Use `<!-- _class: lead -->` for title and section-divider slides.

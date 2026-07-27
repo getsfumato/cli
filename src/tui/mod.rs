@@ -60,7 +60,7 @@ use tui_widgets::big_text::{BigText, PixelSize};
 use crate::{
     cli::{
         EditSlidesArgs, GenerationToolArg, PageArgs, SlidesArgs, VideoArgs, VideoAudioArg,
-        VideoEngineArg,
+        VideoEngineArg, VideoWorkflowArg,
     },
     commands::{execute_edit_slides, execute_page, execute_slides, execute_video},
 };

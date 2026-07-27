@@ -14,15 +14,17 @@ use crate::{
         ModelUseArgs, PageArgs, PluginCommands, ProjectCommands, ProjectNameArgs, ProjectShowArgs,
         PromptCommands, PromptCustomizeArgs, PromptProjectArgs, PromptScope, PromptShowArgs,
         RendererCommands, SlidesArgs, TemplateCommands, TemplateKindArg, ThemeCommands,
-        ThemeUseArgs, ToolCommands, VideoArgs, VideoAudioArg, VideoEngineArg,
+        ThemeUseArgs, ToolCommands, VideoArgs, VideoAudioArg, VideoCommands, VideoEngineArg,
+        VideoWorkflowArg,
     },
     init::InitService,
     presentation::{Cell, print_table},
 };
 use sfumato_core::{
     application::{
-        AddProjectAssetCommand, EditSlidesCommand, GeneratePageCommand, GenerateSlidesCommand,
-        GenerateVideoCommand, SfumatoApplication, UpdateProjectAssetCommand,
+        AddProjectAssetCommand, ApproveVideoReviewCommand, EditSlidesCommand, GeneratePageCommand,
+        GenerateSlidesCommand, GenerateVideoCommand, PreviewVideoReviewCommand, SfumatoApplication,
+        UpdateProjectAssetCommand,
     },
     config::{Capability, ConfigOverrides, GenerationToolKind, VideoAudioMode},
     config_editor::ConfigTarget,
@@ -59,9 +61,50 @@ impl RunnableCommand for Commands {
             Self::Plugin { command } => command.run(application).await,
             Self::Tool { command } => command.run(application).await,
             Self::Renderer { command } => command.run(application).await,
+            Self::Video { command } => command.run(application).await,
             Self::Generate { command } => command.run(application).await,
             Self::Edit { command } => command.run(application).await,
         }
+    }
+}
+
+#[async_trait]
+impl RunnableCommand for VideoCommands {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        match self {
+            Self::Preview(args) => {
+                let source = application.preview_video_review(PreviewVideoReviewCommand {
+                    config: ConfigOverrides {
+                        project: args.project,
+                        ..ConfigOverrides::default()
+                    },
+                    review_id: args.review_id,
+                })?;
+                if args.json {
+                    println!("{}", serde_json::json!({"source": source}));
+                } else {
+                    println!(
+                        "Review source: {}\nRun the managed Hyperframes preview from this directory, then approve the same review ID.",
+                        source.display()
+                    );
+                }
+            }
+            Self::Approve(args) => {
+                let result = application
+                    .approve_video_review(ApproveVideoReviewCommand {
+                        operation: OperationContext::detached(),
+                        config: ConfigOverrides {
+                            project: args.project,
+                            publish_dir: args.out,
+                            ..ConfigOverrides::default()
+                        },
+                        review_id: args.review_id,
+                    })
+                    .await?;
+                render_video_result(result, args.json, false)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1130,6 +1173,13 @@ pub(crate) async fn execute_video(
     if args.allow_code_execution && !matches!(engine, sfumato_core::renderers::VideoEngine::Manim) {
         bail!("--allow-code-execution is only valid with --engine manim");
     }
+    if args.visual_review && !matches!(engine, sfumato_core::renderers::VideoEngine::Hyperframe) {
+        bail!("--visual-review is only valid with --engine hyperframe");
+    }
+    if !args.urls.is_empty() && !matches!(engine, sfumato_core::renderers::VideoEngine::Hyperframe)
+    {
+        bail!("--url is only valid with --engine hyperframe");
+    }
     let resolution = args
         .resolution
         .unwrap_or_else(|| if local { "1080p".into() } else { "720p".into() });
@@ -1172,6 +1222,19 @@ pub(crate) async fn execute_video(
                 quality: args.quality.unwrap_or_else(|| "high".into()),
                 audio,
                 allow_code_execution: args.allow_code_execution,
+                workflow: match args.workflow {
+                    VideoWorkflowArg::Auto => sfumato_domain::VideoWorkflow::Auto,
+                    VideoWorkflowArg::Explainer => sfumato_domain::VideoWorkflow::Explainer,
+                    VideoWorkflowArg::MotionGraphics => {
+                        sfumato_domain::VideoWorkflow::MotionGraphics
+                    }
+                    VideoWorkflowArg::ProductLaunch => sfumato_domain::VideoWorkflow::ProductLaunch,
+                    VideoWorkflowArg::TalkingHead => sfumato_domain::VideoWorkflow::TalkingHead,
+                    VideoWorkflowArg::Slideshow => sfumato_domain::VideoWorkflow::Slideshow,
+                    VideoWorkflowArg::General => sfumato_domain::VideoWorkflow::General,
+                },
+                urls: args.urls,
+                visual_review: args.visual_review,
             },
             dry_run: args.dry_run,
             review: !args.no_review,
@@ -1207,7 +1270,14 @@ fn render_video_result(result: GenerateVideoResult, json: bool, dry_run: bool) -
         }
         println!("Dry run complete; no model, renderer, or artifact store was called.");
     } else {
-        println!("Wrote {}", result.video_path.display());
+        if let Some(session) = &result.output.review_session {
+            println!("Visual review ready: {}", session.review_id);
+            println!("Contact sheet: {}", result.video_path.display());
+            println!("Next: sfumato video preview {}", session.review_id);
+            println!("Then: sfumato video approve {}", session.review_id);
+        } else {
+            println!("Wrote {}", result.video_path.display());
+        }
         for path in result.published_paths {
             println!("Published {}", path.display());
         }

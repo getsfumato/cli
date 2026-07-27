@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "catalog_version": "sfumato-hyperframe-1",
+  "items": [
+    {"id":"data-chart","kind":"block","tags":["data","chart"]},
+    {"id":"code-snippet-dark-modern","kind":"block","tags":["code","terminal"]},
+    {"id":"x-post","kind":"block","tags":["social","overlay"]},
+    {"id":"lower-third-clean-bar","kind":"block","tags":["lower-third","overlay"]},
+    {"id":"us-map","kind":"block","tags":["map","data"]},
+    {"id":"caption-highlight","kind":"component","tags":["caption","text"]},
+    {"id":"transitions-cover","kind":"block","tags":["transition"]},
+    {"id":"grain-overlay","kind":"component","tags":["effect","grain"]},
+    {"id":"vignette","kind":"component","tags":["effect","focus"]},
+    {"id":"shimmer-sweep","kind":"component","tags":["effect","highlight"]}
+  ]
+}

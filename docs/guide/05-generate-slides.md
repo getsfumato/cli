@@ -176,8 +176,11 @@ The drafter may emit fenced Mermaid blocks. Sfumato:
 Mermaid requires local Mermaid CLI. Rendering failures receive one focused
 model repair with the actual parser error.
 
-Math uses Marp's MathJax mode. Normalization enforces `math: mathjax` and
-preserves TeX delimiters appropriate for Marp.
+Math uses Marp's MathJax mode. Slide prompts require Marp's dollar delimiters:
+`$...$` for inline expressions and `$$...$$` for display expressions. The
+normalizer enforces `math: mathjax` and defensively converts paired `\(...\)`
+and `\[...\]` delimiters outside code and Mermaid fences before review or
+rendering, preserving the TeX expression itself.
 
 ## Artifact Layout
 

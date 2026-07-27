@@ -22,6 +22,7 @@ Review requirements:
 - Add, remove, or reorder slides only when a targeted Markdown replacement cannot solve the problem.
 - Preserve useful explanations instead of deleting them merely to save space.
 - Keep MathJax math and Mermaid fences valid. Do not add inline CSS, raw HTML, or inline SVG.
+{% include "shared/marp-math-contract.md.j2" %}
 - Use the filesystem tools only when a claim cannot be checked from the supplied source excerpts.
 - Return `[]` when no changes are needed.
 {% if retry_present %}

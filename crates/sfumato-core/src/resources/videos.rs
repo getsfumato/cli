@@ -6,11 +6,12 @@ use std::{
     sync::Arc,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sfumato_domain::{
     ArtifactKind, ReviewableDocument, VideoEngine, VideoPlanDocument, VideoScene,
-    VideoSourceDocument,
+    VideoSourceDocument, VideoWorkflow,
 };
+use sha2::{Digest, Sha256};
 use slug::slugify;
 
 use crate::{
@@ -24,7 +25,7 @@ use crate::{
     filesystem::WorkspaceFileSystem,
     generation::{
         GenerationRequest, GenerationToolSummary, ReviewStatus, VideoGenerationOutput,
-        VideoReviewSummary,
+        VideoReviewSession, VideoReviewSummary, VideoVisualReviewMode,
     },
     operation::OperationContext,
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
@@ -68,6 +69,12 @@ pub struct GenerateVideoRequest {
     pub audio: VideoAudioMode,
     /// One-time generated Python execution approval.
     pub allow_code_execution: bool,
+    /// Requested Hyperframe production workflow.
+    pub workflow: VideoWorkflow,
+    /// Explicit websites to capture before planning. Hyperframe-only.
+    pub urls: Vec<String>,
+    /// Stop after validation and visual evidence instead of rendering an MP4.
+    pub visual_review: bool,
 }
 
 /// Complete video-generation result returned to presentation frontends.
@@ -99,6 +106,32 @@ pub(crate) struct GenerateVideoOptions {
     pub project_asset_catalog: Arc<dyn ProjectAssetCatalog>,
 }
 
+/// Inputs required to render one previously paused Hyperframe review session.
+pub struct ApproveVideoReviewOptions {
+    pub operation: OperationContext,
+    pub artifact_store: Arc<dyn ArtifactStore>,
+    pub video_renderer: Arc<dyn VideoRenderer>,
+    pub workspace: Arc<dyn WorkspaceFileSystem>,
+    pub publish_root_override: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ReviewSessionRecord {
+    schema_version: u32,
+    review_id: String,
+    project: String,
+    engine: VideoEngine,
+    status: String,
+    resolution: String,
+    aspect_ratio: String,
+    fps: u32,
+    quality: String,
+    source_hash: String,
+    plan_hash: String,
+    #[serde(default)]
+    publish_root: Option<PathBuf>,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 struct VideoPromptContext {
     learning_style: String,
@@ -125,6 +158,9 @@ struct VideoPromptContext {
     source_snapshot: String,
     validation_error: String,
     max_tool_rounds: usize,
+    workflow: String,
+    urls: Vec<String>,
+    catalog: String,
 }
 
 struct VideoContextInput<'a> {
@@ -142,20 +178,238 @@ struct VideoContextInput<'a> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VideoPlanDraft {
+    #[serde(deserialize_with = "deserialize_draft_text")]
     title: String,
+    #[serde(deserialize_with = "deserialize_draft_text")]
     objective: String,
     scenes: Vec<VideoScene>,
     #[serde(default)]
     artifacts: Vec<String>,
+    #[serde(deserialize_with = "deserialize_draft_text")]
     visual_direction: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_draft_text")]
     remote_prompt: String,
+    #[serde(default)]
+    workflow: VideoWorkflow,
+    #[serde(default, deserialize_with = "deserialize_draft_text")]
+    message: String,
+    #[serde(default, deserialize_with = "deserialize_draft_text")]
+    narrative_arc: String,
+    #[serde(default, deserialize_with = "deserialize_draft_text")]
+    design_direction: String,
+}
+
+fn deserialize_draft_text<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::String(value) => value,
+        value => value.to_string(),
+    })
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VideoSourceDraft {
     files: BTreeMap<String, String>,
+}
+
+/// Renders the immutable source bundle from a previously approved review session.
+pub async fn approve_video_review(
+    config: EffectiveConfig,
+    review_id: &str,
+    options: ApproveVideoReviewOptions,
+) -> Result<GenerateVideoResult> {
+    if review_id.is_empty() || review_id.contains(['/', '\\']) || review_id.contains("..") {
+        return Err(SfumatoError::validation("Invalid video review identifier"));
+    }
+    let ApproveVideoReviewOptions {
+        operation,
+        artifact_store,
+        video_renderer,
+        workspace,
+        publish_root_override,
+    } = options;
+    let review_root = artifact_store
+        .project_root(&config.project_name)?
+        .join("review-sessions")
+        .join(review_id);
+    let record: ReviewSessionRecord = serde_json::from_str(
+        &workspace.read_text(&review_root.join("review.json"))?,
+    )
+    .map_err(|error| SfumatoError::validation(format!("Invalid review session: {error}")))?;
+    if record.schema_version != 1
+        || record.review_id != review_id
+        || record.project != config.project_name
+        || record.engine != VideoEngine::Hyperframe
+        || record.status != "pending_approval"
+    {
+        return Err(SfumatoError::validation(
+            "Review session is not an approvable Hyperframe session",
+        ));
+    }
+    let source_text = workspace.read_text(&review_root.join("source.json"))?;
+    if hash_text(&source_text) != record.source_hash {
+        return Err(SfumatoError::validation(
+            "Review source hash no longer matches its immutable session",
+        ));
+    }
+    let source: VideoSourceDocument = serde_json::from_str(&source_text)
+        .map_err(|error| SfumatoError::validation(format!("Review source is invalid: {error}")))?;
+    validate_source(&source)?;
+    let plan_text = workspace.read_text(&review_root.join("plan.json"))?;
+    if hash_text(&plan_text) != record.plan_hash {
+        return Err(SfumatoError::validation(
+            "Review plan hash no longer matches its immutable session",
+        ));
+    }
+    let plan: VideoPlanDocument = serde_json::from_str(&plan_text)
+        .map_err(|error| SfumatoError::validation(format!("Review plan is invalid: {error}")))?;
+    let configured_publish_root = config.publish_root()?;
+    let publish_root = review_publish_root(
+        record.publish_root.clone(),
+        configured_publish_root,
+        publish_root_override,
+    );
+    let transaction = artifact_store.begin(&config.project_name, ArtifactResourceKind::Videos)?;
+    let staging_root = transaction.staging_root().to_path_buf();
+    let source_root = staging_root.join("source");
+    workspace.copy_tree(&review_root.join("source"), &source_root, &[])?;
+    workspace.write(
+        &source_root.join("source.json"),
+        source.render().map_err(review_error)?.as_bytes(),
+    )?;
+    let slug = slugify(plan.title());
+    let video = GenerateVideoRequest {
+        engine: VideoEngine::Hyperframe,
+        title: Some(plan.title().into()),
+        duration_seconds: plan.duration_seconds(),
+        resolution: record.resolution.clone(),
+        aspect_ratio: record.aspect_ratio.clone(),
+        fps: record.fps,
+        quality: record.quality.clone(),
+        audio: VideoAudioMode::Off,
+        allow_code_execution: false,
+        workflow: plan.workflow(),
+        urls: Vec::new(),
+        visual_review: false,
+    };
+    let output_path = staging_root.join(format!("{slug}.mp4"));
+    let request = local_render_request(&source_root, &output_path, &video)?;
+    video_renderer
+        .validate(VideoEngine::Hyperframe, &request, &operation)
+        .await?;
+    video_renderer
+        .render(VideoEngine::Hyperframe, &request, &operation)
+        .await?;
+    let inspection = video_renderer.inspect(&output_path, &operation).await?;
+    validate_inspection(&inspection, &video, Some(false))?;
+    let snapshots = review_root.join("snapshots");
+    if snapshots.is_dir() {
+        workspace.copy_tree(&snapshots, &staging_root.join("snapshots"), &[])?;
+    }
+    for name in [
+        "plan.json",
+        "STORYBOARD.md",
+        "DESIGN.md",
+        "SCRIPT.md",
+        "contact-sheet.md",
+    ] {
+        let source_path = review_root.join(name);
+        if workspace.is_file(&source_path) {
+            workspace.copy_file(&source_path, &staging_root.join(name))?;
+        }
+    }
+    let files = workspace
+        .list_files(&staging_root, &["manifest.json"])?
+        .iter()
+        .map(|path| artifact_file(&staging_root, path))
+        .collect::<Result<Vec<_>>>()?;
+    let mut warnings = vec![format!("Rendered approved review session {review_id}")];
+    let manifest = ResourceArtifactManifest {
+        schema_version: 1,
+        job_id: transaction.job_id().clone(),
+        revision_id: transaction.revision_id().clone(),
+        parent_revision: transaction.parent_revision().cloned(),
+        project: config.project_name.clone(),
+        resource_kind: ArtifactResourceKind::Videos,
+        resource_id: slug.clone(),
+        title: plan.title().into(),
+        files,
+        models: BTreeMap::new(),
+        prompts: Vec::new(),
+        plugins: Vec::new(),
+        runtimes: Vec::new(),
+        warnings: warnings.clone(),
+    };
+    let committed = transaction.commit(manifest)?;
+    let video_path = committed.root.join(format!("{slug}.mp4"));
+    let published_paths = publish_video(
+        workspace.as_ref(),
+        publish_root.as_deref(),
+        &video_path,
+        &slug,
+        &mut warnings,
+    )?;
+    workspace.write(
+        &review_root.join("review.json"),
+        serde_json::to_vec_pretty(&ReviewSessionRecord {
+            status: "approved".into(),
+            ..record
+        })?
+        .as_slice(),
+    )?;
+    let artifacts = workspace.list_files(&committed.root, &[])?;
+    Ok(GenerateVideoResult {
+        video_path: video_path.clone(),
+        published_paths: published_paths.clone(),
+        prompt_preview: None,
+        output: VideoGenerationOutput {
+            project: config.project_name,
+            title: plan.title().into(),
+            engine: VideoEngine::Hyperframe,
+            video_path,
+            models: BTreeMap::new(),
+            tools: Vec::new(),
+            project_assets: Vec::new(),
+            artifacts,
+            published_artifacts: published_paths,
+            review: VideoReviewSummary {
+                enabled: false,
+                semantic_review: ReviewStatus::Skipped,
+                source_repair: ReviewStatus::NotNeeded,
+                visual_review: ReviewStatus::Completed,
+                media_inspection: ReviewStatus::Completed,
+            },
+            visual_review_mode: VideoVisualReviewMode::HumanApprovalRequired,
+            review_session: None,
+            visual_report: None,
+            prompts: Vec::new(),
+            warnings,
+        },
+    })
+}
+
+fn review_publish_root(
+    saved: Option<PathBuf>,
+    configured: Option<PathBuf>,
+    explicit_override: bool,
+) -> Option<PathBuf> {
+    if explicit_override {
+        configured
+    } else {
+        saved.or(configured)
+    }
+}
+
+fn hyperframe_catalog_summary() -> String {
+    "managed catalog v1: data-chart, code-snippet-dark-modern, x-post, lower-third-clean-bar, us-map, caption-highlight, transitions-cover, grain-overlay, vignette, shimmer-sweep".into()
+}
+
+fn hash_text(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
 /// Executes one engine-explicit video generation workflow.
@@ -342,6 +596,9 @@ pub(crate) async fn generate_video(
                 artifacts: Vec::new(),
                 published_artifacts: Vec::new(),
                 review: review_summary,
+                visual_review_mode: VideoVisualReviewMode::Disabled,
+                review_session: None,
+                visual_report: None,
                 prompts,
                 warnings: prepared_assets.warnings,
             },
@@ -365,6 +622,7 @@ pub(crate) async fn generate_video(
         video.engine,
         video.duration_seconds,
         video.title.as_deref(),
+        video.workflow,
     )?;
     let mut warnings = prepared_assets.warnings.clone();
     if let Some((reviewer_name, reviewer_profile)) = reviewer {
@@ -426,8 +684,16 @@ pub(crate) async fn generate_video(
     let video_path = staging_root.join(format!("{slug}.mp4"));
     workspace.write(&staging_root.join("plan.json"), plan_text.as_bytes())?;
     workspace.write(
-        &staging_root.join("storyboard.md"),
+        &staging_root.join("STORYBOARD.md"),
         storyboard(&plan).as_bytes(),
+    )?;
+    workspace.write(
+        &staging_root.join("DESIGN.md"),
+        design_document(&plan, &theme).as_bytes(),
+    )?;
+    workspace.write(
+        &staging_root.join("SCRIPT.md"),
+        script_document(&plan).as_bytes(),
     )?;
 
     let expected_audio = match video.audio {
@@ -501,7 +767,7 @@ pub(crate) async fn generate_video(
                 .await?;
             let mut source = parse_source(&response.text, video.engine)?;
             let local_request = local_render_request(&source_root, &video_path, &video)?;
-            if let Err(error) = validate_write_and_render_source(
+            if let Err(error) = validate_write_source(
                 &source,
                 &source_root,
                 workspace.as_ref(),
@@ -512,6 +778,9 @@ pub(crate) async fn generate_video(
             )
             .await
             {
+                if !review {
+                    return Err(error);
+                }
                 review_summary.source_repair = ReviewStatus::Pending;
                 let (reviewer_name, reviewer_profile) = reviewer
                     .or(engine_profile)
@@ -539,7 +808,8 @@ pub(crate) async fn generate_video(
                 let patch =
                     crate::review::parse_json_patch(&response.text).map_err(review_error)?;
                 source.apply_patch(&patch).map_err(review_error)?;
-                validate_write_and_render_source(
+                source = normalize_hyperframe_parent_paths(source)?;
+                validate_write_source(
                     &source,
                     &source_root,
                     workspace.as_ref(),
@@ -551,6 +821,46 @@ pub(crate) async fn generate_video(
                 .await?;
                 review_summary.source_repair = ReviewStatus::Completed;
             }
+            let snapshots = video_renderer
+                .snapshot(
+                    video.engine,
+                    &local_request,
+                    &snapshot_times(&plan),
+                    &staging_root.join("snapshots"),
+                    &operation,
+                )
+                .await?;
+            workspace.write(
+                &staging_root.join("source.json"),
+                source.render().map_err(review_error)?.as_bytes(),
+            )?;
+            workspace.write(
+                &staging_root.join("contact-sheet.md"),
+                contact_sheet(&plan, &snapshots).as_bytes(),
+            )?;
+            review_summary.visual_review = ReviewStatus::Completed;
+            if video.visual_review {
+                return pause_for_visual_review(
+                    &config,
+                    artifact_store.as_ref(),
+                    workspace.as_ref(),
+                    &staging_root,
+                    &slug,
+                    &video,
+                    title,
+                    video.engine,
+                    models,
+                    tool_summaries,
+                    used_project_assets,
+                    review_summary,
+                    prompts,
+                    warnings,
+                    publish_root.as_deref(),
+                );
+            }
+            video_renderer
+                .render(video.engine, &local_request, &operation)
+                .await?;
         }
     }
     let inspection = video_renderer.inspect(&video_path, &operation).await?;
@@ -612,6 +922,13 @@ pub(crate) async fn generate_video(
             artifacts,
             published_artifacts: published_paths,
             review: review_summary,
+            visual_review_mode: if video.engine == VideoEngine::Hyperframe {
+                VideoVisualReviewMode::EvidenceOnly
+            } else {
+                VideoVisualReviewMode::Disabled
+            },
+            review_session: None,
+            visual_report: None,
             prompts,
             warnings,
         },
@@ -653,6 +970,9 @@ fn video_context(input: VideoContextInput<'_>) -> Result<VideoPromptContext> {
         reusable_assets,
         image_generation_available,
         max_tool_rounds,
+        workflow: video.workflow.as_str().into(),
+        urls: video.urls.clone(),
+        catalog: hyperframe_catalog_summary(),
         ..Default::default()
     })
 }
@@ -690,6 +1010,7 @@ fn parse_plan(
     engine: VideoEngine,
     duration: u32,
     title: Option<&str>,
+    requested_workflow: VideoWorkflow,
 ) -> Result<VideoPlanDocument> {
     let draft: VideoPlanDraft =
         serde_json::from_str(strip_json_fence(response)).map_err(|error| {
@@ -698,7 +1019,22 @@ fn parse_plan(
                 format!("Video plan must be strict JSON: {error}"),
             )
         })?;
-    VideoPlanDocument::new(
+    let design_direction = if draft.design_direction.trim().is_empty() {
+        draft.visual_direction.clone()
+    } else {
+        draft.design_direction
+    };
+    let message = if draft.message.trim().is_empty() {
+        draft.objective.clone()
+    } else {
+        draft.message
+    };
+    let narrative_arc = if draft.narrative_arc.trim().is_empty() {
+        "hook, explanation, payoff".into()
+    } else {
+        draft.narrative_arc
+    };
+    VideoPlanDocument::new_with_pipeline(
         engine,
         title.unwrap_or(&draft.title),
         draft.objective,
@@ -707,6 +1043,14 @@ fn parse_plan(
         draft.artifacts,
         draft.visual_direction,
         draft.remote_prompt,
+        if requested_workflow == VideoWorkflow::Auto {
+            draft.workflow
+        } else {
+            requested_workflow
+        },
+        message,
+        narrative_arc,
+        design_direction,
     )
     .map_err(review_error)
 }
@@ -719,7 +1063,8 @@ fn parse_source(response: &str, engine: VideoEngine) -> Result<VideoSourceDocume
                 format!("Video source must be strict JSON: {error}"),
             )
         })?;
-    VideoSourceDocument::new(engine, draft.files).map_err(review_error)
+    let source = VideoSourceDocument::new(engine, draft.files).map_err(review_error)?;
+    normalize_hyperframe_parent_paths(source)
 }
 
 fn validate_source(source: &VideoSourceDocument) -> Result<()> {
@@ -729,6 +1074,9 @@ fn validate_source(source: &VideoSourceDocument) -> Result<()> {
         .cloned()
         .collect::<Vec<_>>()
         .join("\n")
+        .replace("http://www.w3.org/2000/svg", "")
+        .replace("http://www.w3.org/1999/xlink", "")
+        .replace("http://www.w3.org/1999/xhtml", "")
         .to_ascii_lowercase();
     for forbidden in [
         "http://",
@@ -763,6 +1111,14 @@ fn validate_source(source: &VideoSourceDocument) -> Result<()> {
                 .files()
                 .get("index.html")
                 .expect("required file checked");
+            for wrapper in ["<!doctype html", "<html", "<body"] {
+                if !html.to_ascii_lowercase().contains(wrapper) {
+                    return Err(SfumatoError::render(
+                        ErrorClass::InvalidOutput,
+                        format!("Hyperframe index.html is missing required wrapper '{wrapper}'"),
+                    ));
+                }
+            }
             for attribute in ["data-composition-id", "data-width", "data-height"] {
                 if !html.contains(attribute) {
                     return Err(SfumatoError::render(
@@ -774,7 +1130,6 @@ fn validate_source(source: &VideoSourceDocument) -> Result<()> {
             for contract in [
                 "./vendor/gsap.min.js",
                 "gsap.timeline",
-                "paused: true",
                 "window.__timelines",
             ] {
                 if !html.contains(contract) {
@@ -783,6 +1138,27 @@ fn validate_source(source: &VideoSourceDocument) -> Result<()> {
                         format!("Hyperframe index.html is missing required contract '{contract}'"),
                     ));
                 }
+            }
+            let compact_html = html
+                .chars()
+                .filter(|value| !value.is_whitespace())
+                .collect::<String>();
+            if !compact_html.contains("paused:true") {
+                return Err(SfumatoError::render(
+                    ErrorClass::InvalidOutput,
+                    "Hyperframe index.html is missing required contract 'paused: true'",
+                ));
+            }
+            let compositions = source
+                .files()
+                .keys()
+                .filter(|path| path.starts_with("compositions/") && path.ends_with(".html"))
+                .count();
+            if compositions == 0 || !html.contains("compositions/") {
+                return Err(SfumatoError::render(
+                    ErrorClass::InvalidOutput,
+                    "Hyperframe source must assemble at least one local compositions/*.html scene",
+                ));
             }
         }
         VideoEngine::Manim => {
@@ -827,6 +1203,40 @@ fn validate_source(source: &VideoSourceDocument) -> Result<()> {
     Ok(())
 }
 
+fn normalize_hyperframe_parent_paths(source: VideoSourceDocument) -> Result<VideoSourceDocument> {
+    if source.engine() != VideoEngine::Hyperframe {
+        return Ok(source);
+    }
+    let mut files = source.files().clone();
+    for (relative, content) in &mut files {
+        if !content.contains("../") {
+            continue;
+        }
+        let direct_composition = Path::new(relative).parent() == Some(Path::new("compositions"));
+        if !direct_composition || content.contains("../../") || content.contains("..\\..") {
+            return Err(SfumatoError::render(
+                ErrorClass::InvalidOutput,
+                format!(
+                    "Video source file '{relative}' contains a parent path that escapes the managed source root"
+                ),
+            ));
+        }
+        *content = content.replace("../", "");
+    }
+    if let Some(index) = files.get_mut("index.html") {
+        let lowercase = index.to_ascii_lowercase();
+        if !lowercase.contains("<!doctype html")
+            || !lowercase.contains("<html")
+            || !lowercase.contains("<body")
+        {
+            *index = format!(
+                "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"></head><body>{index}</body></html>"
+            );
+        }
+    }
+    VideoSourceDocument::new(VideoEngine::Hyperframe, files).map_err(review_error)
+}
+
 fn write_source(
     source: &VideoSourceDocument,
     root: &Path,
@@ -839,7 +1249,7 @@ fn write_source(
     Ok(())
 }
 
-async fn validate_write_and_render_source(
+async fn validate_write_source(
     source: &VideoSourceDocument,
     source_root: &Path,
     workspace: &dyn WorkspaceFileSystem,
@@ -850,7 +1260,7 @@ async fn validate_write_and_render_source(
 ) -> Result<()> {
     validate_source(source)?;
     write_source(source, source_root, workspace)?;
-    renderer.render(engine, request, operation).await
+    renderer.validate(engine, request, operation).await
 }
 
 fn local_render_request(
@@ -897,6 +1307,18 @@ fn validate_video_options(config: &EffectiveConfig, video: &GenerateVideoRequest
         return Err(SfumatoError::validation(
             "Manim executes generated Python. Pass --allow-code-execution or enable project security.allow_manim.",
         ));
+    }
+    if !video.urls.is_empty() && video.engine != VideoEngine::Hyperframe {
+        return Err(SfumatoError::validation(
+            "Website capture sources are only supported by Hyperframe",
+        ));
+    }
+    for url in &video.urls {
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err(SfumatoError::validation(
+                "Each --url value must be an absolute http(s) URL",
+            ));
+        }
     }
     resolution_dimensions(&video.resolution, &video.aspect_ratio).map(|_| ())
 }
@@ -986,20 +1408,156 @@ fn video_publish_destination(root: &Path, slug: &str) -> PathBuf {
     root.join("_sfumato/videos").join(slug)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn pause_for_visual_review(
+    config: &EffectiveConfig,
+    artifact_store: &dyn ArtifactStore,
+    workspace: &dyn WorkspaceFileSystem,
+    staging_root: &Path,
+    slug: &str,
+    video: &GenerateVideoRequest,
+    title: String,
+    engine: VideoEngine,
+    models: BTreeMap<String, String>,
+    tools: Vec<GenerationToolSummary>,
+    project_assets: Vec<ProjectAssetReference>,
+    review: VideoReviewSummary,
+    prompts: Vec<PromptProvenance>,
+    mut warnings: Vec<String>,
+    publish_root: Option<&Path>,
+) -> Result<GenerateVideoResult> {
+    let suffix = staging_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("review");
+    let review_id = format!("{slug}-{suffix}");
+    let root = artifact_store
+        .project_root(&config.project_name)?
+        .join("review-sessions")
+        .join(&review_id);
+    if workspace.read_dir(&root).is_ok() {
+        return Err(SfumatoError::validation(
+            "Generated review session identifier already exists; refusing to overwrite immutable review evidence",
+        ));
+    }
+    workspace.copy_tree(staging_root, &root, &[])?;
+    workspace.write(
+        &root.join("review.json"),
+        serde_json::to_vec_pretty(&ReviewSessionRecord {
+            schema_version: 1,
+            review_id: review_id.clone(),
+            project: config.project_name.clone(),
+            engine,
+            status: "pending_approval".into(),
+            resolution: video.resolution.clone(),
+            aspect_ratio: video.aspect_ratio.clone(),
+            fps: video.fps,
+            quality: video.quality.clone(),
+            source_hash: hash_text(&workspace.read_text(&root.join("source.json"))?),
+            plan_hash: hash_text(&workspace.read_text(&root.join("plan.json"))?),
+            publish_root: publish_root.map(Path::to_path_buf),
+        })?
+        .as_slice(),
+    )?;
+    warnings.push(format!(
+        "Visual review is pending: {review_id}. Run `sfumato video preview {review_id}` then `sfumato video approve {review_id}`."
+    ));
+    let contact_sheet = root.join("contact-sheet.md");
+    let artifacts = workspace.list_files(&root, &[])?;
+    Ok(GenerateVideoResult {
+        video_path: contact_sheet.clone(),
+        published_paths: Vec::new(),
+        prompt_preview: None,
+        output: VideoGenerationOutput {
+            project: config.project_name.clone(),
+            title,
+            engine,
+            video_path: contact_sheet,
+            models,
+            tools,
+            project_assets,
+            artifacts,
+            published_artifacts: Vec::new(),
+            review,
+            visual_review_mode: VideoVisualReviewMode::HumanApprovalRequired,
+            review_session: Some(VideoReviewSession {
+                review_id,
+                status: "pending_approval".into(),
+                root,
+            }),
+            visual_report: None,
+            prompts,
+            warnings,
+        },
+    })
+}
+
+fn snapshot_times(plan: &VideoPlanDocument) -> Vec<f32> {
+    let mut values = BTreeSet::new();
+    for scene in plan.scenes() {
+        values.insert((scene.start_seconds + scene.duration_seconds / 2.0).to_bits());
+        if scene.start_seconds > 0.0 {
+            values.insert(scene.start_seconds.to_bits());
+        }
+    }
+    values.into_iter().map(f32::from_bits).collect()
+}
+
+fn contact_sheet(plan: &VideoPlanDocument, snapshots: &[PathBuf]) -> String {
+    let mut output = format!("# Contact sheet: {}\n\n", plan.title());
+    if snapshots.is_empty() {
+        output.push_str("No PNG snapshots were emitted by the managed renderer. Inspect the Hyperframe preview before approval.\n");
+    } else {
+        for snapshot in snapshots {
+            output.push_str(&format!("- {}\n", snapshot.display()));
+        }
+    }
+    output
+}
+
+fn design_document(plan: &VideoPlanDocument, theme: &ThemePackage) -> String {
+    format!(
+        "# DESIGN\n\nWorkflow: {:?}\n\nMessage: {}\n\nDirection: {}\n\nTheme: {}\n",
+        plan.workflow(),
+        plan.message(),
+        plan.design_direction(),
+        theme.manifest.name
+    )
+}
+
+fn script_document(plan: &VideoPlanDocument) -> String {
+    let mut output = format!("# SCRIPT\n\n{}\n\n", plan.narrative_arc());
+    for scene in plan.scenes() {
+        output.push_str(&format!(
+            "## {}\n{}\n\n",
+            scene.id,
+            scene.production.on_screen_copy.join("\n")
+        ));
+    }
+    output
+}
+
 fn storyboard(plan: &VideoPlanDocument) -> String {
     let mut output = format!(
-        "# {}\n\nDuration: {} seconds\n\n",
+        "# {}\n\nDuration: {} seconds\n\nMessage: {}\n\nArc: {}\n\n",
         plan.title(),
-        plan.duration_seconds()
+        plan.duration_seconds(),
+        plan.message(),
+        plan.narrative_arc()
     );
     for scene in plan.scenes() {
         output.push_str(&format!(
-            "## {} ({:.2}s–{:.2}s)\n\n{}\n\nVisual: {}\n\n",
+            "## {} ({:.2}s–{:.2}s)\n\nRole: {}\n\n{}\n\nVisual: {}\n\nLayout: {}\n\nMotion: {}\n\nTransition: {}\n\nAcceptance: {}\n\n",
             scene.id,
             scene.start_seconds,
             scene.start_seconds + scene.duration_seconds,
+            scene.production.narrative_role,
             scene.content,
-            scene.visual
+            scene.visual,
+            scene.production.layout,
+            scene.production.motion_rules.join(", "),
+            scene.production.transition,
+            scene.production.acceptance.join("; "),
         ));
     }
     output

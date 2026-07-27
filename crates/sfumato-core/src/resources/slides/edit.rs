@@ -14,8 +14,9 @@ use super::{
     LayoutInspectionContext, SlidePromptContext, compact_review_snapshot,
     constrain_generated_images, copy_theme_css, emit_context_compaction, emit_layout_result,
     emit_review_retry, emit_stage, ensure_inside, extract_generated_title, format_tokens,
-    generation_limit, inspect_candidate_layout, markdown_fences, render_mermaid_diagrams,
-    render_prompt_request, request_chars, resource_artifact_file, validate_normalized_deck,
+    generation_limit, inspect_candidate_layout, markdown_fences, normalize_marp_math_delimiters,
+    render_mermaid_diagrams, render_prompt_request, request_chars, resource_artifact_file,
+    validate_normalized_deck,
 };
 use crate::sfumato_bail as bail;
 use crate::{
@@ -163,7 +164,7 @@ pub(crate) async fn edit_slides(
     )
     .await?;
     options.operation.checkpoint(OperationStage::Edit)?;
-    let candidate = constrain_generated_images(&edit.markdown);
+    let candidate = normalize_marp_math_delimiters(&constrain_generated_images(&edit.markdown));
     validate_normalized_deck(&candidate, &title)?;
 
     let parent = markdown_path

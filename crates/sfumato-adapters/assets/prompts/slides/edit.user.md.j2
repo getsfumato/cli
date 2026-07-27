@@ -17,6 +17,7 @@ Requirements:
 - Preserve content unrelated to the user's instruction.
 - Return complete Markdown for each changed slide, without frontmatter or outer slide separators.
 - Keep images sized for a 1280x720 slide and avoid introducing content overflow.
+{% include "shared/marp-math-contract.md.j2" %}
 - Return `[]` when the requested content is already present.
 - Every slide's complete Markdown is available in the structured snapshot.
 {% if retry_present %}

@@ -4,6 +4,20 @@ Use this chapter by symptom. Run diagnostic commands before changing stored
 state, and preserve the exact error `code`, `class`, `stage`, and message when
 reporting failures.
 
+## Hyperframe production reviews
+
+Run `sfumato renderer doctor hyperframe` before investigating an authoring failure.
+It verifies the pinned CLI, GSAP runtime, and the managed local catalog. A generated
+Hyperframe source must keep one paused timeline per composition, use only local
+assets, and never fetch resources at render time.
+
+If a scene is blank or visually weak, inspect the managed review session's
+`contact-sheet.md` and `snapshots/` before regenerating. Preview/render differences
+usually come from unavailable fonts or a version mismatch; reproduce with the stored
+source bundle and report the renderer version, `check` output, and contact sheet.
+
+This release does not diagnose audio because Hyperframe output is intentionally silent.
+
 ## Fast Diagnostic Checklist
 
 ```bash
@@ -544,9 +558,14 @@ slide separator accidentally appended inside an open fence.
 
 ### Math appears as raw LaTeX
 
-Slides use Marp `math: mathjax`. Expressions must use supported delimiters and
-must not be emitted as plain escaped text. Pages load a bundled offline math
-runtime during assembly and browser inspection reports unrendered math.
+Slides use Marp `math: mathjax` with `$...$` for inline math and `$$...$$` for
+display math. Page resources are different: their offline assembler expects
+`\(...\)` and `\[...\]`. Do not copy the page convention into Marp Markdown.
+
+Current slide prompts state this distinction explicitly. Before review and
+rendering, Sfumato also converts paired classic delimiters in slide prose to
+dollar delimiters while leaving code fences, inline code, and Mermaid untouched.
+Older binaries do not contain that normalization, so rebuild before retrying.
 
 Check that the model did not place equations inside an ordinary code fence.
 

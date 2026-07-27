@@ -18,6 +18,7 @@ side effects, managed files, publication layouts, and failure behavior.
 | [Editing, TUI, and automation](08-editing-tui-and-automation.md) | Focused deck editing, interactive mode, JSON mode, progress events, and agent usage. |
 | [Command reference](09-command-reference.md) | Every command, positional argument, flag, accepted value, and immediate effect. |
 | [Troubleshooting](10-troubleshooting.md) | Configuration, provider, browser, Marp, Mermaid, plugin, Hyperframes, and Manim failures. |
+| [Hyperframe troubleshooting](11-hyperframe-troubleshooting.md) | Timeline contracts, local assets, snapshots, managed review sessions, and safe reproduction packages. |
 
 ## CLI Conventions
 

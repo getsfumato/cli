@@ -18,6 +18,7 @@ Token-limit recovery requirements:
 - Replace a slide only when `markdown_complete` is true, because a truncated excerpt cannot safely reconstruct the original slide.
 - Do not modify the title slide, metadata, IDs, revisions, headings, kinds, or element summaries.
 - Use only the compact evidence below. Do not call filesystem tools.
+{% include "shared/marp-math-contract.md.j2" %}
 - Return `[]` when no high-confidence correction is necessary.
 {% if retry_present %}
 {% include "shared/compact-review-retry.md.j2" %}

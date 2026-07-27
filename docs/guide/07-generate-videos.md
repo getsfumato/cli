@@ -4,8 +4,10 @@
 
 ```bash
 sfumato generate video [INPUTS]... \
+  [--url <URL>]... \
   --instruction <text> \
   --engine hyperframe|manim|model \
+  [--workflow auto|explainer|motion-graphics|product-launch|talking-head|slideshow|general] \
   --duration <seconds> \
   [--title <title>] \
   [--out <folder>] \
@@ -22,6 +24,7 @@ sfumato generate video [INPUTS]... \
   [--tool image-gen] \
   [--disable-tool image-gen] \
   [--no-review] \
+  [--visual-review] \
   [--dry-run] \
   [--json]
 ```
@@ -42,9 +45,9 @@ Engine and duration are required. Sfumato never falls back to another engine.
    duration, frame expectations, and audio policy.
 8. Commit one immutable revision and publish only the MP4 when requested.
 
-`--no-review` disables semantic plan review. It does not disable deterministic
-source validation or the one recovery attempt needed to turn rejected generated
-source into a renderable project.
+`--no-review` disables semantic plan review and the one technical source-repair
+attempt. Deterministic source validation, snapshots, and final media inspection
+remain mandatory.
 
 ## Model Resolution
 
@@ -74,6 +77,44 @@ For local engines, `--model video=...` is invalid. For the remote model engine,
 | `--allow-code-execution` | Manim only; rejected for other engines. |
 
 ## Hyperframes Engine
+
+### Production pipeline
+
+Hyperframe generation is a silent production pipeline: Sfumato derives a workflow,
+records `DESIGN.md`, `STORYBOARD.md`, and `SCRIPT.md` (on-screen copy only), authors
+scene direction, validates the source, and captures deterministic review snapshots
+before the final encode. Audio, TTS, music, SFX, and audio-timed captions are not
+part of this engine.
+
+Use `--workflow auto` (the default) to select a route from the brief, or select one
+of `explainer`, `motion-graphics`, `product-launch`, `talking-head`, `slideshow`, or
+`general`. `--url <URL>` records an explicit website source for a Hyperframe brief.
+
+The managed renderer installs a pinned local catalog of approved Hyperframe blocks
+and effects. Generation never downloads catalog items; `sfumato renderer doctor
+hyperframe` reports a missing or incompatible catalog.
+
+For a human checkpoint before rendering, pass `--visual-review`. Sfumato stores the
+source bundle, snapshots, and `contact-sheet.md` under its managed review session,
+then reports the `review_id`. Preview and approval commands operate on that exact
+session; a normal generation remains non-interactive and renders after validation.
+
+```bash
+sfumato generate video --engine hyperframe --duration 12 --audio off \
+  --url https://example.com/product --workflow product-launch \
+  --visual-review --instruction "Present the product dashboard in three beats"
+sfumato video preview <review-id>
+sfumato video approve <review-id>
+```
+
+The review session remembers the effective `--out` destination from generation.
+After approval, Sfumato publishes the MP4 under that destination's
+`_sfumato/videos/<slug>/` directory. Pass `--out <folder>` to `video approve` only
+when you intentionally want to override the destination saved with the review:
+
+```bash
+sfumato video approve <review-id> --out ./course-materials
+```
 
 Install and check the explicit managed renderer:
 

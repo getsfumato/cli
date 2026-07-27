@@ -620,9 +620,11 @@ impl GenerateForm {
         let (tools, disabled_tools) = self.tool_flags();
         Ok(VideoArgs {
             inputs,
+            urls: Vec::new(),
             instruction,
             title,
             engine,
+            workflow: VideoWorkflowArg::Auto,
             duration,
             out: optional(self.text(GenerateFieldId::Publish)).map(PathBuf::from),
             dry_run: self.toggle(GenerateFieldId::DryRun),
@@ -631,6 +633,7 @@ impl GenerateForm {
             model_overrides,
             review_model: optional(self.text(GenerateFieldId::Reviewer)),
             no_review: !self.toggle(GenerateFieldId::Review),
+            visual_review: false,
             json: false,
             resolution: optional(self.text(GenerateFieldId::Resolution)),
             aspect_ratio: optional(self.text(GenerateFieldId::AspectRatio)),

@@ -60,7 +60,8 @@ port boundary.
   snapshots and transactional patch application.
 - `PageDocument` exposes the same revision-guarded contract over `title`,
   `body_html`, `css`, and `javascript`; browser repair cannot change its title.
-- `VideoPlanDocument` guards engine-neutral plans; `VideoSourceDocument` guards
+- `VideoPlanDocument` v2 guards engine-neutral plans plus workflow, design, narrative,
+  and per-scene production direction; `VideoSourceDocument` guards
   focused RFC 6902 changes to Hyperframes or Manim source files.
 - `TextModel::complete` performs one provider turn only for request/response
   transports such as OpenAI-compatible APIs.
@@ -121,7 +122,9 @@ managed revision. Page publication uses
 `<out>/_sfumato/pages/<slug>/{index.md,index.html,assets/}` so generated content
 is explicit and navigable from Obsidian. Video publication writes only
 `<out>/_sfumato/videos/<slug>/<slug>.mp4`; plans and generated source remain in
-the managed immutable revision.
+the managed immutable revision. A paused Hyperframe review persists its effective
+publication root and reuses it during approval; an explicit `video approve --out`
+value overrides that saved destination.
 
 ## Public Surface Policy
 

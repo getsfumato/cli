@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn parses_video_approval_output_override() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "video",
+        "approve",
+        "lesson-review",
+        "--project",
+        "university",
+        "--out",
+        "published-course",
+    ])
+    .unwrap();
+
+    let Some(Commands::Video {
+        command: VideoCommands::Approve(args),
+    }) = cli.command
+    else {
+        panic!("expected video approve command");
+    };
+    assert_eq!(args.review_id, "lesson-review");
+    assert_eq!(args.project.as_deref(), Some("university"));
+    assert_eq!(args.out, Some(PathBuf::from("published-course")));
+}
+
+#[test]
 fn parses_reviewer_model_and_review_opt_out() {
     let cli = Cli::try_parse_from([
         "sfumato",

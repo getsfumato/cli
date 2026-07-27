@@ -2,19 +2,26 @@ Author the Hyperframe source for this reviewed plan:
 {{ plan_snapshot }}
 
 Canvas: {{ width }}x{{ height }} ({{ resolution }}, {{ aspect_ratio }}) at {{ fps }} FPS.
-The `index.html` root composition must follow this contract exactly:
+The `index.html` entrypoint must be a complete HTML document. Put the root
+composition inside `<body>` and follow this contract:
 ```html
-<div id="root" data-composition-id="root" data-start="0" data-width="{{ width }}" data-height="{{ height }}">
-  <!-- timed clips -->
-  <script src="./vendor/gsap.min.js"></script>
-  <script>
-    const tl = gsap.timeline({ paused: true });
-    // Add deterministic animations with explicit absolute positions.
-    tl.set({}, {}, {{ duration_seconds }});
-    window.__timelines = window.__timelines || {};
-    window.__timelines["root"] = tl;
-  </script>
-</div>
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body>
+  <div id="root" data-composition-id="root" data-start="0" data-width="{{ width }}" data-height="{{ height }}">
+    <!-- timed clips -->
+    <script src="./vendor/gsap.min.js"></script>
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      // Add deterministic animations with explicit absolute positions.
+      tl.set({}, {}, {{ duration_seconds }});
+      window.__timelines = window.__timelines || {};
+      window.__timelines["root"] = tl;
+    </script>
+  </div>
+</body>
+</html>
 ```
 The timeline must finish at exactly {{ duration_seconds }} seconds. Do not add `data-duration` or `data-fps` to the composition root.
 Theme {{ theme_name }} colors: {{ theme_colors }}
