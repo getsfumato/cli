@@ -64,6 +64,44 @@ fn leaves_unrecognized_openai_compatible_urls_generic() {
 }
 
 #[test]
+fn never_promotes_a_neighbouring_local_port_to_a_native_adapter() {
+    // ADR-0008 only allows promotion on an unambiguous URL, and a substring test
+    // for "localhost:1234" also matches 12340-12349 — 12345 is a common dev port.
+    for base_url in [
+        "http://localhost:12345/v1",
+        "http://127.0.0.1:12345/v1",
+        "http://localhost:114340/v1",
+        "http://lmstudio.localhost:1234.example.com/v1",
+    ] {
+        assert!(
+            matches!(
+                native_connector(&generic(base_url)),
+                NativeConnector::Generic
+            ),
+            "'{base_url}' must stay generic"
+        );
+    }
+}
+
+#[test]
+fn recognizes_loopback_hosts_only_on_the_exact_port() {
+    for base_url in [
+        "http://localhost:1234/v1",
+        "http://127.0.0.1:1234",
+        "http://[::1]:1234/v1",
+    ] {
+        assert!(is_local_port(base_url, 1234), "'{base_url}' is local:1234");
+    }
+    for base_url in [
+        "http://localhost:12345/v1",
+        "http://localhost/v1",
+        "https://example.com:1234/v1",
+    ] {
+        assert!(!is_local_port(base_url, 1234), "'{base_url}' is not");
+    }
+}
+
+#[test]
 fn advertises_only_capabilities_each_connector_implements() {
     let factory = AdapterProviderFactory::new(Arc::new(TestSecrets));
 

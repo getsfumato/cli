@@ -287,10 +287,7 @@ fn native_connector(connector: &ConnectorConfig) -> NativeConnector {
                 transport: config.clone(),
             })
         }
-        ConnectorConfig::OpenAiCompatible(config)
-            if config.base_url.contains("localhost:11434")
-                || config.base_url.contains("127.0.0.1:11434") =>
-        {
+        ConnectorConfig::OpenAiCompatible(config) if is_local_port(&config.base_url, 11434) => {
             NativeConnector::Ollama(OllamaConnectorConfig {
                 transport: config.clone(),
                 native_base_url: config
@@ -300,10 +297,7 @@ fn native_connector(connector: &ConnectorConfig) -> NativeConnector {
                     .into(),
             })
         }
-        ConnectorConfig::OpenAiCompatible(config)
-            if config.base_url.contains("localhost:1234")
-                || config.base_url.contains("127.0.0.1:1234") =>
-        {
+        ConnectorConfig::OpenAiCompatible(config) if is_local_port(&config.base_url, 1234) => {
             NativeConnector::LmStudio(LmStudioConnectorConfig {
                 transport: config.clone(),
                 native_base_url: config
@@ -315,6 +309,29 @@ fn native_connector(connector: &ConnectorConfig) -> NativeConnector {
         }
         ConnectorConfig::OpenAiCompatible(_) => NativeConnector::Generic,
     }
+}
+
+/// Whether a legacy base URL unambiguously names a loopback host on `port`.
+///
+/// ADR-0008 only allows promoting a generic connector to a native adapter when
+/// the URL identifies the provider unambiguously, so this parses the authority
+/// instead of substring-matching: `contains("localhost:1234")` also matches
+/// `localhost:12345`, which would misroute an unrelated local server.
+pub(crate) fn is_local_port(base_url: &str, port: u16) -> bool {
+    let authority = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    // Userinfo cannot appear in these URLs, but stripping it keeps the host exact.
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let Some((host, actual)) = host_port.rsplit_once(':') else {
+        return false;
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1") && actual.parse::<u16>() == Ok(port)
 }
 
 #[cfg(test)]
