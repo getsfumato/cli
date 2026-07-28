@@ -11,7 +11,7 @@
 //! `docs/reference/testing.md` does not apply; the cancellation checkpoints do.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -21,9 +21,12 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use reqwest::{Client, RequestBuilder, StatusCode};
+use reqwest::{
+    Client, RequestBuilder, StatusCode,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sfumato_core::{
     config::{AnthropicConnectorConfig, ModelProfile},
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
@@ -43,6 +46,10 @@ use crate::{
 /// A single Claude turn at default effort routinely runs minutes, so the shared
 /// 300s budget would surface as a spurious transport failure.
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+/// Catalog and status reads answer in well under a second and the CLI runs them
+/// with a detached context that has no deadline, so they must not inherit the
+/// generation timeout: it would be the only bound on a hung introspection call.
+const INTROSPECTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const ANTHROPIC_VERSION_HEADER: &str = "anthropic-version";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const API_KEY_HEADER: &str = "x-api-key";
@@ -61,6 +68,9 @@ const TURN_MEMO_LIMIT: usize = 32;
 #[derive(Clone)]
 pub struct AnthropicConnector {
     client: Client,
+    /// Separate client so the long generation timeout never becomes the only
+    /// bound on a catalog or status read.
+    introspect_client: Client,
     config: AnthropicConnectorConfig,
     secrets: Arc<dyn SecretResolver>,
 }
@@ -71,22 +81,22 @@ impl AnthropicConnector {
         config: AnthropicConnectorConfig,
         secrets: Arc<dyn SecretResolver>,
     ) -> SfumatoResult<Self> {
-        let client = Client::builder()
-            .timeout(HTTP_REQUEST_TIMEOUT)
-            .build()
-            .map_err(|error| {
+        let build = |timeout: Duration| {
+            Client::builder().timeout(timeout).build().map_err(|error| {
                 SfumatoError::config(format_args!(
                     "Could not build the Anthropic HTTP client: {error}"
                 ))
-            })?;
+            })
+        };
         Ok(Self {
-            client,
+            client: build(HTTP_REQUEST_TIMEOUT)?,
+            introspect_client: build(INTROSPECTION_REQUEST_TIMEOUT)?,
             config,
             secrets,
         })
     }
 
-    fn endpoint(&self, path: &str) -> String {
+    pub(crate) fn endpoint(&self, path: &str) -> String {
         format!(
             "{}/{}",
             self.config.base_url.trim_end_matches('/'),
@@ -112,27 +122,42 @@ impl AnthropicConnector {
         operation: &OperationContext,
         stage: OperationStage,
     ) -> Result<RequestBuilder> {
-        let request = self.client.get(self.endpoint(path));
+        let request = self.introspect_client.get(self.endpoint(path));
         self.authorize(request, operation, stage).await
     }
 
     async fn authorize(
         &self,
-        mut request: RequestBuilder,
+        request: RequestBuilder,
         operation: &OperationContext,
         stage: OperationStage,
     ) -> Result<RequestBuilder> {
-        // Pinned first so a configured `anthropic-version` header can override it.
-        request = request.header(ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION);
+        // Assembled in a HeaderMap rather than through `RequestBuilder::header`,
+        // which appends: a configured `anthropic-version` has to replace the
+        // pinned one, not add a second value of the same header.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(ANTHROPIC_VERSION_HEADER),
+            HeaderValue::from_static(ANTHROPIC_VERSION),
+        );
         if let Some(reference) = &self.config.credential {
             let api_key =
                 await_operation(operation, stage, self.secrets.resolve(reference)).await?;
-            request = request.header(API_KEY_HEADER, api_key.expose());
+            let mut value = HeaderValue::from_str(api_key.expose())
+                .context("Anthropic credential is not a valid HTTP header value")?;
+            value.set_sensitive(true);
+            headers.insert(HeaderName::from_static(API_KEY_HEADER), value);
         }
         for (name, value) in &self.config.headers {
-            request = request.header(name, value);
+            let name = HeaderName::try_from(name.as_str())
+                .with_context(|| format!("Configured header name '{name}' is invalid"))?;
+            let value = HeaderValue::from_str(value)
+                .with_context(|| format!("Configured value for header '{name}' is invalid"))?;
+            headers.insert(name, value);
         }
-        Ok(request)
+        // `RequestBuilder::headers` replaces same-named values, so the loop above
+        // is an override rather than an append.
+        Ok(request.headers(headers))
     }
 
     /// Builds a one-turn text model over this transport.
@@ -140,7 +165,7 @@ impl AnthropicConnector {
         AnthropicTextModel {
             connector: self.clone(),
             profile,
-            turns: Arc::new(Mutex::new(BTreeMap::new())),
+            turns: Arc::new(Mutex::new(TurnMemo::default())),
             warned: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -222,7 +247,11 @@ impl AnthropicConnector {
         operation: &OperationContext,
     ) -> Result<T> {
         let request = self.get(path, operation, OperationStage::Resolve).await?;
-        let response = await_operation(operation, OperationStage::Resolve, request.send()).await?;
+        let response = await_operation(operation, OperationStage::Resolve, request.send())
+            .await
+            // Classified as retryable by `provider_error`/`native_result`: a
+            // connect or DNS failure is transient, not a permanent rejection.
+            .with_context(|| format!("Could not reach {}", self.endpoint(path)))?;
         let status = response.status();
         let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
         if !status.is_success() {
@@ -250,8 +279,51 @@ pub struct AnthropicTextModel {
     /// `ModelMessage::Assistant` cannot carry a thinking block, but Claude thinks
     /// by default and the API expects thinking blocks replayed unchanged. Memoing
     /// the raw response lets the next request echo it verbatim.
-    turns: Arc<Mutex<BTreeMap<String, Vec<Value>>>>,
+    turns: Arc<Mutex<TurnMemo>>,
     warned: Arc<AtomicBool>,
+}
+
+/// Bounded verbatim-replay store that evicts the oldest turn.
+///
+/// Clearing every entry instead would drop thinking blocks that the transcript
+/// still has to replay unchanged, which the Messages API rejects mid-run.
+#[derive(Default)]
+pub(crate) struct TurnMemo {
+    entries: BTreeMap<String, Vec<Value>>,
+    /// Insertion order; `entries` is keyed by tool-use id, which carries none.
+    order: VecDeque<String>,
+}
+
+impl TurnMemo {
+    fn insert(&mut self, key: String, content: Vec<Value>) {
+        if self.entries.remove(&key).is_some() {
+            self.order.retain(|existing| *existing != key);
+        }
+        while self.entries.len() >= TURN_MEMO_LIMIT {
+            match self.order.pop_front() {
+                Some(oldest) => {
+                    self.entries.remove(&oldest);
+                }
+                None => break,
+            }
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, content);
+    }
+
+    fn get(&self, key: &str) -> Option<&Vec<Value>> {
+        self.entries.get(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains(&self, key: &str) -> bool {
+        self.entries.contains_key(key)
+    }
 }
 
 impl AnthropicTextModel {
@@ -279,26 +351,45 @@ impl AnthropicTextModel {
     pub(crate) fn request_body(&self, request: &TextModelRequest) -> Result<MessagesRequest> {
         let (system, messages) = translate_messages(&request.messages, &self.turns)?;
         ensure_conversation_shape(&messages)?;
+        let tools = (!request.tools.is_empty()).then(|| {
+            request
+                .tools
+                .iter()
+                .map(|tool| AnthropicTool {
+                    name: tool.function.name.clone(),
+                    description: tool.function.description.clone(),
+                    input_schema: tool.function.parameters.clone(),
+                })
+                .collect::<Vec<_>>()
+        });
+        // The Messages API rejects any request whose transcript carries tool_use
+        // or tool_result blocks without a `tools` array, which is exactly the
+        // shape of the agent loop's tool-exhausted final turn. Redeclaring the
+        // replayed tools keeps that request legal, and `tool_choice: none`
+        // preserves the caller's intent that no further tool runs.
+        let (tools, tool_choice) = match tools {
+            Some(tools) => (Some(tools), None),
+            None => match replayed_tool_definitions(&messages) {
+                replayed if replayed.is_empty() => (None, None),
+                replayed => (Some(replayed), Some(ToolChoice::None)),
+            },
+        };
         Ok(MessagesRequest {
             model: self.model().to_string(),
             max_tokens: self.max_tokens(),
             system,
             messages,
-            tools: (!request.tools.is_empty()).then(|| {
-                request
-                    .tools
-                    .iter()
-                    .map(|tool| AnthropicTool {
-                        name: tool.function.name.clone(),
-                        description: tool.function.description.clone(),
-                        input_schema: tool.function.parameters.clone(),
-                    })
-                    .collect()
-            }),
+            tools,
+            tool_choice,
         })
     }
 
-    /// Warns once per stage that sampling options are inert on this connector.
+    /// Warns once per stage about profile options this connector cannot honor.
+    ///
+    /// Covers both the inert sampling options and a `max_tokens` the adapter had
+    /// to adjust, because the truncation error's remediation ("increase
+    /// max_tokens") is unreachable above the non-streaming ceiling and the user
+    /// would otherwise retry it forever.
     fn warn_unsupported_options(&self, operation: &OperationContext, stage: OperationStage) {
         let inert = [
             self.profile.options.text.temperature.map(|_| "temperature"),
@@ -308,18 +399,32 @@ impl AnthropicTextModel {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-        if inert.is_empty() || self.warned.swap(true, Ordering::AcqRel) {
+        let adjusted = self
+            .profile
+            .options
+            .text
+            .max_tokens
+            .filter(|configured| *configured != self.max_tokens());
+        if (inert.is_empty() && adjusted.is_none()) || self.warned.swap(true, Ordering::AcqRel) {
             return;
         }
-        operation.emit(
-            stage,
-            OperationEventKind::Warning,
-            BTreeMap::from([
-                ("activity".to_string(), "unsupported_option".to_string()),
-                ("options".to_string(), inert.join(", ")),
-                ("model".to_string(), self.model().to_string()),
-            ]),
-        );
+        let mut details = BTreeMap::from([
+            ("activity".to_string(), "unsupported_option".to_string()),
+            ("model".to_string(), self.model().to_string()),
+        ]);
+        if !inert.is_empty() {
+            details.insert("options".to_string(), inert.join(", "));
+        }
+        if let Some(configured) = adjusted {
+            details.insert(
+                "max_tokens".to_string(),
+                format!(
+                    "{configured} adjusted to {}; non-streaming requests accept {MIN_MAX_TOKENS}-{MAX_NON_STREAMING_TOKENS}",
+                    self.max_tokens()
+                ),
+            );
+        }
+        operation.emit(stage, OperationEventKind::Warning, details);
     }
 
     fn memoize_turn(&self, content: &[Value], tool_calls: &[ToolCall]) {
@@ -329,9 +434,6 @@ impl AnthropicTextModel {
         let Ok(mut turns) = self.turns.lock() else {
             return;
         };
-        if turns.len() >= TURN_MEMO_LIMIT {
-            turns.clear();
-        }
         turns.insert(first, content.to_vec());
     }
 
@@ -342,7 +444,11 @@ impl AnthropicTextModel {
         stage: OperationStage,
     ) -> Result<MessagesResponse> {
         let request = self.connector.post("messages", operation, stage).await?;
-        let response = await_operation(operation, stage, request.json(body).send()).await?;
+        let response = await_operation(operation, stage, request.json(body).send())
+            .await
+            // `provider_error` reads this phrase to classify a connect or DNS
+            // failure as retryable rather than permanent.
+            .with_context(|| format!("Could not reach {}", self.connector.endpoint("messages")))?;
         let status = response.status();
         let retry_after = response
             .headers()
@@ -383,7 +489,7 @@ impl TextModel for AnthropicTextModel {
 /// Folds provider-neutral messages into a Messages API conversation.
 fn translate_messages(
     messages: &[sfumato_core::providers::ModelMessage],
-    turns: &Arc<Mutex<BTreeMap<String, Vec<Value>>>>,
+    turns: &Arc<Mutex<TurnMemo>>,
 ) -> Result<(Option<String>, Vec<AnthropicMessage>)> {
     use sfumato_core::providers::ModelMessage;
 
@@ -409,6 +515,7 @@ fn translate_messages(
                 tool_call_id,
                 name,
                 content,
+                failed,
             } => {
                 let tool_use_id = tool_call_id.clone().with_context(|| {
                     format!(
@@ -424,7 +531,9 @@ fn translate_messages(
                     vec![RequestBlock::ToolResult {
                         tool_use_id,
                         content: content.clone(),
-                        is_error: false,
+                        // Anthropic's own failure signal: without it Claude reads
+                        // a failed tool call as having returned successfully.
+                        is_error: *failed,
                     }],
                 );
             }
@@ -454,7 +563,7 @@ fn push_blocks(
 fn replay_or_rebuild(
     content: Option<&str>,
     tool_calls: &[ToolCall],
-    turns: &Arc<Mutex<BTreeMap<String, Vec<Value>>>>,
+    turns: &Arc<Mutex<TurnMemo>>,
 ) -> Vec<RequestBlock> {
     let memoized = tool_calls
         .first()
@@ -477,6 +586,42 @@ fn replay_or_rebuild(
         });
     }
     blocks
+}
+
+/// Collects placeholder definitions for every tool the transcript already used.
+///
+/// Names come from both rebuilt and verbatim-replayed blocks, because a memoized
+/// turn carries its `tool_use` blocks as raw provider JSON. The schema is
+/// deliberately permissive: these definitions exist to make the transcript legal,
+/// not to invite another call.
+pub(crate) fn replayed_tool_definitions(messages: &[AnthropicMessage]) -> Vec<AnthropicTool> {
+    let mut names: Vec<String> = Vec::new();
+    for block in messages.iter().flat_map(|message| message.content.iter()) {
+        let name = match block {
+            RequestBlock::ToolUse { name, .. } => Some(name.clone()),
+            RequestBlock::Verbatim(value)
+                if value.get("type").and_then(Value::as_str) == Some("tool_use") =>
+            {
+                value
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            }
+            _ => None,
+        };
+        if let Some(name) = name.filter(|name| !names.contains(name)) {
+            names.push(name);
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| AnthropicTool {
+            name,
+            description: "Used earlier in this conversation; not callable on this turn."
+                .to_string(),
+            input_schema: json!({"type": "object"}),
+        })
+        .collect()
 }
 
 /// Rejects shapes the Messages API refuses, including assistant prefills.
@@ -541,6 +686,20 @@ fn interpret_response(
     let empty = content.is_none() && tool_calls.is_empty();
     let stop_reason = parsed.stop_reason.as_deref();
 
+    // Checked before the tool-call shortcut below: a `tool_use` block cut off at
+    // the output cap has partial arguments, and executing it is worse than
+    // surfacing the typed truncation error.
+    if stop_reason == Some("max_tokens") {
+        return Err(TextGenerationLimitError::output(
+            model.to_string(),
+            u64::from(max_tokens),
+            stop_reason.map(ToOwned::to_owned),
+            completion_tokens,
+            None,
+            empty,
+        )
+        .into());
+    }
     if !tool_calls.is_empty() {
         return Ok(TextModelResponse {
             content,
@@ -552,17 +711,16 @@ fn interpret_response(
             content,
             tool_calls,
         }),
-        Some("max_tokens") | Some("end_turn" | "stop_sequence") => {
-            Err(TextGenerationLimitError::output(
-                model.to_string(),
-                u64::from(max_tokens),
-                stop_reason.map(ToOwned::to_owned),
-                completion_tokens,
-                None,
-                empty,
-            )
-            .into())
-        }
+        // Truncation is handled above; this arm is the empty end_turn case.
+        Some("end_turn" | "stop_sequence") => Err(TextGenerationLimitError::output(
+            model.to_string(),
+            u64::from(max_tokens),
+            stop_reason.map(ToOwned::to_owned),
+            completion_tokens,
+            None,
+            empty,
+        )
+        .into()),
         Some("model_context_window_exceeded") => Err(TextGenerationLimitError::context(
             model.to_string(),
             u64::from(max_tokens),
@@ -687,9 +845,10 @@ fn native_result<T>(result: Result<T>) -> SfumatoResult<T> {
 }
 
 /// Request body. Deliberately closed: `temperature`, `top_p`, `top_k`, `stream`,
-/// `thinking`, `tool_choice`, and `output_config` are absent by type rather than
-/// by a runtime check, because current Claude models reject the sampling
-/// parameters outright and the rest should take server defaults.
+/// `thinking`, and `output_config` are absent by type rather than by a runtime
+/// check, because current Claude models reject the sampling parameters outright
+/// and the rest should take server defaults. `tool_choice` is sent only to
+/// disable tool use on a turn whose tools are replayed placeholders.
 #[derive(Debug, Serialize)]
 pub(crate) struct MessagesRequest {
     pub model: String,
@@ -699,6 +858,14 @@ pub(crate) struct MessagesRequest {
     pub messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<AnthropicTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ToolChoice {
+    None,
 }
 
 #[derive(Clone, Debug, Serialize)]

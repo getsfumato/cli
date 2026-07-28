@@ -69,6 +69,7 @@ fn serializes_provider_neutral_transcript_tools_and_typed_text_options() {
                 tool_call_id: Some("call-1".to_string()),
                 name: "sfumato_read_file".to_string(),
                 content: "result".to_string(),
+                failed: false,
             },
         ],
         tools: vec![ToolDefinition {

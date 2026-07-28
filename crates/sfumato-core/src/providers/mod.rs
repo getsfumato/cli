@@ -323,6 +323,11 @@ pub enum ModelMessage {
         name: String,
         /// JSON or text result supplied to the model.
         content: String,
+        /// Whether `content` describes a tool failure rather than a result.
+        ///
+        /// Providers with a native error flag on tool results set it from this,
+        /// so the model is not told a failed call succeeded.
+        failed: bool,
     },
 }
 
@@ -433,7 +438,7 @@ impl TextGenerationProvider for AgentRunner {
                     name: tool_call.function.name.clone(),
                     arguments: tool_call.function.arguments.clone(),
                 });
-                let result = match executor
+                let (result, failed) = match executor
                     .execute(
                         ToolExecutionRequest {
                             name: tool_call.function.name.clone(),
@@ -449,7 +454,7 @@ impl TextGenerationProvider for AgentRunner {
                             name: tool_call.function.name.clone(),
                             result: result.clone(),
                         });
-                        result
+                        (result, false)
                     }
                     Err(error) => {
                         if error.class == ErrorClass::Cancelled {
@@ -460,13 +465,14 @@ impl TextGenerationProvider for AgentRunner {
                             name: tool_call.function.name.clone(),
                             error: error.clone(),
                         });
-                        serde_json::json!({ "error": error }).to_string()
+                        (serde_json::json!({ "error": error }).to_string(), true)
                     }
                 };
                 messages.push(ModelMessage::Tool {
                     tool_call_id: tool_call.id,
                     name: tool_call.function.name,
                     content: result,
+                    failed,
                 });
             }
         }

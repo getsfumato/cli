@@ -25,6 +25,34 @@ fn secrets() -> Arc<dyn SecretResolver> {
     Arc::new(TestSecrets)
 }
 
+/// Event sink that records warning fields for the option-warning assertions.
+#[derive(Default)]
+struct CollectEvents {
+    events: Mutex<Vec<sfumato_core::operation::OperationEvent>>,
+}
+
+impl CollectEvents {
+    fn warnings(&self) -> Vec<BTreeMap<String, String>> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == OperationEventKind::Warning)
+            .map(|event| event.fields.clone())
+            .collect()
+    }
+}
+
+impl sfumato_core::operation::EventSink for CollectEvents {
+    fn try_emit(
+        &self,
+        event: sfumato_core::operation::OperationEvent,
+    ) -> Result<(), sfumato_core::operation::EventSinkError> {
+        self.events.lock().unwrap().push(event);
+        Ok(())
+    }
+}
+
 fn config() -> AnthropicConnectorConfig {
     AnthropicConnectorConfig {
         base_url: "https://api.anthropic.com/v1".to_string(),
@@ -166,11 +194,100 @@ fn omits_tools_when_the_turn_disables_tool_calling() {
         tools: Vec::new(),
     };
 
-    assert!(
-        body(&model(TextModelOptions::default()), &request)
-            .get("tools")
-            .is_none()
-    );
+    let body = body(&model(TextModelOptions::default()), &request);
+    assert!(body.get("tools").is_none());
+    assert!(body.get("tool_choice").is_none());
+}
+
+#[test]
+fn redeclares_replayed_tools_on_the_tool_exhausted_turn() {
+    // The Messages API rejects a transcript carrying tool_use/tool_result blocks
+    // without a `tools` array, which is exactly the agent loop's final turn.
+    let request = TextModelRequest {
+        messages: vec![
+            ModelMessage::User("go".into()),
+            ModelMessage::Assistant {
+                content: None,
+                tool_calls: vec![ToolCall {
+                    id: Some("toolu_1".into()),
+                    kind: "function".into(),
+                    function: ToolCallFunction {
+                        name: "sfumato_read_file".into(),
+                        arguments: json!({}),
+                    },
+                }],
+            },
+            ModelMessage::Tool {
+                tool_call_id: Some("toolu_1".into()),
+                name: "sfumato_read_file".into(),
+                content: "contents".into(),
+                failed: false,
+            },
+            ModelMessage::User("now write the deck".into()),
+        ],
+        tools: Vec::new(),
+    };
+
+    let body = body(&model(TextModelOptions::default()), &request);
+
+    assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(body["tools"][0]["name"], "sfumato_read_file");
+    assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    // Redeclaring the tools must not re-enable them.
+    assert_eq!(body["tool_choice"]["type"], "none");
+}
+
+#[test]
+fn collects_replayed_tool_names_from_verbatim_provider_blocks() {
+    // A memoized turn carries its tool_use blocks as raw provider JSON.
+    let messages = vec![AnthropicMessage {
+        role: "assistant",
+        content: vec![
+            RequestBlock::Verbatim(json!({"type": "thinking", "thinking": "..."})),
+            RequestBlock::Verbatim(
+                json!({"type": "tool_use", "id": "toolu_9", "name": "sfumato_write_file"}),
+            ),
+        ],
+    }];
+
+    let tools = replayed_tool_definitions(&messages);
+
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "sfumato_write_file");
+}
+
+#[test]
+fn flags_failed_tool_results_with_the_anthropic_error_field() {
+    let result = |failed: bool| {
+        let request = TextModelRequest {
+            messages: vec![
+                ModelMessage::User("go".into()),
+                ModelMessage::Assistant {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        id: Some("toolu_1".into()),
+                        kind: "function".into(),
+                        function: ToolCallFunction {
+                            name: "a".into(),
+                            arguments: json!({}),
+                        },
+                    }],
+                },
+                ModelMessage::Tool {
+                    tool_call_id: Some("toolu_1".into()),
+                    name: "a".into(),
+                    content: r#"{"error":"permission denied"}"#.into(),
+                    failed,
+                },
+            ],
+            tools: Vec::new(),
+        };
+        body(&model(TextModelOptions::default()), &request)["messages"][2]["content"][0].clone()
+    };
+
+    // Without the flag Claude reads a failed call as having returned normally.
+    assert_eq!(result(true)["is_error"], true);
+    assert!(result(false).get("is_error").is_none());
 }
 
 #[test]
@@ -206,11 +323,13 @@ fn coalesces_every_tool_result_into_one_user_message() {
                 tool_call_id: Some("toolu_1".into()),
                 name: "a".into(),
                 content: "first".into(),
+                failed: false,
             },
             ModelMessage::Tool {
                 tool_call_id: Some("toolu_2".into()),
                 name: "b".into(),
                 content: "second".into(),
+                failed: false,
             },
         ],
         tools: Vec::new(),
@@ -266,6 +385,7 @@ fn rejects_a_tool_result_without_a_provider_tool_call_id() {
                 tool_call_id: None,
                 name: "a".into(),
                 content: "result".into(),
+                failed: false,
             },
         ],
         tools: Vec::new(),
@@ -345,7 +465,91 @@ async fn configured_headers_override_the_pinned_api_version() {
         .iter()
         .filter_map(|value| value.to_str().ok())
         .collect::<Vec<_>>();
-    assert_eq!(versions.last(), Some(&"2099-01-01"));
+    // Exactly one value: appending both would send `2023-06-01, 2099-01-01`.
+    assert_eq!(versions, vec!["2099-01-01"]);
+}
+
+#[tokio::test]
+async fn a_configured_api_key_header_replaces_the_resolved_credential() {
+    let mut config = config();
+    config
+        .headers
+        .insert("x-api-key".to_string(), "explicit-key".to_string());
+
+    let request = AnthropicConnector::new(config, secrets())
+        .unwrap()
+        .post(
+            "messages",
+            &OperationContext::detached(),
+            OperationStage::Draft,
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+
+    assert_eq!(request.headers().get_all("x-api-key").iter().count(), 1);
+    assert_eq!(request.headers()["x-api-key"], "explicit-key");
+}
+
+#[test]
+fn evicts_only_the_oldest_memoized_turn() {
+    // Clearing the whole memo would drop thinking blocks that the transcript
+    // still has to replay verbatim, which the Messages API rejects mid-run.
+    let model = model(TextModelOptions::default());
+    let ids = (0..TURN_MEMO_LIMIT + 1)
+        .map(|index| format!("toolu_{index}"))
+        .collect::<Vec<_>>();
+    for id in &ids {
+        let calls = vec![ToolCall {
+            id: Some(id.clone()),
+            kind: "function".into(),
+            function: ToolCallFunction {
+                name: "a".into(),
+                arguments: json!({}),
+            },
+        }];
+        model.memoize_turn(&[json!({"type": "thinking", "thinking": id})], &calls);
+    }
+
+    let turns = model.turns.lock().unwrap();
+    assert_eq!(turns.len(), TURN_MEMO_LIMIT);
+    assert!(!turns.contains(&ids[0]), "the oldest turn is evicted");
+    assert!(turns.contains(&ids[1]), "older turns are not cleared");
+    assert!(turns.contains(ids.last().unwrap()));
+}
+
+#[tokio::test]
+async fn warns_once_when_the_configured_max_tokens_is_adjusted() {
+    // The truncation error tells the user to raise max_tokens, which the clamp
+    // silently undoes above the ceiling; the warning is what makes it actionable.
+    let events = Arc::new(CollectEvents::default());
+    let (_handle, operation) = OperationContext::create(None, events.clone());
+    let model = model(TextModelOptions {
+        max_tokens: Some(200_000),
+        ..Default::default()
+    });
+
+    model.warn_unsupported_options(&operation, OperationStage::Draft);
+    model.warn_unsupported_options(&operation, OperationStage::Draft);
+
+    let warnings = events.warnings();
+    assert_eq!(warnings.len(), 1, "warned once, not per turn");
+    assert!(warnings[0]["max_tokens"].contains("200000 adjusted to 32000"));
+}
+
+#[tokio::test]
+async fn stays_silent_when_every_option_is_honored() {
+    let events = Arc::new(CollectEvents::default());
+    let (_handle, operation) = OperationContext::create(None, events.clone());
+
+    model(TextModelOptions {
+        max_tokens: Some(8_192),
+        ..Default::default()
+    })
+    .warn_unsupported_options(&operation, OperationStage::Draft);
+
+    assert!(events.warnings().is_empty());
 }
 
 #[test]
@@ -398,6 +602,19 @@ fn classifies_truncated_and_overflowing_responses_as_typed_limits() {
 
     let overflow = interpret("model_context_window_exceeded", Vec::new());
     assert_eq!(overflow.class, ErrorClass::ContextLimit);
+}
+
+#[test]
+fn refuses_to_execute_a_tool_call_truncated_at_max_tokens() {
+    // A tool_use block cut off at the output cap has partial arguments, so the
+    // typed limit error beats handing them to the tool executor.
+    let error = interpret(
+        "max_tokens",
+        vec![json!({"type": "tool_use", "id": "toolu_1", "name": "sfumato_write_file"})],
+    );
+
+    assert_eq!(error.class, ErrorClass::InvalidOutput);
+    assert!(error.to_string().contains("max_tokens"));
 }
 
 #[test]

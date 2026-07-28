@@ -619,10 +619,13 @@ impl From<ModelMessage> for ChatMessage {
                 reasoning: None,
                 reasoning_details: None,
             },
+            // `failed` is dropped deliberately: `chat/completions` tool messages
+            // carry no error flag, so the JSON error body is the only signal.
             ModelMessage::Tool {
                 tool_call_id,
                 name: _,
                 content,
+                failed: _,
             } => Self {
                 role: "tool".to_string(),
                 content: Some(content),
