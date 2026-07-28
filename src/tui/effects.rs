@@ -401,13 +401,14 @@ pub(super) fn execute_operation(
             if application.user_config_exists() && !form.toggle("Overwrite existing config") {
                 anyhow::bail!("User config already exists; confirm overwrite before continuing");
             }
-            let preset = ConnectorPreset::from_str(&required_field(form, "Connector")?)?;
+            let preset = ConnectorPreset::from_str(&form.select("Connector"))?;
             let connector = preset.default_connector_name().to_string();
             let learning_style = split_values(&required_field(form, "Learning styles")?);
             if learning_style.is_empty() {
                 anyhow::bail!("Learning styles must include at least one value");
             }
             let profile_name = required_field(form, "Profile")?;
+            let connector_name = connector.clone();
             let mut config = GlobalConfig::default_config();
             config.user.name = Some(required_field(form, "Name")?);
             config.user.learning_style = learning_style;
@@ -424,9 +425,12 @@ pub(super) fn execute_operation(
                     model: required_field(form, "Model ID")?,
                     capabilities: vec![Capability::Text, Capability::Code],
                     options: ModelOptions {
+                        // Preset-derived rather than hardcoded: Anthropic rejects
+                        // sampling parameters and shares `max_tokens` with
+                        // thinking, so a 4000-token cap returns no text there.
                         text: TextModelOptions {
-                            temperature: Some(0.4),
-                            max_tokens: Some(4000),
+                            temperature: preset.default_text_temperature(),
+                            max_tokens: preset.default_text_max_tokens(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -435,8 +439,13 @@ pub(super) fn execute_operation(
             );
             config.defaults = ModelDefaults(BTreeMap::from([(Capability::Text, profile_name)]));
             let result = application.setup_user(config)?;
+            let login = if preset.requires_stored_login() {
+                format!("; run `sfumato connector login {connector_name}` to store its API key")
+            } else {
+                String::new()
+            };
             Ok(format!(
-                "Initialized user config at {}",
+                "Initialized user config at {}{login}",
                 result.path.display()
             ))
         }

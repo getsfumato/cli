@@ -963,6 +963,11 @@ pub(super) enum OperationKind {
     SetupUser,
 }
 
+/// Label of the optional credential field on the connector setup form.
+///
+/// Shared so the form definition and the preset-dependency pass cannot drift.
+pub(super) const API_KEY_ENV_FIELD: &str = "API key environment";
+
 #[derive(Clone, Debug)]
 pub(super) struct OperationForm {
     pub(super) title: &'static str,
@@ -998,6 +1003,82 @@ impl OperationForm {
                 _ => None,
             })
             .unwrap_or(false)
+    }
+
+    /// Re-derives the fields that depend on a select choice.
+    ///
+    /// Called after every select move so the form never offers a field the
+    /// chosen preset rejects, and never keeps another preset's defaults.
+    pub(super) fn apply_select_dependencies(&mut self) {
+        match self.kind {
+            OperationKind::ConnectorSetup => {
+                let accepts = ConnectorPreset::from_str(&self.select("Preset"))
+                    .map(ConnectorPreset::accepts_api_key_env)
+                    // An unparsable value is rejected on submit; keep the field.
+                    .unwrap_or(true);
+                self.set_field_present(API_KEY_ENV_FIELD, accepts, || FormField::Text {
+                    label: API_KEY_ENV_FIELD,
+                    value: String::new(),
+                    placeholder: "optional CI environment variable",
+                    multiline: false,
+                });
+            }
+            OperationKind::SetupUser => {
+                let Ok(preset) = ConnectorPreset::from_str(&self.select("Connector")) else {
+                    return;
+                };
+                // Overwritten rather than merged: these two fields are the chosen
+                // preset's defaults, and a stale Ollama profile name or model id
+                // would be written into the config as-is.
+                self.set_text("Profile", preset.default_text_profile_name());
+                self.set_text("Model ID", preset.default_text_model());
+            }
+            _ => {}
+        }
+    }
+
+    fn set_text(&mut self, label: &str, value: &str) {
+        for field in &mut self.fields {
+            if let FormField::Text {
+                label: field_label,
+                value: field_value,
+                ..
+            } = field
+                && *field_label == label
+            {
+                *field_value = value.to_string();
+            }
+        }
+    }
+
+    fn set_field_present(
+        &mut self,
+        label: &'static str,
+        present: bool,
+        build: impl FnOnce() -> FormField,
+    ) {
+        let position = self.fields.iter().position(|field| field.label() == label);
+        match (present, position) {
+            (true, None) => {
+                let insert_at = self
+                    .fields
+                    .iter()
+                    .position(|field| matches!(field, FormField::Submit { .. }))
+                    .unwrap_or(self.fields.len());
+                self.fields.insert(insert_at, build());
+                if self.selected >= insert_at {
+                    self.selected += 1;
+                }
+            }
+            (false, Some(index)) => {
+                self.fields.remove(index);
+                if self.selected > index {
+                    self.selected -= 1;
+                }
+                self.selected = self.selected.min(self.fields.len().saturating_sub(1));
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn select(&self, label: &str) -> String {

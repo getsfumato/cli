@@ -315,7 +315,7 @@ impl App {
                     selected: choice,
                 } => {
                     frame.render_widget(
-                        Paragraph::new(select_line(options, *choice))
+                        Paragraph::new(select_line(options, *choice, row.width.saturating_sub(2)))
                             .block(field_block(label, selected)),
                         *row,
                     );
@@ -590,7 +590,7 @@ fn draw_resource_form(
                 selected: choice,
             } => {
                 frame.render_widget(
-                    Paragraph::new(select_line(options, *choice))
+                    Paragraph::new(select_line(options, *choice, row.width.saturating_sub(2)))
                         .block(field_block(label, selected)),
                     *row,
                 );
@@ -640,24 +640,92 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-fn select_line(options: &[String], selected: usize) -> Line<'static> {
-    Line::from(
-        options
-            .iter()
-            .enumerate()
-            .flat_map(|(index, option)| {
-                let active = index == selected;
-                vec![
-                    Span::styled(
-                        if active { "[x] " } else { "[ ] " },
-                        Style::default().fg(if active { GREEN } else { MUTED }),
-                    ),
-                    Span::styled(option.clone(), Style::default().fg(TEXT)),
-                    Span::raw("  "),
-                ]
-            })
-            .collect::<Vec<_>>(),
-    )
+/// Renders the option row, windowed so the `[x]` marker is always on screen.
+///
+/// The row is a single unwrapped, unscrolled line inside a bordered field, so a
+/// full option list overflows an 80-column terminal and can clip the selection
+/// out of sight while `OperationForm::select` still returns it. `width` is the
+/// field's inner width; markers show which side was truncated.
+pub(super) fn select_line(options: &[String], selected: usize, width: u16) -> Line<'static> {
+    const MARKER: &str = "<";
+    let entry = |index: usize| {
+        format!(
+            "[{}] {}  ",
+            if index == selected { "x" } else { " " },
+            options[index]
+        )
+    };
+    let budget = usize::from(width);
+    if options.is_empty() || budget == 0 {
+        return Line::from(Span::raw(""));
+    }
+    let mut first = selected.min(options.len() - 1);
+    let mut last = first;
+    let mut used = entry(first).chars().count();
+    // Grow forwards first so the list reads left to right from the selection.
+    loop {
+        let mut grew = false;
+        if last + 1 < options.len() {
+            let width = entry(last + 1).chars().count() + MARKER.len();
+            if used + width <= budget {
+                used += entry(last + 1).chars().count();
+                last += 1;
+                grew = true;
+            }
+        }
+        if first > 0 {
+            let width = entry(first - 1).chars().count() + MARKER.len();
+            if used + width <= budget {
+                used += entry(first - 1).chars().count();
+                first -= 1;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let mut spans = Vec::new();
+    // Truncation markers are added only when they fit: on a field too narrow for
+    // even the selected option, showing the choice wins over showing the arrows.
+    if first > 0 && used + MARKER.len() <= budget {
+        used += MARKER.len();
+        spans.push(Span::styled(MARKER, Style::default().fg(MUTED)));
+    }
+    for (index, option) in options.iter().enumerate().take(last + 1).skip(first) {
+        let active = index == selected;
+        spans.push(Span::styled(
+            if active { "[x] " } else { "[ ] " },
+            Style::default().fg(if active { GREEN } else { MUTED }),
+        ));
+        spans.push(Span::styled(option.clone(), Style::default().fg(TEXT)));
+        spans.push(Span::raw("  "));
+    }
+    if last + 1 < options.len() && used < budget {
+        spans.push(Span::styled(">", Style::default().fg(MUTED)));
+    }
+    Line::from(truncate_spans(spans, budget))
+}
+
+/// Drops whatever a field cannot show, so a line never bleeds past its border.
+fn truncate_spans(spans: Vec<Span<'static>>, budget: usize) -> Vec<Span<'static>> {
+    let mut used = 0;
+    let mut kept = Vec::with_capacity(spans.len());
+    for span in spans {
+        let width = span.content.chars().count();
+        if used + width <= budget {
+            used += width;
+            kept.push(span);
+            continue;
+        }
+        let room = budget - used;
+        if room > 0 {
+            let content = span.content.chars().take(room).collect::<String>();
+            kept.push(Span::styled(content, span.style));
+        }
+        break;
+    }
+    kept
 }
 
 fn multi_select_line(

@@ -378,6 +378,106 @@ fn connector_setup_cycles_presets_with_the_arrow_keys() {
 }
 
 #[test]
+fn connector_setup_hides_the_credential_field_for_externally_managed_presets() {
+    // `into_config` rejects `--api-key-env` for Codex, so offering the field
+    // could only make submission fail.
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.operation = Some(
+        app.operation_for_action(BrowseAction::ConnectorSetup)
+            .unwrap(),
+    );
+    let has_credential_field = |app: &App| {
+        app.operation
+            .as_ref()
+            .unwrap()
+            .fields
+            .iter()
+            .any(|field| field.label() == API_KEY_ENV_FIELD)
+    };
+    assert!(has_credential_field(&app));
+
+    let codex = ConnectorPreset::ALL
+        .iter()
+        .position(|preset| !preset.accepts_api_key_env())
+        .expect("one preset manages its own authentication");
+    for _ in 0..codex {
+        app.handle_operation_key(KeyEvent::from(KeyCode::Right));
+    }
+    assert!(!has_credential_field(&app));
+
+    // Moving back off that preset restores the field.
+    app.handle_operation_key(KeyEvent::from(KeyCode::Left));
+    assert!(has_credential_field(&app));
+}
+
+#[test]
+fn setup_user_follows_the_selected_connector_preset() {
+    // Every preset is accepted here now, so the profile name and model id must
+    // follow the choice rather than staying Ollama-shaped.
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.operation = Some(app.operation_for_action(BrowseAction::SetupUser).unwrap());
+    let operation = app.operation.as_mut().unwrap();
+    operation.selected = operation
+        .fields
+        .iter()
+        .position(|field| field.label() == "Connector")
+        .expect("the connector field is present");
+
+    for (index, preset) in ConnectorPreset::ALL.into_iter().enumerate().skip(1) {
+        app.handle_operation_key(KeyEvent::from(KeyCode::Right));
+        let form = app.operation.as_ref().unwrap();
+        assert_eq!(form.select("Connector"), preset.as_str(), "option {index}");
+        assert_eq!(form.text("Profile"), preset.default_text_profile_name());
+        assert_eq!(form.text("Model ID"), preset.default_text_model());
+    }
+}
+
+#[test]
+fn select_options_always_render_the_current_choice() {
+    // The option row is a single unwrapped line inside a bordered field, so a
+    // full preset list overflows an 80-column modal; the window must still show
+    // the `[x]` marker for whatever `select` would return.
+    let options = ConnectorPreset::ALL
+        .into_iter()
+        .map(|preset| preset.as_str().to_string())
+        .collect::<Vec<_>>();
+
+    let rendered = |selected: usize, width: u16| {
+        select_line(&options, selected, width)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+
+    for width in [4_u16, 12, 20, 40, 66] {
+        for selected in 0..options.len() {
+            let line = rendered(selected, width);
+            assert!(
+                line.chars().count() <= usize::from(width),
+                "width {width} overflowed: {line:?}"
+            );
+            assert!(
+                line.contains("[x]"),
+                "width {width} lost the marker for option {selected}: {line:?}"
+            );
+        }
+    }
+
+    // Wide enough for the longest option, the whole choice is always readable —
+    // this is the range every supported terminal width lands in.
+    for width in [20_u16, 40, 66] {
+        for (selected, option) in options.iter().enumerate() {
+            let line = rendered(selected, width);
+            assert!(
+                line.contains(&format!("[x] {option}")),
+                "width {width} clipped option {selected}: {line:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn browse_arrow_keys_move_rows_without_requiring_tab_first() {
     let mut app = App::new(Picker::halfblocks(), test_application());
     app.screen = Screen::Browse(Section::Models);

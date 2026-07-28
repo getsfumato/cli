@@ -415,11 +415,10 @@ impl App {
                     // Left blank so the preset's own default name applies; the
                     // form cannot prefill it because the preset is chosen here.
                     text_field("Name", "", "connector name; defaults to the preset"),
-                    text_field(
-                        "API key environment",
-                        "",
-                        "optional CI environment variable",
-                    ),
+                    // Present only while the selected preset accepts it; the
+                    // preset-dependency pass adds and removes it as the choice
+                    // moves, because `into_config` rejects it for Codex.
+                    text_field(API_KEY_ENV_FIELD, "", "optional CI environment variable"),
                     submit_field("Save connector"),
                 ],
                 selected: 0,
@@ -573,13 +572,27 @@ impl App {
                         "visual, step-by-step",
                         "comma-separated preferences",
                     ),
+                    // A select rather than free text: every preset is accepted
+                    // here now, and the Profile and Model ID defaults below have
+                    // to follow the chosen one instead of staying Ollama-shaped.
+                    FormField::Select {
+                        label: "Connector",
+                        options: ConnectorPreset::ALL
+                            .into_iter()
+                            .map(|preset| preset.as_str().to_string())
+                            .collect(),
+                        selected: 0,
+                    },
                     text_field(
-                        "Connector",
-                        "ollama",
-                        "preset name; run `sfumato connector presets`",
+                        "Profile",
+                        ConnectorPreset::ALL[0].default_text_profile_name(),
+                        "model profile name",
                     ),
-                    text_field("Profile", "local-text", "model profile name"),
-                    text_field("Model ID", "llama3.2", "provider model identifier"),
+                    text_field(
+                        "Model ID",
+                        ConnectorPreset::ALL[0].default_text_model(),
+                        "provider model identifier",
+                    ),
                     FormField::Toggle {
                         label: "Overwrite existing config",
                         value: false,
@@ -632,6 +645,7 @@ impl App {
                     } else {
                         (*selected + 1) % options.len()
                     };
+                    operation.apply_select_dependencies();
                 }
             }
             KeyCode::Enter => match operation.fields.get(operation.selected) {

@@ -28,7 +28,7 @@ mod reducer;
 mod view;
 
 #[cfg(test)]
-use view::{stage_label, visible_field_range};
+use view::{select_line, stage_label, visible_field_range};
 
 use effects::{execute_operation, load_section, spawn_connector_query};
 use model::*;
