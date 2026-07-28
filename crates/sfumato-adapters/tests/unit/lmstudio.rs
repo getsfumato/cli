@@ -67,7 +67,7 @@ fn maps_native_model_details_and_load_state() {
     )
     .unwrap();
 
-    let model = map_native_model(response.data.into_iter().next().unwrap());
+    let model = map_native_model(response.data.unwrap().into_iter().next().unwrap());
 
     assert_eq!(model.id, "qwen2-vl-7b-instruct");
     assert_eq!(model.display_name, "qwen2-vl-7b-instruct");
@@ -112,11 +112,60 @@ fn describes_loaded_models_with_their_context_usage() {
     )
     .unwrap();
 
-    assert_eq!(count_kind(&response.data, "vlm"), 1);
-    assert_eq!(count_kind(&response.data, "embeddings"), 1);
-    assert_eq!(describe_loaded_model(&response.data[0]), "a (2048/8192)");
+    let models = response.data.unwrap();
+    assert_eq!(count_kind(&models, "vlm"), 1);
+    assert_eq!(count_kind(&models, "embeddings"), 1);
+    assert_eq!(describe_loaded_model(&models[0]), "a (2048/8192)");
     // Without both context figures the label degrades to the bare id.
-    assert_eq!(describe_loaded_model(&response.data[2]), "c");
+    assert_eq!(describe_loaded_model(&models[2]), "c");
+}
+
+#[test]
+fn distinguishes_a_missing_native_envelope_from_an_empty_catalog() {
+    // A non-LM-Studio server answering 200 on this port must fall back rather
+    // than report "no local models" as a successful native answer.
+    let foreign: NativeModelsResponse =
+        serde_json::from_str(r#"{"error":{"message":"unknown route"}}"#).unwrap();
+    assert!(foreign.data.is_none());
+
+    let empty: NativeModelsResponse = serde_json::from_str(r#"{"data":[]}"#).unwrap();
+    assert_eq!(empty.data.map(|models| models.len()), Some(0));
+}
+
+#[test]
+fn normalizes_a_native_root_that_already_names_the_native_surface() {
+    // LM Studio's own documentation writes the native root as `/api/v0`.
+    assert_eq!(
+        native_root("http://localhost:1234/api/v0/"),
+        "http://localhost:1234"
+    );
+    assert_eq!(
+        native_root("http://localhost:1234/v1"),
+        "http://localhost:1234"
+    );
+    assert_eq!(
+        native_root("http://localhost:1234"),
+        "http://localhost:1234"
+    );
+}
+
+#[tokio::test]
+async fn builds_the_openai_fallback_from_the_configured_transport_base_url() {
+    // A remote LM Studio leaves `native_base_url` at its localhost default, so
+    // deriving `/v1/models` from the native root would query the wrong host.
+    let mut config = connector(None);
+    config.transport.base_url = "http://192.168.1.20:1234/v1".to_string();
+
+    let request = LmStudioConnector::new("lmstudio", &config, secrets())
+        .unwrap()
+        .transport
+        .get("models")
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+
+    assert_eq!(request.url().as_str(), "http://192.168.1.20:1234/v1/models");
 }
 
 #[tokio::test]

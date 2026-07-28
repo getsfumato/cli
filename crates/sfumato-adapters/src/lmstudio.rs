@@ -27,6 +27,12 @@ pub struct LmStudioConnector {
     // Kept private: `OpenAiCompatibleConnector` is `pub(crate)`, so a public
     // field of that type would not compile.
     native: OpenAiCompatibleConnector,
+    /// The configured OpenAI-compatible transport, used for the `/v1` fallback.
+    ///
+    /// Derived from `native_base_url` it would break every deployment where the
+    /// two roots differ — a remote LM Studio, or a `native_base_url` that already
+    /// includes `/api/v0` as LM Studio's own documentation writes it.
+    transport: OpenAiCompatibleConnector,
 }
 
 impl LmStudioConnector {
@@ -40,19 +46,24 @@ impl LmStudioConnector {
         config: &LmStudioConnectorConfig,
         secrets: Arc<dyn SecretResolver>,
     ) -> SfumatoResult<Self> {
-        let native = OpenAiCompatibleConnector::new(
-            name.to_string(),
-            OpenAiCompatibleConnectorConfig {
-                base_url: config.native_base_url.trim_end_matches('/').to_string(),
-                credential: config.transport.credential.clone(),
-                headers: config.transport.headers.clone(),
-            },
-            secrets,
-        )
-        .map_err(|error| {
-            SfumatoError::config(format_args!("{error:#}")).at_stage(OperationStage::Resolve)
-        })?;
-        Ok(Self { native })
+        let connector = |base_url: String| {
+            OpenAiCompatibleConnector::new(
+                name.to_string(),
+                OpenAiCompatibleConnectorConfig {
+                    base_url,
+                    credential: config.transport.credential.clone(),
+                    headers: config.transport.headers.clone(),
+                },
+                secrets.clone(),
+            )
+            .map_err(|error| {
+                SfumatoError::config(format_args!("{error:#}")).at_stage(OperationStage::Resolve)
+            })
+        };
+        Ok(Self {
+            native: connector(native_root(&config.native_base_url))?,
+            transport: connector(config.transport.base_url.trim_end_matches('/').to_string())?,
+        })
     }
 
     /// Lists local models through `/api/v0/models`, falling back to `/v1/models`.
@@ -61,14 +72,11 @@ impl LmStudioConnector {
         operation: &OperationContext,
     ) -> SfumatoResult<Vec<ConnectorModelSummary>> {
         let result: Result<Vec<ConnectorModelSummary>> = async {
-            match self
-                .get_json::<NativeModelsResponse>("api/v0/models", operation)
-                .await?
-            {
-                Some(response) => Ok(response.data.into_iter().map(map_native_model).collect()),
+            match self.native_models(operation).await? {
+                Some(models) => Ok(models.into_iter().map(map_native_model).collect()),
                 None => {
                     let fallback: OpenAiModelsResponse = self
-                        .get_json("v1/models", operation)
+                        .get_json(&self.transport, "models", operation)
                         .await?
                         .context("LM Studio exposes neither /api/v0/models nor /v1/models")?;
                     Ok(fallback.data.into_iter().map(map_openai_model).collect())
@@ -89,13 +97,11 @@ impl LmStudioConnector {
         operation: &OperationContext,
     ) -> SfumatoResult<ConnectorStatus> {
         let result: Result<ConnectorStatus> = async {
-            let models = match self
-                .get_json::<NativeModelsResponse>("api/v0/models", operation)
-                .await?
-            {
-                Some(response) => response.data,
+            let models = match self.native_models(operation).await? {
+                Some(models) => models,
                 None => bail!(
-                    "LM Studio endpoint '/api/v0/models' is unavailable; native status requires LM Studio 0.3.6 or newer"
+                    "LM Studio endpoint '/api/v0/models' did not answer with a native model catalog; native status requires LM Studio 0.3.6 or newer at '{}'",
+                    self.native.endpoint("api/v0/models")
                 ),
             };
             let loaded = models
@@ -134,14 +140,32 @@ impl LmStudioConnector {
         native_result(result)
     }
 
-    /// Reads one native endpoint, mapping HTTP 404 to `None` for the fallback.
+    /// Reads `/api/v0/models`, mapping "not the native surface" onto `None`.
+    ///
+    /// A 200 body without a `data` envelope means the server on this port is not
+    /// an LM Studio native REST surface, so it must fall back rather than report
+    /// an empty local catalog as a successful answer.
+    async fn native_models(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<Option<Vec<NativeModel>>> {
+        Ok(self
+            .get_json::<NativeModelsResponse>(&self.native, "api/v0/models", operation)
+            .await?
+            .and_then(|response| response.data))
+    }
+
+    /// Reads one endpoint, mapping HTTP 404 to `None` for the fallback.
     async fn get_json<T: for<'de> Deserialize<'de>>(
         &self,
+        connector: &OpenAiCompatibleConnector,
         path: &str,
         operation: &OperationContext,
     ) -> Result<Option<T>> {
-        let request = self.native.get(path).await?;
-        let response = await_operation(operation, OperationStage::Resolve, request.send()).await?;
+        let request = connector.get(path).await?;
+        let response = await_operation(operation, OperationStage::Resolve, request.send())
+            .await
+            .with_context(|| format!("Could not reach {}", connector.endpoint(path)))?;
         let status = response.status();
         let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -149,6 +173,9 @@ impl LmStudioConnector {
         }
         if !status.is_success() {
             bail!("LM Studio endpoint '{path}' returned HTTP {status}: {body}");
+        }
+        if body.trim().is_empty() {
+            return Ok(None);
         }
         serde_json::from_str(&body)
             .map(Some)
@@ -231,8 +258,20 @@ fn map_openai_model(model: OpenAiModel) -> ConnectorModelSummary {
 
 #[derive(Deserialize)]
 struct NativeModelsResponse {
-    #[serde(default)]
-    data: Vec<NativeModel>,
+    /// `None` — not an empty vector — when the body carries no `data` envelope,
+    /// which distinguishes "no native surface here" from "no models installed".
+    data: Option<Vec<NativeModel>>,
+}
+
+/// Normalizes a configured native root, tolerating the documented `/api/v0` and
+/// a copied `/v1` suffix so `/api/v0/models` is not built off the wrong root.
+fn native_root(native_base_url: &str) -> String {
+    native_base_url
+        .trim_end_matches('/')
+        .trim_end_matches("/api/v0")
+        .trim_end_matches("/v1")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 #[derive(Deserialize)]
