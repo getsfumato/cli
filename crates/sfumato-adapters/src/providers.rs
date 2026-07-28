@@ -5,21 +5,22 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sfumato_core::{
     config::{
-        Capability, ConnectorConfig, EffectiveConfig, ModelProfile, OllamaConnectorConfig,
-        OpenRouterConnectorConfig,
+        AnthropicConnectorConfig, Capability, ConnectorConfig, EffectiveConfig,
+        LmStudioConnectorConfig, ModelProfile, OllamaConnectorConfig, OpenRouterConnectorConfig,
     },
     errors::{SfumatoError, SfumatoResult},
     operation::OperationContext,
     providers::{
-        ConnectorCapabilities, ConnectorCapability, ConnectorIntrospection, ConnectorModelSummary,
-        ConnectorStatus, ImageGenerationProvider, ProviderFactory, TextGenerationProvider,
-        VideoGenerationProvider,
+        AgentRunner, ConnectorCapabilities, ConnectorCapability, ConnectorIntrospection,
+        ConnectorModelSummary, ConnectorStatus, ImageGenerationProvider, ProviderFactory,
+        TextGenerationProvider, VideoGenerationProvider,
     },
     secrets::SecretResolver,
 };
 
 use crate::{
-    codex_app_server::CodexAppServerProvider, ollama::OllamaConnector,
+    anthropic::AnthropicConnector, codex_app_server::CodexAppServerProvider,
+    lmstudio::LmStudioConnector, ollama::OllamaConnector,
     openai_compatible::OpenAiCompatibleProviderFactory, openrouter::OpenRouterConnector,
 };
 
@@ -66,7 +67,13 @@ impl ProviderFactory for AdapterProviderFactory {
         match Self::connector(config, profile)? {
             ConnectorConfig::OpenAiCompatible(_)
             | ConnectorConfig::OpenRouter(_)
-            | ConnectorConfig::Ollama(_) => self.openai_compatible.text(config, profile),
+            | ConnectorConfig::Ollama(_)
+            | ConnectorConfig::LmStudio(_) => self.openai_compatible.text(config, profile),
+            ConnectorConfig::Anthropic(connector) => {
+                let model = AnthropicConnector::new(connector.clone(), self.secrets.clone())?
+                    .text_model(profile.clone());
+                Ok(Box::new(AgentRunner::new(Arc::new(model))) as Box<dyn TextGenerationProvider>)
+            }
             ConnectorConfig::CodexAppServer(connector) => {
                 Ok(Box::new(CodexAppServerProvider::new(
                     connector.clone(),
@@ -85,7 +92,11 @@ impl ProviderFactory for AdapterProviderFactory {
         match Self::connector(config, profile)? {
             ConnectorConfig::OpenAiCompatible(_)
             | ConnectorConfig::OpenRouter(_)
-            | ConnectorConfig::Ollama(_) => self.openai_compatible.image(config, profile),
+            | ConnectorConfig::Ollama(_)
+            | ConnectorConfig::LmStudio(_) => self.openai_compatible.image(config, profile),
+            ConnectorConfig::Anthropic(_) => Err(SfumatoError::config(
+                "Anthropic exposes no image-generation endpoint; configure an OpenRouter or OpenAI-compatible image profile",
+            )),
             ConnectorConfig::CodexAppServer(_) => Err(SfumatoError::config(
                 "Codex App Server connectors support text generation only",
             )),
@@ -134,6 +145,20 @@ impl ConnectorIntrospection for AdapterProviderFactory {
                     ConnectorCapability::RuntimeStatus,
                 ],
             ),
+            // `ModelDetails` is deliberately absent: `/api/v0/models` does return
+            // richer per-model data, but it lands in `ConnectorModelSummary`
+            // metadata and no port method exposes a per-model detail operation.
+            // ADR-0008 requires capabilities to name implemented operations only.
+            NativeConnector::LmStudio(_) => (
+                "lmstudio",
+                vec![
+                    ConnectorCapability::ModelCatalog,
+                    ConnectorCapability::RuntimeStatus,
+                ],
+            ),
+            // `Account` and `Usage` are deliberately absent: spend and identity
+            // live behind the Admin API, which a Messages key cannot reach.
+            NativeConnector::Anthropic(_) => ("anthropic", vec![ConnectorCapability::ModelCatalog]),
             NativeConnector::Codex => (
                 "codex_app_server",
                 vec![
@@ -164,6 +189,16 @@ impl ConnectorIntrospection for AdapterProviderFactory {
             }
             NativeConnector::Ollama(config) => {
                 OllamaConnector::new(&config).list_models(operation).await
+            }
+            NativeConnector::LmStudio(config) => {
+                LmStudioConnector::new(connector_name, &config, self.secrets.clone())?
+                    .list_models(operation)
+                    .await
+            }
+            NativeConnector::Anthropic(config) => {
+                AnthropicConnector::new(config, self.secrets.clone())?
+                    .list_models(operation)
+                    .await
             }
             NativeConnector::Codex => {
                 let ConnectorConfig::CodexAppServer(config) = connector else {
@@ -208,6 +243,16 @@ impl ConnectorIntrospection for AdapterProviderFactory {
                     .status(connector_name, operation)
                     .await
             }
+            NativeConnector::LmStudio(config) => {
+                LmStudioConnector::new(connector_name, &config, self.secrets.clone())?
+                    .status(connector_name, operation)
+                    .await
+            }
+            NativeConnector::Anthropic(config) => {
+                AnthropicConnector::new(config, self.secrets.clone())?
+                    .status(connector_name, operation)
+                    .await
+            }
             NativeConnector::Codex => {
                 let ConnectorConfig::CodexAppServer(config) = connector else {
                     unreachable!()
@@ -224,6 +269,8 @@ impl ConnectorIntrospection for AdapterProviderFactory {
 enum NativeConnector {
     OpenRouter(OpenRouterConnectorConfig),
     Ollama(OllamaConnectorConfig),
+    LmStudio(LmStudioConnectorConfig),
+    Anthropic(AnthropicConnectorConfig),
     Codex,
     Generic,
 }
@@ -232,6 +279,8 @@ fn native_connector(connector: &ConnectorConfig) -> NativeConnector {
     match connector {
         ConnectorConfig::OpenRouter(config) => NativeConnector::OpenRouter(config.clone()),
         ConnectorConfig::Ollama(config) => NativeConnector::Ollama(config.clone()),
+        ConnectorConfig::LmStudio(config) => NativeConnector::LmStudio(config.clone()),
+        ConnectorConfig::Anthropic(config) => NativeConnector::Anthropic(config.clone()),
         ConnectorConfig::CodexAppServer(_) => NativeConnector::Codex,
         ConnectorConfig::OpenAiCompatible(config) if config.base_url.contains("openrouter.ai") => {
             NativeConnector::OpenRouter(OpenRouterConnectorConfig {
@@ -251,6 +300,23 @@ fn native_connector(connector: &ConnectorConfig) -> NativeConnector {
                     .into(),
             })
         }
+        ConnectorConfig::OpenAiCompatible(config)
+            if config.base_url.contains("localhost:1234")
+                || config.base_url.contains("127.0.0.1:1234") =>
+        {
+            NativeConnector::LmStudio(LmStudioConnectorConfig {
+                transport: config.clone(),
+                native_base_url: config
+                    .base_url
+                    .trim_end_matches('/')
+                    .trim_end_matches("/v1")
+                    .into(),
+            })
+        }
         ConnectorConfig::OpenAiCompatible(_) => NativeConnector::Generic,
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/providers.rs"]
+mod tests;

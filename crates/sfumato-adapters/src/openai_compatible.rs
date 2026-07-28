@@ -525,7 +525,7 @@ fn reasoning_tokens(usage: Option<&CompletionUsage>) -> Option<u64> {
         .and_then(|details| details.reasoning_tokens)
 }
 
-fn is_context_limit_response(body: &str) -> bool {
+pub(crate) fn is_context_limit_response(body: &str) -> bool {
     let normalized = body.to_ascii_lowercase();
     let structured_code = serde_json::from_str::<serde_json::Value>(body)
         .ok()
@@ -545,7 +545,7 @@ fn is_context_limit_response(body: &str) -> bool {
         || normalized.contains("too many tokens")
 }
 
-fn compact_error_detail(body: &str) -> String {
+pub(crate) fn compact_error_detail(body: &str) -> String {
     let detail = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|value| {

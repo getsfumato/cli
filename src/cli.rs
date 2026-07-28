@@ -346,6 +346,8 @@ pub enum ProjectCommands {
 #[derive(Debug, Subcommand)]
 pub enum ConnectorCommands {
     List,
+    #[command(about = "List the connector presets available to `connector setup`")]
+    Presets,
     Show(ConnectorShowArgs),
     #[command(about = "Show native features exposed by a connector")]
     Capabilities(ConnectorShowArgs),
@@ -845,11 +847,27 @@ pub enum ConfigScope {
     Effective,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum ConnectorPreset {
     Ollama,
+    Lmstudio,
     Openrouter,
+    Anthropic,
     Codex,
+}
+
+impl From<ConnectorPreset> for sfumato_core::connectors::ConnectorPreset {
+    fn from(preset: ConnectorPreset) -> Self {
+        // Clap forbids `sfumato-core` from depending on it, so the preset list is
+        // mirrored here. `tests/unit/cli.rs` asserts the two stay in sync.
+        match preset {
+            ConnectorPreset::Ollama => Self::Ollama,
+            ConnectorPreset::Lmstudio => Self::Lmstudio,
+            ConnectorPreset::Openrouter => Self::Openrouter,
+            ConnectorPreset::Anthropic => Self::Anthropic,
+            ConnectorPreset::Codex => Self::Codex,
+        }
+    }
 }
 
 #[cfg(test)]

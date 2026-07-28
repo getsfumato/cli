@@ -892,9 +892,7 @@ pub(super) enum BrowseAction {
     ModelEdit,
     ModelUse,
     ModelRemove,
-    ConnectorOllama,
-    ConnectorOpenrouter,
-    ConnectorCodex,
+    ConnectorSetup,
     ConnectorModels,
     ConnectorStatus,
     ThemeCreate,
@@ -922,9 +920,7 @@ impl BrowseAction {
             Self::ModelEdit => "Edit",
             Self::ModelUse => "Set default",
             Self::ModelRemove => "Remove",
-            Self::ConnectorOllama => "Setup Ollama",
-            Self::ConnectorOpenrouter => "Setup OpenRouter",
-            Self::ConnectorCodex => "Setup Codex",
+            Self::ConnectorSetup => "Setup",
             Self::ConnectorModels => "Model catalog",
             Self::ConnectorStatus => "Native status",
             Self::ThemeCreate => "Create",
@@ -952,7 +948,7 @@ pub(super) enum OperationKind {
     ModelEdit,
     ModelUse,
     ModelRemove,
-    ConnectorSetup(ConnectorPreset),
+    ConnectorSetup,
     ThemeCreate,
     ThemeImport,
     ThemeExport,
@@ -1002,6 +998,20 @@ impl OperationForm {
                 _ => None,
             })
             .unwrap_or(false)
+    }
+
+    pub(super) fn select(&self, label: &str) -> String {
+        self.fields
+            .iter()
+            .find_map(|field| match field {
+                FormField::Select {
+                    label: field_label,
+                    options,
+                    selected,
+                } if *field_label == label => options.get(*selected).cloned(),
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 }
 

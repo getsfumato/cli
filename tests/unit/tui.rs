@@ -326,6 +326,58 @@ fn connector_browser_exposes_native_catalog_and_status_actions() {
 }
 
 #[test]
+fn connector_setup_offers_every_preset_through_one_action() {
+    // One action rather than one per preset: the ACTIONS bar renders as a single
+    // unwrapped line, so a label per preset would clip on an 80-column terminal.
+    assert!(section_actions(Section::Connectors).contains(&BrowseAction::ConnectorSetup));
+
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.operation = Some(
+        app.operation_for_action(BrowseAction::ConnectorSetup)
+            .unwrap(),
+    );
+    let form = app.operation.as_ref().expect("setup opens a form");
+
+    let FormField::Select { options, .. } = &form.fields[0] else {
+        panic!("the preset field is a select");
+    };
+    assert_eq!(
+        options,
+        &ConnectorPreset::ALL
+            .into_iter()
+            .map(|preset| preset.as_str().to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(form.select("Preset"), ConnectorPreset::ALL[0].as_str());
+}
+
+#[test]
+fn connector_setup_cycles_presets_with_the_arrow_keys() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.operation = Some(
+        app.operation_for_action(BrowseAction::ConnectorSetup)
+            .unwrap(),
+    );
+
+    // Asserted against `ALL` rather than literal preset names, so inserting a
+    // preset cannot silently invalidate the expectation.
+    let all = ConnectorPreset::ALL;
+    app.handle_operation_key(KeyEvent::from(KeyCode::Right));
+    assert_eq!(
+        app.operation.as_ref().unwrap().select("Preset"),
+        all[1].as_str()
+    );
+
+    // Wrapping backwards from the first option lands on the last one.
+    app.handle_operation_key(KeyEvent::from(KeyCode::Left));
+    app.handle_operation_key(KeyEvent::from(KeyCode::Left));
+    assert_eq!(
+        app.operation.as_ref().unwrap().select("Preset"),
+        all[all.len() - 1].as_str()
+    );
+}
+
+#[test]
 fn browse_arrow_keys_move_rows_without_requiring_tab_first() {
     let mut app = App::new(Picker::halfblocks(), test_application());
     app.screen = Screen::Browse(Section::Models);

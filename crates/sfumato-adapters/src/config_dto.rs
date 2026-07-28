@@ -5,11 +5,12 @@ use std::{collections::BTreeMap, path::PathBuf};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sfumato_core::config::{
-    Capability, CodexAppServerConnectorConfig, ConnectorConfig, GenerationToolDefaults,
-    GenerationToolKind, GlobalConfig, ImageModelOptions, MarpConfig, ModelDefaults, ModelOptions,
-    ModelProfile, ModelRole, OllamaConnectorConfig, OpenAiCompatibleConnectorConfig,
-    OpenRouterConnectorConfig, PageDefaults, ProjectConfig, ProjectRegistry, ProjectSecurityConfig,
-    RegisteredProject, SecretRef, TextModelOptions, UserConfig, VideoAudioMode, VideoModelOptions,
+    AnthropicConnectorConfig, Capability, CodexAppServerConnectorConfig, ConnectorConfig,
+    GenerationToolDefaults, GenerationToolKind, GlobalConfig, ImageModelOptions,
+    LmStudioConnectorConfig, MarpConfig, ModelDefaults, ModelOptions, ModelProfile, ModelRole,
+    OllamaConnectorConfig, OpenAiCompatibleConnectorConfig, OpenRouterConnectorConfig,
+    PageDefaults, ProjectConfig, ProjectRegistry, ProjectSecurityConfig, RegisteredProject,
+    SecretRef, TextModelOptions, UserConfig, VideoAudioMode, VideoModelOptions,
 };
 
 /// Current persisted configuration schema.
@@ -59,6 +60,11 @@ enum ConnectorKindDto {
     OpenaiCompatible,
     Openrouter,
     Ollama,
+    // `rename_all = "snake_case"` would emit `lm_studio`; pin the single-word
+    // spelling and keep the derived form as a read alias.
+    #[serde(rename = "lmstudio", alias = "lm_studio")]
+    LmStudio,
+    Anthropic,
     #[serde(alias = "codex_cli")]
     CodexAppServer,
 }
@@ -229,6 +235,37 @@ impl GlobalConfigDto {
                                 ))?,
                             })
                         }
+                        ConnectorKindDto::LmStudio => {
+                            if connector.executable.is_some() {
+                                bail!("LM Studio connector '{name}' cannot define executable");
+                            }
+                            ConnectorConfig::LmStudio(LmStudioConnectorConfig {
+                                transport: OpenAiCompatibleConnectorConfig {
+                                    base_url: connector.base_url.ok_or_else(|| anyhow::anyhow!(
+                                        "LM Studio connector '{name}' requires base_url"
+                                    ))?,
+                                    credential: connector.credential,
+                                    headers: connector.headers,
+                                },
+                                native_base_url: connector.native_base_url.ok_or_else(|| anyhow::anyhow!(
+                                    "LM Studio connector '{name}' requires native_base_url"
+                                ))?,
+                            })
+                        }
+                        ConnectorKindDto::Anthropic => {
+                            if connector.executable.is_some()
+                                || connector.native_base_url.is_some()
+                            {
+                                bail!("Anthropic connector '{name}' cannot define executable or native_base_url");
+                            }
+                            ConnectorConfig::Anthropic(AnthropicConnectorConfig {
+                                base_url: connector.base_url.ok_or_else(|| anyhow::anyhow!(
+                                    "Anthropic connector '{name}' requires base_url"
+                                ))?,
+                                credential: connector.credential,
+                                headers: connector.headers,
+                            })
+                        }
                         ConnectorKindDto::CodexAppServer => {
                             if connector.base_url.is_some()
                                 || connector.credential.is_some()
@@ -307,6 +344,22 @@ impl GlobalConfigDto {
                             headers: connector.transport.headers.clone(),
                             executable: None,
                             native_base_url: Some(connector.native_base_url.clone()),
+                        },
+                        ConnectorConfig::LmStudio(connector) => ConnectorDto {
+                            kind: ConnectorKindDto::LmStudio,
+                            base_url: Some(connector.transport.base_url.clone()),
+                            credential: connector.transport.credential.clone(),
+                            headers: connector.transport.headers.clone(),
+                            executable: None,
+                            native_base_url: Some(connector.native_base_url.clone()),
+                        },
+                        ConnectorConfig::Anthropic(connector) => ConnectorDto {
+                            kind: ConnectorKindDto::Anthropic,
+                            base_url: Some(connector.base_url.clone()),
+                            credential: connector.credential.clone(),
+                            headers: connector.headers.clone(),
+                            executable: None,
+                            native_base_url: None,
                         },
                         ConnectorConfig::CodexAppServer(connector) => ConnectorDto {
                             kind: ConnectorKindDto::CodexAppServer,

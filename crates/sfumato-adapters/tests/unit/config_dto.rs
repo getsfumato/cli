@@ -119,6 +119,151 @@ fn v4_round_trip_preserves_native_openrouter_and_ollama_composition() {
 }
 
 #[test]
+fn v5_round_trip_preserves_lmstudio_connectors() {
+    let mut config = GlobalConfig::default_config();
+    config.connectors.insert(
+        "lmstudio".to_string(),
+        sfumato_core::connectors::ConnectorPreset::Lmstudio
+            .into_config("lmstudio", None)
+            .unwrap(),
+    );
+    let rendered = toml::to_string_pretty(&GlobalConfigDto::from_domain(&config)).unwrap();
+
+    // The single-word spelling is pinned; `rename_all` would have emitted
+    // `lm_studio` and split one kind across two names.
+    assert!(rendered.contains("kind = \"lmstudio\""));
+    assert!(rendered.contains("native_base_url = \"http://localhost:1234\""));
+
+    let parsed = toml::from_str::<GlobalConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+
+    assert!(matches!(
+        parsed.connectors["lmstudio"],
+        ConnectorConfig::LmStudio(_)
+    ));
+    assert_eq!(parsed.connectors["lmstudio"].kind(), "lmstudio");
+    assert!(parsed.connectors["lmstudio"].openai_compatible().is_some());
+}
+
+#[test]
+fn lmstudio_connectors_accept_the_derived_snake_case_alias() {
+    let document = r#"
+schema_version = 5
+[user]
+learning_style = ["visual"]
+[connectors.lmstudio]
+kind = "lm_studio"
+base_url = "http://localhost:1234/v1"
+native_base_url = "http://localhost:1234"
+[models]
+[defaults]
+[marp]
+pdf = true
+"#;
+
+    let parsed = toml::from_str::<GlobalConfigDto>(document)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+
+    assert!(matches!(
+        parsed.connectors["lmstudio"],
+        ConnectorConfig::LmStudio(_)
+    ));
+}
+
+#[test]
+fn v5_round_trip_preserves_anthropic_connectors() {
+    let mut config = GlobalConfig::default_config();
+    config.connectors.insert(
+        "anthropic".to_string(),
+        sfumato_core::connectors::ConnectorPreset::Anthropic
+            .into_config("anthropic", None)
+            .unwrap(),
+    );
+    let rendered = toml::to_string_pretty(&GlobalConfigDto::from_domain(&config)).unwrap();
+
+    assert!(rendered.contains("kind = \"anthropic\""));
+    assert!(rendered.contains("base_url = \"https://api.anthropic.com/v1\""));
+    assert!(rendered.contains("credential = \"stored:connector/anthropic\""));
+
+    let parsed = toml::from_str::<GlobalConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+
+    assert!(matches!(
+        parsed.connectors["anthropic"],
+        ConnectorConfig::Anthropic(_)
+    ));
+    // The Messages API is not OpenAI-compatible, so no shared transport is exposed.
+    assert!(parsed.connectors["anthropic"].openai_compatible().is_none());
+}
+
+#[test]
+fn anthropic_connectors_reject_native_and_process_fields() {
+    let document = r#"
+schema_version = 5
+[user]
+learning_style = ["visual"]
+[connectors.anthropic]
+kind = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+native_base_url = "https://api.anthropic.com"
+[models]
+[defaults]
+[marp]
+pdf = true
+"#;
+
+    let error = toml::from_str::<GlobalConfigDto>(document)
+        .unwrap()
+        .into_domain()
+        .expect_err("Anthropic has a single API root and no native side channel");
+
+    assert!(
+        error
+            .to_string()
+            .contains("cannot define executable or native_base_url")
+    );
+}
+
+#[test]
+fn new_connector_kinds_do_not_bump_the_schema_version() {
+    // The new kinds reuse fields `ConnectorDto` already has, so a bump would
+    // rewrite every user's config for no shape change and would make an older
+    // binary reject a file that only contains old kinds.
+    assert_eq!(CONFIG_SCHEMA_VERSION, 5);
+}
+
+#[test]
+fn lmstudio_connectors_reject_an_executable() {
+    let document = r#"
+schema_version = 5
+[user]
+learning_style = ["visual"]
+[connectors.lmstudio]
+kind = "lmstudio"
+base_url = "http://localhost:1234/v1"
+native_base_url = "http://localhost:1234"
+executable = "lms"
+[models]
+[defaults]
+[marp]
+pdf = true
+"#;
+
+    let error = toml::from_str::<GlobalConfigDto>(document)
+        .unwrap()
+        .into_domain()
+        .expect_err("LM Studio is reached over HTTP, not by spawning a binary");
+
+    assert!(error.to_string().contains("cannot define executable"));
+}
+
+#[test]
 fn legacy_codex_cli_kind_loads_as_app_server_and_normalizes_on_write() {
     let mut config = GlobalConfig::default_config();
     config.connectors.insert(

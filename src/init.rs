@@ -8,6 +8,7 @@ use sfumato_core::application::SfumatoApplication;
 use sfumato_core::config::{
     Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile, TextModelOptions,
 };
+use sfumato_core::connectors::ConnectorPreset;
 
 pub struct InitService {
     application: Arc<SfumatoApplication>,
@@ -67,17 +68,16 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
     }
     config.user.name = Some(name);
     config.user.learning_style = learning_style;
-    let connector = Select::new(
-        "Default text connector",
-        vec!["ollama".to_string(), "openrouter".to_string()],
-    )
-    .prompt()?;
-    let (profile_name, default_model) = if connector == "openrouter" {
-        ("cloud-text", "openai/gpt-4o-mini")
-    } else {
-        ("local-text", "llama3.2")
-    };
-    let model = prompt("Default text model", default_model)?;
+    let preset = Select::new("Default text connector", ConnectorPreset::ALL.to_vec()).prompt()?;
+    let connector = preset.default_connector_name().to_string();
+    // `default_config` ships only a subset of the presets, and
+    // `GlobalConfig::validate` rejects a profile naming an absent connector, so
+    // the chosen preset has to be configured before the profile references it.
+    config
+        .connectors
+        .insert(connector.clone(), preset.into_config(&connector, None)?);
+    let profile_name = preset.default_text_profile_name();
+    let model = prompt("Default text model", preset.default_text_model())?;
     config.models.insert(
         profile_name.to_string(),
         ModelProfile {

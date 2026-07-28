@@ -158,9 +158,7 @@ fn section_actions(section: Section) -> &'static [BrowseAction] {
             BrowseAction::ModelRemove,
         ],
         Section::Connectors => &[
-            BrowseAction::ConnectorOllama,
-            BrowseAction::ConnectorOpenrouter,
-            BrowseAction::ConnectorCodex,
+            BrowseAction::ConnectorSetup,
             BrowseAction::ConnectorModels,
             BrowseAction::ConnectorStatus,
         ],

@@ -399,39 +399,31 @@ impl App {
                     "Remove model",
                 )
             }
-            BrowseAction::ConnectorOllama
-            | BrowseAction::ConnectorOpenrouter
-            | BrowseAction::ConnectorCodex => {
-                let is_ollama = action == BrowseAction::ConnectorOllama;
-                let is_codex = action == BrowseAction::ConnectorCodex;
-                let (title, preset, name) = if is_ollama {
-                    ("Setup Ollama", ConnectorPreset::Ollama, "ollama")
-                } else if is_codex {
-                    ("Setup Codex", ConnectorPreset::Codex, "codex")
-                } else {
-                    (
-                        "Setup OpenRouter",
-                        ConnectorPreset::Openrouter,
-                        "openrouter",
-                    )
-                };
-                let mut fields = vec![text_field("Name", name, "connector name")];
-                if !is_codex {
-                    fields.push(text_field(
+            BrowseAction::ConnectorSetup => OperationForm {
+                title: "Setup connector",
+                kind: OperationKind::ConnectorSetup,
+                target: None,
+                fields: vec![
+                    FormField::Select {
+                        label: "Preset",
+                        options: ConnectorPreset::ALL
+                            .into_iter()
+                            .map(|preset| preset.as_str().to_string())
+                            .collect(),
+                        selected: 0,
+                    },
+                    // Left blank so the preset's own default name applies; the
+                    // form cannot prefill it because the preset is chosen here.
+                    text_field("Name", "", "connector name; defaults to the preset"),
+                    text_field(
                         "API key environment",
                         "",
                         "optional CI environment variable",
-                    ));
-                }
-                fields.push(submit_field("Save connector"));
-                OperationForm {
-                    title,
-                    kind: OperationKind::ConnectorSetup(preset),
-                    target: None,
-                    fields,
-                    selected: 0,
-                }
-            }
+                    ),
+                    submit_field("Save connector"),
+                ],
+                selected: 0,
+            },
             BrowseAction::ConnectorModels | BrowseAction::ConnectorStatus => {
                 anyhow::bail!("Connector discovery actions run asynchronously")
             }
@@ -581,7 +573,11 @@ impl App {
                         "visual, step-by-step",
                         "comma-separated preferences",
                     ),
-                    text_field("Connector", "ollama", "ollama or openrouter"),
+                    text_field(
+                        "Connector",
+                        "ollama",
+                        "preset name; run `sfumato connector presets`",
+                    ),
                     text_field("Profile", "local-text", "model profile name"),
                     text_field("Model ID", "llama3.2", "provider model identifier"),
                     FormField::Toggle {
@@ -625,6 +621,19 @@ impl App {
                     (operation.selected + 1).min(operation.fields.len().saturating_sub(1));
             }
             KeyCode::BackTab => operation.selected = operation.selected.saturating_sub(1),
+            KeyCode::Left | KeyCode::Right => {
+                if let Some(FormField::Select {
+                    options, selected, ..
+                }) = operation.fields.get_mut(operation.selected)
+                    && !options.is_empty()
+                {
+                    *selected = if key.code == KeyCode::Left {
+                        selected.checked_sub(1).unwrap_or(options.len() - 1)
+                    } else {
+                        (*selected + 1) % options.len()
+                    };
+                }
+            }
             KeyCode::Enter => match operation.fields.get(operation.selected) {
                 Some(FormField::Toggle { .. }) => {
                     if let Some(FormField::Toggle { value, .. }) =

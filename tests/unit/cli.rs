@@ -211,6 +211,58 @@ fn parses_local_codex_connector_setup() {
 }
 
 #[test]
+fn parses_connector_preset_listing() {
+    let cli = Cli::try_parse_from(["sfumato", "connector", "presets"]).unwrap();
+
+    assert!(matches!(
+        cli.command,
+        Some(Commands::Connector {
+            command: ConnectorCommands::Presets,
+        })
+    ));
+}
+
+#[test]
+fn cli_and_core_connector_presets_stay_in_sync() {
+    // `tests/architecture.rs` forbids clap in `sfumato-core`, so the preset list
+    // is mirrored in `cli.rs`. This test is what keeps the mirror honest: adding
+    // a core preset without a clap variant (or vice versa) fails here.
+    let cli_presets = <ConnectorPreset as clap::ValueEnum>::value_variants()
+        .iter()
+        .map(|preset| {
+            sfumato_core::connectors::ConnectorPreset::from(*preset)
+                .as_str()
+                .to_string()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let core_presets = sfumato_core::connectors::ConnectorPreset::ALL
+        .into_iter()
+        .map(|preset| preset.as_str().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(cli_presets, core_presets);
+}
+
+#[test]
+fn every_connector_preset_parses_from_the_command_line() {
+    for preset in sfumato_core::connectors::ConnectorPreset::ALL {
+        let cli = Cli::try_parse_from(["sfumato", "connector", "setup", preset.as_str()])
+            .unwrap_or_else(|error| panic!("preset '{preset}' should parse: {error}"));
+        let Some(Commands::Connector {
+            command: ConnectorCommands::Setup(args),
+        }) = cli.command
+        else {
+            panic!("expected connector setup command for preset '{preset}'");
+        };
+
+        assert_eq!(
+            sfumato_core::connectors::ConnectorPreset::from(args.preset),
+            preset
+        );
+    }
+}
+
+#[test]
 fn parses_connector_native_model_discovery() {
     let cli = Cli::try_parse_from(["sfumato", "connector", "models", "codex"]).unwrap();
     let Some(Commands::Connector {

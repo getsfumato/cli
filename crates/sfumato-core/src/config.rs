@@ -361,6 +361,31 @@ pub struct OllamaConnectorConfig {
     pub native_base_url: String,
 }
 
+/// LM Studio connector composed from its OpenAI-compatible transport and native REST root.
+#[derive(Clone, Debug, Serialize)]
+pub struct LmStudioConnectorConfig {
+    /// Shared chat transport configuration, normally the `/v1` base.
+    pub transport: OpenAiCompatibleConnectorConfig,
+    /// Native LM Studio REST root, normally without `/v1`.
+    pub native_base_url: String,
+}
+
+/// Native Anthropic Messages API connector.
+///
+/// Deliberately not composed from [`OpenAiCompatibleConnectorConfig`]: the
+/// Messages API is a different wire format and authenticates with `x-api-key`
+/// rather than bearer auth, so typing it as an OpenAI-compatible transport would
+/// let a future refactor route it through the wrong provider factory.
+#[derive(Clone, Debug, Serialize)]
+pub struct AnthropicConnectorConfig {
+    /// API root, normally `https://api.anthropic.com/v1`.
+    pub base_url: String,
+    /// Indirect reference to the `x-api-key` credential.
+    pub credential: Option<SecretRef>,
+    /// Extra request headers; may override the pinned `anthropic-version`.
+    pub headers: BTreeMap<String, String>,
+}
+
 /// Configuration for one external model transport.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -371,8 +396,33 @@ pub enum ConnectorConfig {
     OpenRouter(OpenRouterConnectorConfig),
     /// Ollama with provider-native local model operations.
     Ollama(OllamaConnectorConfig),
+    /// LM Studio with provider-native local model and runtime operations.
+    LmStudio(LmStudioConnectorConfig),
+    /// Anthropic speaking the native Messages API.
+    Anthropic(AnthropicConnectorConfig),
     /// Local Codex App Server using Codex-owned ChatGPT authentication.
     CodexAppServer(CodexAppServerConnectorConfig),
+}
+
+/// How Sfumato participates in one connector's authentication.
+///
+/// Connector kinds differ in whether Sfumato owns the credential or an external
+/// tool does. Matching on this instead of on a specific kind keeps
+/// authentication a question about capability, so a new connector kind cannot
+/// silently fall into the wrong branch.
+#[derive(Clone, Copy, Debug)]
+pub enum ConnectorAuth<'a> {
+    /// Sfumato owns this credential reference and may replace it.
+    Managed(Option<&'a SecretRef>),
+    /// The connector's own tooling owns authentication.
+    External {
+        /// Tool that owns the credential, named in guidance messages.
+        owner: &'static str,
+        /// Command that establishes the credential.
+        login_command: &'static str,
+        /// Command that clears the credential.
+        logout_command: &'static str,
+    },
 }
 
 impl ConnectorConfig {
@@ -382,6 +432,8 @@ impl ConnectorConfig {
             Self::OpenAiCompatible(_) => "openai_compatible",
             Self::OpenRouter(_) => "openrouter",
             Self::Ollama(_) => "ollama",
+            Self::LmStudio(_) => "lmstudio",
+            Self::Anthropic(_) => "anthropic",
             Self::CodexAppServer(_) => "codex_app_server",
         }
     }
@@ -392,6 +444,8 @@ impl ConnectorConfig {
             Self::OpenAiCompatible(config) => config.base_url.clone(),
             Self::OpenRouter(config) => config.transport.base_url.clone(),
             Self::Ollama(config) => config.native_base_url.clone(),
+            Self::LmStudio(config) => config.native_base_url.clone(),
+            Self::Anthropic(config) => config.base_url.clone(),
             Self::CodexAppServer(config) => config.executable.display().to_string(),
         }
     }
@@ -402,6 +456,9 @@ impl ConnectorConfig {
             Self::OpenAiCompatible(config) => Some(config),
             Self::OpenRouter(config) => Some(&config.transport),
             Self::Ollama(config) => Some(&config.transport),
+            Self::LmStudio(config) => Some(&config.transport),
+            // The Messages API is not OpenAI-compatible.
+            Self::Anthropic(_) => None,
             Self::CodexAppServer(_) => None,
         }
     }
@@ -412,8 +469,51 @@ impl ConnectorConfig {
             Self::OpenAiCompatible(config) => Some(config),
             Self::OpenRouter(config) => Some(&mut config.transport),
             Self::Ollama(config) => Some(&mut config.transport),
+            Self::LmStudio(config) => Some(&mut config.transport),
+            Self::Anthropic(_) => None,
             Self::CodexAppServer(_) => None,
         }
+    }
+
+    /// Reports whether Sfumato manages this connector's credential.
+    ///
+    /// Deliberately exhaustive with no wildcard arm: a new connector kind must
+    /// declare its authentication ownership at compile time rather than fall
+    /// through to a default that would be wrong for it.
+    pub fn auth(&self) -> ConnectorAuth<'_> {
+        match self {
+            Self::OpenAiCompatible(config) => ConnectorAuth::Managed(config.credential.as_ref()),
+            Self::OpenRouter(config) => {
+                ConnectorAuth::Managed(config.transport.credential.as_ref())
+            }
+            Self::Ollama(config) => ConnectorAuth::Managed(config.transport.credential.as_ref()),
+            Self::LmStudio(config) => ConnectorAuth::Managed(config.transport.credential.as_ref()),
+            Self::Anthropic(config) => ConnectorAuth::Managed(config.credential.as_ref()),
+            Self::CodexAppServer(_) => ConnectorAuth::External {
+                owner: "Codex CLI",
+                login_command: "codex login",
+                logout_command: "codex logout",
+            },
+        }
+    }
+
+    /// Replaces the managed credential reference for this connector.
+    ///
+    /// Returns a typed error for connectors whose authentication is owned by an
+    /// external tool. Callers that can offer kind-specific guidance should
+    /// inspect [`ConnectorConfig::auth`] first.
+    pub fn set_managed_credential(&mut self, reference: Option<SecretRef>) -> Result<()> {
+        match self {
+            Self::OpenAiCompatible(config) => config.credential = reference,
+            Self::OpenRouter(config) => config.transport.credential = reference,
+            Self::Ollama(config) => config.transport.credential = reference,
+            Self::LmStudio(config) => config.transport.credential = reference,
+            Self::Anthropic(config) => config.credential = reference,
+            Self::CodexAppServer(_) => {
+                bail!("Codex App Server connectors manage their own authentication")
+            }
+        }
+        Ok(())
     }
 }
 
@@ -560,6 +660,15 @@ impl GlobalConfig {
                         || connector.native_base_url.trim().is_empty() =>
                 {
                     bail!("Ollama connector base URLs cannot be empty");
+                }
+                ConnectorConfig::LmStudio(connector)
+                    if connector.transport.base_url.trim().is_empty()
+                        || connector.native_base_url.trim().is_empty() =>
+                {
+                    bail!("LM Studio connector base URLs cannot be empty");
+                }
+                ConnectorConfig::Anthropic(connector) if connector.base_url.trim().is_empty() => {
+                    bail!("Anthropic connector base URLs cannot be empty");
                 }
                 ConnectorConfig::CodexAppServer(connector)
                     if connector.executable.as_os_str().is_empty() =>

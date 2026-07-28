@@ -289,7 +289,8 @@ pub(super) fn execute_operation(
             application.remove_model(name)?;
             Ok(format!("Removed model profile '{name}'"))
         }
-        OperationKind::ConnectorSetup(preset) => {
+        OperationKind::ConnectorSetup => {
+            let preset = ConnectorPreset::from_str(&form.select("Preset"))?;
             let connector = application.setup_connector(
                 preset,
                 optional_field(form, "Name"),
@@ -400,10 +401,8 @@ pub(super) fn execute_operation(
             if application.user_config_exists() && !form.toggle("Overwrite existing config") {
                 anyhow::bail!("User config already exists; confirm overwrite before continuing");
             }
-            let connector = required_field(form, "Connector")?;
-            if connector != "ollama" && connector != "openrouter" {
-                anyhow::bail!("Connector must be 'ollama' or 'openrouter'");
-            }
+            let preset = ConnectorPreset::from_str(&required_field(form, "Connector")?)?;
+            let connector = preset.default_connector_name().to_string();
             let learning_style = split_values(&required_field(form, "Learning styles")?);
             if learning_style.is_empty() {
                 anyhow::bail!("Learning styles must include at least one value");
@@ -412,6 +411,12 @@ pub(super) fn execute_operation(
             let mut config = GlobalConfig::default_config();
             config.user.name = Some(required_field(form, "Name")?);
             config.user.learning_style = learning_style;
+            // `default_config` ships only a subset of the presets, and
+            // `GlobalConfig::validate` rejects a profile naming an absent
+            // connector, so configure the preset before referencing it.
+            config
+                .connectors
+                .insert(connector.clone(), preset.into_config(&connector, None)?);
             config.models.insert(
                 profile_name.clone(),
                 ModelProfile {

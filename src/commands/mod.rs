@@ -759,6 +759,23 @@ impl RunnableCommand for ConnectorCommands {
                 );
                 Ok(())
             }
+            Self::Presets => {
+                print_table(
+                    &["PRESET", "KIND", "TRANSPORT", "AUTHENTICATION"],
+                    CoreConnectorPreset::ALL
+                        .into_iter()
+                        .map(|preset| {
+                            vec![
+                                Cell::primary(preset.as_str()),
+                                Cell::new(preset.kind()),
+                                Cell::muted(preset.transport_summary()),
+                                Cell::muted(preset.auth_summary()),
+                            ]
+                        })
+                        .collect(),
+                );
+                Ok(())
+            }
             Self::Show(args) => args.run(Arc::clone(&application)).await,
             Self::Capabilities(args) => {
                 let capabilities = application.connector_capabilities(&args.name)?;
@@ -894,12 +911,8 @@ impl RunnableCommand for ConnectorShowArgs {
 #[async_trait]
 impl RunnableCommand for ConnectorSetupArgs {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
-        let preset = match self.preset {
-            crate::cli::ConnectorPreset::Ollama => CoreConnectorPreset::Ollama,
-            crate::cli::ConnectorPreset::Openrouter => CoreConnectorPreset::Openrouter,
-            crate::cli::ConnectorPreset::Codex => CoreConnectorPreset::Codex,
-        };
-        let connector = application.setup_connector(preset, self.name, self.api_key_env)?;
+        let connector =
+            application.setup_connector(self.preset.into(), self.name, self.api_key_env)?;
         println!(
             "Configured {} connector '{}'",
             connector.kind, connector.name
