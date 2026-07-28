@@ -218,6 +218,25 @@ fn preset_metadata_covers_every_variant() {
 }
 
 #[test]
+fn anthropic_first_profile_defaults_leave_the_adapter_budget_alone() {
+    // A 4000-token cap is shared with thinking on the Messages API, so a fresh
+    // profile carrying it returns no text at all on its first generation.
+    assert_eq!(ConnectorPreset::Anthropic.default_text_max_tokens(), None);
+    // The same connector warns that sampling parameters are inert.
+    assert_eq!(ConnectorPreset::Anthropic.default_text_temperature(), None);
+    assert!(ConnectorPreset::Anthropic.requires_stored_login());
+
+    for preset in [ConnectorPreset::Ollama, ConnectorPreset::Lmstudio] {
+        assert_eq!(preset.default_text_max_tokens(), Some(4000));
+        assert_eq!(preset.default_text_temperature(), Some(0.4));
+        assert!(!preset.requires_stored_login());
+    }
+    // Codex owns its own credential, so it never needs `connector login`.
+    assert!(!ConnectorPreset::Codex.requires_stored_login());
+    assert!(ConnectorPreset::Openrouter.requires_stored_login());
+}
+
+#[test]
 fn unknown_preset_names_list_the_available_presets() {
     let error = "gemini".parse::<ConnectorPreset>().unwrap_err().to_string();
 

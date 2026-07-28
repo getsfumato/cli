@@ -223,8 +223,8 @@ All options use repeatable `--option key=value` arguments.
 
 | Key | Type | Default/use |
 | --- | --- | --- |
-| `temperature` | float | Sampling temperature; workflow default is `0.4`. |
-| `max_tokens` | positive integer | Provider output budget; workflow default is `4000`. |
+| `temperature` | float | Sampling temperature; workflow default is `0.4`. Inert on `anthropic`, which rejects sampling parameters, so `sfumato init` leaves it unset there. |
+| `max_tokens` | positive integer | Provider output budget; workflow default is `4000`. Left unset for `anthropic`, where thinking shares this budget and the adapter defaults to `16000` (capped at `32000` without streaming). |
 | `max_tool_rounds` | positive integer | Maximum model/tool cycles; default is `8`. |
 | `top_p` | float | Optional nucleus sampling threshold. |
 | `seed` | integer | Optional deterministic seed where supported. |

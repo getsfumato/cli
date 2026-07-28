@@ -77,6 +77,7 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
         .connectors
         .insert(connector.clone(), preset.into_config(&connector, None)?);
     let profile_name = preset.default_text_profile_name();
+    let connector_name = connector.clone();
     let model = prompt("Default text model", preset.default_text_model())?;
     config.models.insert(
         profile_name.to_string(),
@@ -85,9 +86,12 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
             model,
             capabilities: vec![Capability::Text, Capability::Code],
             options: ModelOptions {
+                // Preset-derived rather than hardcoded: Anthropic rejects
+                // sampling parameters and shares `max_tokens` with thinking, so
+                // a 4000-token cap there returns no text on the first run.
                 text: TextModelOptions {
-                    temperature: Some(0.4),
-                    max_tokens: Some(4000),
+                    temperature: preset.default_text_temperature(),
+                    max_tokens: preset.default_text_max_tokens(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -98,6 +102,9 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
         Capability::Text,
         profile_name.to_string(),
     )]));
+    if preset.requires_stored_login() {
+        println!("Run `sfumato connector login {connector_name}` to store its API key.");
+    }
     Ok(config)
 }
 

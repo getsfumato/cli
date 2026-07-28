@@ -89,6 +89,38 @@ impl ConnectorPreset {
         }
     }
 
+    /// Sampling temperature suggested for a first text profile.
+    ///
+    /// `None` where the provider rejects sampling parameters outright, so the
+    /// first run does not warn about an option it cannot honor.
+    pub const fn default_text_temperature(self) -> Option<f32> {
+        match self {
+            Self::Ollama | Self::Lmstudio | Self::Openrouter | Self::Codex => Some(0.4),
+            Self::Anthropic => None,
+        }
+    }
+
+    /// Output-token cap suggested for a first text profile.
+    ///
+    /// `None` leaves the adapter's own default in place. Anthropic needs that:
+    /// thinking is on by default and shares this budget, so a 4000-token cap can
+    /// consume the whole budget and return no text at all.
+    pub const fn default_text_max_tokens(self) -> Option<u32> {
+        match self {
+            Self::Ollama | Self::Lmstudio | Self::Openrouter | Self::Codex => Some(4000),
+            Self::Anthropic => None,
+        }
+    }
+
+    /// Whether a connector created without `--api-key-env` still needs a secret
+    /// stored through `sfumato connector login` before it can generate.
+    pub const fn requires_stored_login(self) -> bool {
+        match self {
+            Self::Openrouter | Self::Anthropic => true,
+            Self::Ollama | Self::Lmstudio | Self::Codex => false,
+        }
+    }
+
     /// Whether this preset accepts an environment-variable credential reference.
     pub const fn accepts_api_key_env(self) -> bool {
         match self {
