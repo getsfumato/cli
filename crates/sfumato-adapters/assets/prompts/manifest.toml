@@ -392,7 +392,7 @@ required = ["learning_style"]
 [[prompts]]
 id = "video.plan.user"
 path = "video/plan.user.md.j2"
-required = ["project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "engine", "duration_seconds", "resolution", "aspect_ratio", "title", "title_provided", "reusable_assets", "image_generation_available"]
+required = ["project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "engine", "duration_seconds", "resolution", "aspect_ratio", "title", "title_provided", "reusable_assets", "image_generation_available", "workflow", "urls", "catalog"]
 
 [[prompts]]
 id = "video.review.system"
@@ -402,7 +402,7 @@ required = []
 [[prompts]]
 id = "video.review.user"
 path = "video/review.user.md.j2"
-required = ["instruction", "source_bundle", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "plan_snapshot"]
+required = ["instruction", "source_bundle", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "plan_snapshot", "engine", "catalog"]
 
 [[prompts]]
 id = "video.hyperframe.system"
@@ -432,7 +432,7 @@ required = []
 [[prompts]]
 id = "video.source-repair.user"
 path = "video/source-repair.user.md.j2"
-required = ["engine", "source_snapshot", "validation_error"]
+required = ["engine", "source_snapshot", "validation_error", "catalog"]
 
 [[prompts]]
 id = "video.tool-exhausted.user"

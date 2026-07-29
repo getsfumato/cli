@@ -88,6 +88,15 @@ pub struct VideoSceneProduction {
     #[serde(default, deserialize_with = "deserialize_text_list_or_structured")]
     /// Named seek-safe motion rules selected for this beat.
     pub motion_rules: Vec<String>,
+    /// Managed catalog item IDs wired into this beat.
+    ///
+    /// Kept separate from `artifacts`, which references project assets: these
+    /// are renderer registry items with authored durations, so conflating the
+    /// two makes both unvalidatable. Deliberately not tolerant of arbitrary
+    /// shapes — an ID that is not a plain string is a planning error worth
+    /// surfacing rather than flattening into JSON text.
+    #[serde(default)]
+    pub catalog_items: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_text_or_structured")]
     /// Deliberate beat entrance.
     pub entrance: String,

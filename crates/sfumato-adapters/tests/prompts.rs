@@ -238,6 +238,32 @@ fn every_slide_markdown_prompt_requires_marp_dollar_math_delimiters() {
 }
 
 #[test]
+fn every_prompt_that_can_touch_a_catalog_selection_sees_the_catalog() {
+    // The planner, the reviewer's patch and the repair patch can each decide a
+    // selection, so all three need the installed item list. A stage that judges
+    // selections blind either invents an ID or has its whole patch rejected.
+    let catalog = LayeredPromptCatalog::new(None, None);
+
+    for id in [
+        PromptId::VideoPlanUser,
+        PromptId::VideoReviewUser,
+        PromptId::VideoSourceRepairUser,
+    ] {
+        let rendered = catalog
+            .render(PromptRenderRequest {
+                id,
+                variables: representative_variables(),
+            })
+            .unwrap_or_else(|error| panic!("could not render {id}: {error}"));
+
+        assert!(
+            rendered.text.contains("managed catalog v1: data-chart"),
+            "{id} never shows the installed catalog"
+        );
+    }
+}
+
+#[test]
 fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
     let catalog = LayeredPromptCatalog::new(None, None);
     let mut aggregate = String::new();
@@ -256,7 +282,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "701863b37e7bc7013255e734fee546dc0a9b207286a061c8827ea41a4aea5199"
+        "0030d250cf90e8dd716a469b0afea8c326340af8fc4c57347c27ebb5b03fe5a7"
     );
 }
 

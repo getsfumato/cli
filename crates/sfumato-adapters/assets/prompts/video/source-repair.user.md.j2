@@ -6,5 +6,8 @@ Source snapshot:
 {{ source_snapshot }}
 
 {% if engine == "hyperframe" %}
+Managed Hyperframe catalog: {{ catalog }}
+Sfumato stages every managed catalog item into the project before validation: blocks at `compositions/<id>.html` and components at `compositions/components/<id>.html`. Those files already exist on disk and are deliberately absent from the snapshot above, so never re-author, rename, or inline them, and never reference a path for an ID missing from the list. You cannot add files, so express every fix inside the files shown above.
+
 Hyperframes repair contract: use a root `<div id="root" data-composition-id="root" data-start="0" data-width="{{ width }}" data-height="{{ height }}">`; load `./vendor/gsap.min.js`; create `gsap.timeline({ paused: true })`; extend it with `tl.set({}, {}, {{ duration_seconds }})`; and assign it to `window.__timelines["root"]`. Do not put composition metadata on `<html>` or use a remote GSAP URL.
 {% endif %}

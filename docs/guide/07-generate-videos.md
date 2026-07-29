@@ -94,6 +94,20 @@ The managed renderer installs a pinned local catalog of approved Hyperframe bloc
 and effects. Generation never downloads catalog items; `sfumato renderer doctor
 hyperframe` reports a missing or incompatible catalog.
 
+The planner, the semantic reviewer, the source author, and the source-repair pass
+all see that installed catalog, so every stage that can decide a selection judges
+it against the same list. Registry items ship as standalone documents that load
+GSAP from a CDN and fonts from Google; Sfumato rewrites each one as it stages it
+into the render workspace, pointing it at the pinned local GSAP and dropping remote
+font requests, and fails the render if any remote reference survives. Affected
+items fall back to the theme's fonts.
+
+Registry items that load their own content at render time are not curated. The two
+caption styles are the current example: they read words with per-word timings from
+a sidecar file, which only a narration track can supply, and this engine is silent.
+They return to the catalog once the engine renders audio; until then, selecting an
+item like that fails at staging with that reason rather than mid-render.
+
 For a human checkpoint before rendering, pass `--visual-review`. Sfumato stores the
 source bundle, snapshots, and `contact-sheet.md` under its managed review session,
 then reports the `review_id`. Preview and approval commands operate on that exact

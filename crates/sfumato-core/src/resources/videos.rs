@@ -34,7 +34,9 @@ use crate::{
         GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
         TextGenerationRequest, ToolDefinition, VideoGenerationRequest,
     },
-    renderers::{VideoInspection, VideoRenderRequest, VideoRenderer},
+    renderers::{
+        VideoCatalog, VideoCatalogViolation, VideoInspection, VideoRenderRequest, VideoRenderer,
+    },
     repositories::ThemeRepository,
     sources::{SourceDocument, SourceReader},
     themes::ThemePackage,
@@ -173,6 +175,7 @@ struct VideoContextInput<'a> {
     reusable_assets: Vec<ProjectAssetReference>,
     image_generation_available: bool,
     max_tool_rounds: usize,
+    catalog: Option<&'a VideoCatalog>,
 }
 
 #[derive(Deserialize)]
@@ -404,8 +407,46 @@ fn review_publish_root(
     }
 }
 
-fn hyperframe_catalog_summary() -> String {
-    "managed catalog v1: data-chart, code-snippet-dark-modern, x-post, lower-third-clean-bar, us-map, caption-highlight, transitions-cover, grain-overlay, vignette, shimmer-sweep".into()
+/// Describes the managed catalog for the planner, or says it is unavailable.
+///
+/// Generated from the renderer's own manifest rather than restated here: a
+/// hand-written list drifts from what is installed, and the planner is told to
+/// select only catalog IDs, so a stale name becomes a broken composition.
+fn catalog_summary(catalog: Option<&VideoCatalog>) -> String {
+    match catalog {
+        Some(catalog) => catalog.summary(),
+        None => {
+            "no managed catalog is available for this engine; author every element directly".into()
+        }
+    }
+}
+
+/// Reports every way a drafted plan disagrees with the managed catalog.
+fn catalog_violations(
+    plan: &VideoPlanDocument,
+    catalog: Option<&VideoCatalog>,
+) -> Vec<VideoCatalogViolation> {
+    let Some(catalog) = catalog else {
+        return Vec::new();
+    };
+    plan.scenes()
+        .iter()
+        .flat_map(|scene| {
+            catalog.validate_selection(
+                &scene.id,
+                scene.duration_seconds,
+                &scene.production.catalog_items,
+            )
+        })
+        .collect()
+}
+
+/// The warning one catalog violation contributes, in a single stable spelling.
+///
+/// Shared by the draft and post-review checks so a violation the draft already
+/// reported is recognisable and never repeated after a reviewer patch.
+fn catalog_warning(violation: &VideoCatalogViolation) -> String {
+    format!("Video plan catalog: {violation}")
 }
 
 fn hash_text(value: &str) -> String {
@@ -552,6 +593,9 @@ pub(crate) async fn generate_video(
             Some(selected)
         }
     };
+    // Read once and reuse: the planner is shown these items and the drafted
+    // plan is checked against the same list, so both must see one snapshot.
+    let managed_catalog = video_renderer.catalog(video.engine)?;
     let mut context = video_context(VideoContextInput {
         config: &config,
         theme: &theme,
@@ -565,6 +609,7 @@ pub(crate) async fn generate_video(
         reusable_assets: reusable_assets.clone(),
         image_generation_available: image_selection.is_some(),
         max_tool_rounds: draft_profile.options.tool_rounds(),
+        catalog: managed_catalog.as_ref(),
     })?;
     let mut plan_request = render_request(
         prompt_catalog.as_ref(),
@@ -617,14 +662,16 @@ pub(crate) async fn generate_video(
         .await?;
     prompts.extend(tool_set.generated_prompts()?);
     let generated_assets = tool_set.generated_artifacts()?;
-    let mut plan = parse_plan(
+    let (mut plan, catalog_warnings) = parse_plan(
         &response.text,
         video.engine,
         video.duration_seconds,
         video.title.as_deref(),
         video.workflow,
+        managed_catalog.as_ref(),
     )?;
     let mut warnings = prepared_assets.warnings.clone();
+    warnings.extend(catalog_warnings);
     if let Some((reviewer_name, reviewer_profile)) = reviewer {
         emit_stage(
             &event_sink,
@@ -654,8 +701,34 @@ pub(crate) async fn generate_video(
             .and_then(|patch| candidate.apply_patch(&patch).map_err(review_error))
         {
             Ok(_) => {
-                plan = candidate;
-                review_summary.semantic_review = ReviewStatus::Completed;
+                // The reviewer patches the plan freely, so re-check its
+                // selections: a patch can introduce an ID the catalog lacks.
+                // Only an unusable selection costs the patch, and by the same
+                // rule the draft was held to: rejecting a tolerated truncated
+                // reveal here would throw away every unrelated correction the
+                // patch carried, and would do it on every plan that already
+                // shipped that violation.
+                let violations = catalog_violations(&candidate, managed_catalog.as_ref());
+                let unusable = violations
+                    .iter()
+                    .filter(|violation| violation.is_unusable())
+                    .map(VideoCatalogViolation::to_string)
+                    .collect::<Vec<_>>();
+                if unusable.is_empty() {
+                    for warning in violations.iter().map(catalog_warning) {
+                        if !warnings.contains(&warning) {
+                            warnings.push(warning);
+                        }
+                    }
+                    plan = candidate;
+                    review_summary.semantic_review = ReviewStatus::Completed;
+                } else {
+                    review_summary.semantic_review = ReviewStatus::Failed;
+                    warnings.push(format!(
+                        "Video semantic review introduced unusable catalog selections; using validated plan: {}",
+                        unusable.join("; ")
+                    ));
+                }
             }
             Err(error) => {
                 review_summary.semantic_review = ReviewStatus::Failed;
@@ -946,6 +1019,7 @@ fn video_context(input: VideoContextInput<'_>) -> Result<VideoPromptContext> {
         reusable_assets,
         image_generation_available,
         max_tool_rounds,
+        catalog,
     } = input;
     let (width, height) = resolution_dimensions(&video.resolution, &video.aspect_ratio)?;
     Ok(VideoPromptContext {
@@ -972,7 +1046,7 @@ fn video_context(input: VideoContextInput<'_>) -> Result<VideoPromptContext> {
         max_tool_rounds,
         workflow: video.workflow.as_str().into(),
         urls: video.urls.clone(),
-        catalog: hyperframe_catalog_summary(),
+        catalog: catalog_summary(catalog),
         ..Default::default()
     })
 }
@@ -1005,14 +1079,21 @@ fn render_request(
     Ok(request)
 }
 
+/// Parses one planning response, returning the plan and catalog warnings.
+///
+/// Catalog policy is applied here, before the revision-guarded document exists,
+/// because a selection that cannot render has to be removed rather than patched
+/// out later: the source generator would reference a composition file that was
+/// never installed.
 fn parse_plan(
     response: &str,
     engine: VideoEngine,
     duration: u32,
     title: Option<&str>,
     requested_workflow: VideoWorkflow,
-) -> Result<VideoPlanDocument> {
-    let draft: VideoPlanDraft =
+    catalog: Option<&VideoCatalog>,
+) -> Result<(VideoPlanDocument, Vec<String>)> {
+    let mut draft: VideoPlanDraft =
         serde_json::from_str(strip_json_fence(response)).map_err(|error| {
             SfumatoError::provider(
                 ErrorClass::InvalidOutput,
@@ -1034,7 +1115,8 @@ fn parse_plan(
     } else {
         draft.narrative_arc
     };
-    VideoPlanDocument::new_with_pipeline(
+    let warnings = apply_catalog_policy(&mut draft.scenes, catalog);
+    let plan = VideoPlanDocument::new_with_pipeline(
         engine,
         title.unwrap_or(&draft.title),
         draft.objective,
@@ -1052,7 +1134,45 @@ fn parse_plan(
         narrative_arc,
         design_direction,
     )
-    .map_err(review_error)
+    .map_err(review_error)?;
+    Ok((plan, warnings))
+}
+
+/// Drops catalog selections that cannot render and reports every violation.
+///
+/// Unknown IDs and whole-film treatments are removed because keeping them
+/// guarantees a broken composition; a scene shorter than its block keeps the
+/// selection and warns, since a truncated reveal still teaches something.
+fn apply_catalog_policy(scenes: &mut [VideoScene], catalog: Option<&VideoCatalog>) -> Vec<String> {
+    let Some(catalog) = catalog else {
+        return Vec::new();
+    };
+    let mut warnings = Vec::new();
+    for scene in scenes.iter_mut() {
+        let violations = catalog.validate_selection(
+            &scene.id,
+            scene.duration_seconds,
+            &scene.production.catalog_items,
+        );
+        let mut unusable = BTreeSet::new();
+        for violation in &violations {
+            warnings.push(catalog_warning(violation));
+            if violation.is_unusable() {
+                match violation {
+                    VideoCatalogViolation::UnknownItem { id, .. }
+                    | VideoCatalogViolation::GradePerScene { id, .. } => {
+                        unusable.insert(id.clone());
+                    }
+                    VideoCatalogViolation::SceneTooShort { .. } => {}
+                }
+            }
+        }
+        scene
+            .production
+            .catalog_items
+            .retain(|id| !unusable.contains(id));
+    }
+    warnings
 }
 
 fn parse_source(response: &str, engine: VideoEngine) -> Result<VideoSourceDocument> {
