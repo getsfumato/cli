@@ -586,3 +586,84 @@ fn parses_project_artifacts_and_design_md_exchange() {
     assert_eq!(args.path, PathBuf::from("DESIGN.md"));
     assert_eq!(args.name.as_deref(), Some("gruvbox"));
 }
+
+#[test]
+fn parses_document_page_setup_flags() {
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "doc",
+        "notes.md",
+        "--instruction",
+        "Study notes on message queues",
+        "--page-size",
+        "letter",
+        "--no-toc",
+        "--cover",
+        "--out",
+        "handouts",
+    ])
+    .unwrap();
+
+    let Some(Commands::Generate {
+        command: GenerateCommands::Document(args),
+    }) = cli.command
+    else {
+        panic!("expected generate document command");
+    };
+    assert_eq!(args.inputs, vec![PathBuf::from("notes.md")]);
+    assert!(matches!(args.page_size, Some(DocumentPageSizeArg::Letter)));
+    assert!(args.no_toc);
+    assert!(!args.toc);
+    assert!(args.cover);
+    assert!(!args.no_cover);
+    assert_eq!(args.out, Some(PathBuf::from("handouts")));
+}
+
+#[test]
+fn omitting_document_page_setup_flags_defers_to_the_theme() {
+    // An omitted flag is not the same as its negative form: the theme decides,
+    // so the parsed args must be able to express "unspecified".
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "document",
+        "--instruction",
+        "Study notes",
+    ])
+    .unwrap();
+
+    let Some(Commands::Generate {
+        command: GenerateCommands::Document(args),
+    }) = cli.command
+    else {
+        panic!("expected generate document command");
+    };
+    assert!(args.page_size.is_none());
+    assert!(!args.toc && !args.no_toc);
+    assert!(!args.cover && !args.no_cover);
+}
+
+#[test]
+fn the_last_document_page_setup_flag_wins() {
+    // `--toc --no-toc` has to resolve to one answer rather than set both.
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "docs",
+        "--instruction",
+        "Study notes",
+        "--toc",
+        "--no-toc",
+    ])
+    .unwrap();
+
+    let Some(Commands::Generate {
+        command: GenerateCommands::Document(args),
+    }) = cli.command
+    else {
+        panic!("expected generate document command");
+    };
+    assert!(args.no_toc);
+    assert!(!args.toc);
+}

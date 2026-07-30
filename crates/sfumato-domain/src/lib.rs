@@ -7,6 +7,8 @@
 
 mod artifact;
 mod deck;
+mod document;
+mod markdown;
 mod page;
 mod primitives;
 mod review;
@@ -18,6 +20,9 @@ pub use artifact::{
 };
 pub use deck::{
     DECK_SCHEMA_VERSION, DeckDocument, SlideDocument, SlideElement, SlideId, SlideKind,
+};
+pub use document::{
+    DOCUMENT_SCHEMA_VERSION, SectionDocument, SectionElement, SectionId, SectionedDocument,
 };
 pub use page::{PAGE_SCHEMA_VERSION, PageDocument};
 pub use primitives::{

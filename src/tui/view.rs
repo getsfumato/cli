@@ -851,6 +851,13 @@ pub(super) fn stage_label(stage: GenerationStage) -> &'static str {
         GenerationStage::VideoAuthoring => "Video authoring",
         GenerationStage::VideoRepair => "Video repair",
         GenerationStage::VideoRendering => "Video rendering",
+        GenerationStage::DocumentDraft => "Document draft",
+        GenerationStage::DocumentValidationRepair => "Document structure repair",
+        GenerationStage::DocumentDiagramRepair => "Document diagram repair",
+        GenerationStage::DocumentReview => "Document review",
+        GenerationStage::DocumentFormatCheck => "Page format check",
+        GenerationStage::DocumentFormatRepair => "Page format repair",
+        GenerationStage::DocumentRendering => "Document rendering",
     }
 }
 

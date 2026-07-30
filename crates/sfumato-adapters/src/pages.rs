@@ -24,12 +24,12 @@ use crate::{renderers::resolved_browser_path, runtime::run_command};
 
 const CONTENT_SLOT: &str = "<!-- SFUMATO_CONTENT -->";
 const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
-const MATHJAX_RUNTIME: &str = include_str!("../assets/page-runtimes/mathjax/runtime.js");
+pub(crate) const MATHJAX_RUNTIME: &str = include_str!("../assets/page-runtimes/mathjax/runtime.js");
 const MATHJAX_LICENSE: &str = include_str!("../assets/page-runtimes/mathjax/LICENSE");
 const MATHJAX_VERSION: &str = "3.2.2";
 const MATHJAX_RUNTIME_HASH: &str =
     "a4354ff94fd868aea0cc6eaaa79a57fda0588646fc46ee3700a349ee0a11cbe6";
-const MATHJAX_CONFIG: &str = r#"<script data-sfumato-math-config>
+pub(crate) const MATHJAX_CONFIG: &str = r#"<script data-sfumato-math-config>
 window.MathJax = {
   tex: {
     inlineMath: [['\\(', '\\)']],
@@ -41,7 +41,7 @@ window.MathJax = {
 };
 </script>
 "#;
-const MATHJAX_CSS: &str = r#"mjx-container[jax="SVG"] {
+pub(crate) const MATHJAX_CSS: &str = r#"mjx-container[jax="SVG"] {
   color: inherit;
   max-width: 100%;
   overflow-x: auto;
@@ -200,7 +200,7 @@ fn contains_tex_math(fragment: &str) -> bool {
     fragment.contains("\\(") || fragment.contains("\\[") || fragment.contains("$$")
 }
 
-fn mathjax_runtime() -> Result<PageRuntimeSelection> {
+pub(crate) fn mathjax_runtime() -> Result<PageRuntimeSelection> {
     if MATHJAX_LICENSE.trim().is_empty() {
         bail!("Bundled MathJax license is missing");
     }
@@ -431,18 +431,18 @@ fn replace_title(mut shell: String, title: &str) -> String {
     )
 }
 
-fn escape_text(value: &str) -> String {
+pub(crate) fn escape_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
 
-fn escape_attribute(value: &str) -> String {
+pub(crate) fn escape_attribute(value: &str) -> String {
     escape_text(value).replace('"', "&quot;")
 }
 
-fn escape_script(value: &str) -> String {
+pub(crate) fn escape_script(value: &str) -> String {
     value
         .replace("</script", "<\\/script")
         .replace("</SCRIPT", "<\\/SCRIPT")

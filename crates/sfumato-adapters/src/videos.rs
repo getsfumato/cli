@@ -13,8 +13,8 @@ use sfumato_core::{
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::OperationContext,
     renderers::{
-        RendererManager, RendererStatus, VideoEngine, VideoInspection, VideoRenderRequest,
-        VideoRenderer,
+        RendererManager, RendererStatus, VideoCatalog, VideoCatalogItem, VideoCatalogKind,
+        VideoEngine, VideoInspection, VideoRenderRequest, VideoRenderer,
     },
 };
 use tokio::process::Command;
@@ -33,7 +33,7 @@ struct ManagedRendererManifest {
     renderers: BTreeMap<String, ManagedRendererPackage>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct ManagedRendererPackage {
     package: String,
     version: String,
@@ -107,7 +107,7 @@ fn renderer_package(id: &str) -> Result<ManagedRendererPackage> {
         .renderers
         .get(id)
         .cloned()
-        .with_context(|| format!("Unknown renderer '{id}'. Use hyperframe or manim."))
+        .with_context(|| format!("Unknown renderer '{id}'. Use hyperframe, manim, or pagedjs."))
 }
 
 fn collect_pngs(root: &Path) -> std::collections::BTreeSet<PathBuf> {
@@ -122,6 +122,154 @@ fn collect_pngs(root: &Path) -> std::collections::BTreeSet<PathBuf> {
                 .is_some_and(|value| value.eq_ignore_ascii_case("png"))
         })
         .collect()
+}
+
+/// The pinned runtime every staged catalog item is rewritten to load.
+const VENDORED_GSAP: &str = "vendor/gsap.min.js";
+const CDN_GSAP_PREFIX: &str = "https://cdn.jsdelivr.net/npm/gsap@";
+const REMOTE_FONT_HOSTS: &[&str] = &["fonts.googleapis.com", "fonts.gstatic.com"];
+/// Namespace declarations are identifiers, not resources a render fetches.
+const XML_NAMESPACES: &[&str] = &[
+    "http://www.w3.org/2000/svg",
+    "http://www.w3.org/1999/xlink",
+    "http://www.w3.org/1999/xhtml",
+];
+
+/// Where a remote reference ends, given HTML attribute and CSS url() syntax.
+fn reference_end(tail: &str) -> usize {
+    tail.find(|value: char| value.is_whitespace() || matches!(value, '"' | '\'' | '>' | ')'))
+        .unwrap_or(tail.len())
+}
+
+/// Points every CDN GSAP reference at the pinned managed runtime instead.
+///
+/// The registry pins its own GSAP release, so leaving the CDN URL in place would
+/// both require the network and run a second GSAP beside the one Sfumato pins.
+fn rewrite_cdn_gsap(content: &str) -> String {
+    let mut output = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find(CDN_GSAP_PREFIX) {
+        output.push_str(&rest[..start]);
+        output.push_str(VENDORED_GSAP);
+        let tail = &rest[start..];
+        rest = &tail[reference_end(tail)..];
+    }
+    output.push_str(rest);
+    output
+}
+
+/// Drops every `<link>` element that reaches a remote font host.
+///
+/// The item falls back to the theme's own fonts, which is a visual compromise;
+/// a render that silently depends on the network is a correctness one.
+fn strip_remote_font_links(content: &str) -> String {
+    let mut output = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("<link") {
+        let tail = &rest[start..];
+        let Some(offset) = tail.find('>') else { break };
+        let element = &tail[..=offset];
+        if REMOTE_FONT_HOSTS.iter().any(|host| element.contains(host)) {
+            output.push_str(&rest[..start]);
+        } else {
+            output.push_str(&rest[..start + offset + 1]);
+        }
+        rest = &tail[offset + 1..];
+    }
+    output.push_str(rest);
+    output
+}
+
+/// Drops every CSS `@import` statement that reaches a remote font host.
+///
+/// Items declare their fonts either as a `<link>` or as an `@import` inside
+/// `<style>`, so stripping only the markup form leaves half the catalog online.
+fn strip_remote_font_imports(content: &str) -> String {
+    let mut output = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("@import") {
+        let tail = &rest[start..];
+        let offset = tail.find(';').unwrap_or(tail.len() - 1);
+        let statement = &tail[..=offset];
+        if REMOTE_FONT_HOSTS.iter().any(|host| statement.contains(host)) {
+            output.push_str(&rest[..start]);
+        } else {
+            output.push_str(&rest[..start + offset + 1]);
+        }
+        rest = &tail[offset + 1..];
+    }
+    output.push_str(rest);
+    output
+}
+
+/// Reports the first reference a deterministic offline render could not fetch.
+fn first_remote_reference(content: &str) -> Option<&str> {
+    let mut rest = content;
+    while let Some(start) = rest.find("http") {
+        let tail = &rest[start..];
+        if !(tail.starts_with("http://") || tail.starts_with("https://")) {
+            rest = &tail["http".len()..];
+            continue;
+        }
+        let end = reference_end(tail);
+        let reference = &tail[..end];
+        if !XML_NAMESPACES.contains(&reference) {
+            return Some(reference);
+        }
+        rest = &tail[end..];
+    }
+    None
+}
+
+/// Makes one installed catalog item safe for a deterministic offline render.
+///
+/// The registry ships items as standalone documents that pull GSAP from a CDN
+/// and fonts from Google. Core validation holds the model's own files to an
+/// offline contract but never sees these, because they are staged after the
+/// model has answered, so the rewrite and the guarantee both belong here. A
+/// reference that survives is fatal rather than a warning: silently rendering
+/// against the network is exactly the outcome the contract exists to prevent.
+fn offline_catalog_item(id: &str, content: &str) -> Result<String> {
+    let sanitized = rewrite_cdn_gsap(&strip_remote_font_imports(&strip_remote_font_links(
+        content,
+    )));
+    if let Some(reference) = first_remote_reference(&sanitized) {
+        bail!(
+            "Managed catalog item '{id}' references '{reference}', which a deterministic offline render cannot fetch. Vendor that dependency or drop the item from the curated catalog."
+        );
+    }
+    // A URL can be rewritten; a runtime request cannot. The caption styles were
+    // dropped from the curated catalog for exactly this: they load their words
+    // from a sidecar file with per-word timings, which only a narration track can
+    // supply and this engine is silent. Re-adding one has to fail here rather
+    // than at render time, where it reads as an unexplained renderer failure.
+    for request in ["fetch(", "XMLHttpRequest", "WebSocket("] {
+        if sanitized.contains(request) {
+            bail!(
+                "Managed catalog item '{id}' performs a runtime '{request}' request, which a deterministic offline render cannot serve. Supply its data as inline content or drop the item from the curated catalog."
+            );
+        }
+    }
+    Ok(sanitized)
+}
+
+/// Makes one component mountable through `data-composition-src`.
+///
+/// The runtime renders a referenced file only when it holds `<template>` or
+/// `<body>` content with an element carrying composition metadata. Part of the
+/// registry's components are standalone documents that already qualify; the rest
+/// are bare snippets meant to be pasted in by hand, which the author cannot do
+/// because it is given item IDs and never their contents. Wrapping only what
+/// needs it leaves one mounting rule covering the whole catalog, without
+/// re-wrapping a document that already has its own root.
+fn mountable_component(id: &str, content: &str, width: u32, height: u32) -> String {
+    let lowercase = content.to_ascii_lowercase();
+    if lowercase.contains("<template") || lowercase.contains("<body") {
+        return content.to_string();
+    }
+    format!(
+        "<template>\n<div id=\"{id}\" data-composition-id=\"{id}\" data-width=\"{width}\" data-height=\"{height}\" data-start=\"0\">\n{content}\n</div>\n</template>\n"
+    )
 }
 
 /// Filesystem/process implementation for optional local video renderers.
@@ -158,6 +306,113 @@ impl ManagedVideoRenderers {
         self.root.join("hyperframe/catalog/manifest.json")
     }
 
+    /// Project-shaped directory holding the installed catalog items.
+    ///
+    /// Lives under Sfumato's managed root, never inside a repository: the items
+    /// are installed once per machine and copied into each render workspace.
+    fn hyperframe_catalog_root(&self) -> PathBuf {
+        self.root.join("hyperframe/catalog")
+    }
+
+    /// Where `hyperframes add` writes one item, mirroring the CLI's own layout.
+    fn hyperframe_catalog_item(&self, item: &VideoCatalogItem) -> PathBuf {
+        let root = self.hyperframe_catalog_root();
+        match item.kind {
+            VideoCatalogKind::Block => root.join(format!("compositions/{}.html", item.id)),
+            VideoCatalogKind::Component => {
+                root.join(format!("compositions/components/{}.html", item.id))
+            }
+        }
+    }
+
+    fn parse_catalog() -> Result<VideoCatalog> {
+        VideoCatalog::parse(HYPERFRAME_CATALOG)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+            .context("Bundled Hyperframe catalog manifest is invalid")
+    }
+
+    /// Installs every curated catalog item into the managed catalog root.
+    async fn install_hyperframe_catalog(&self, operation: &OperationContext) -> Result<()> {
+        let catalog = Self::parse_catalog()?;
+        let root = self.hyperframe_catalog_root();
+        fs::create_dir_all(&root)?;
+        let executable = self.hyperframe_executable();
+        for item in catalog.items() {
+            operation.checkpoint(OperationStage::Resolve)?;
+            let mut command = Command::new(&executable);
+            command
+                .args(["add", &item.id, "--no-clipboard", "--json", "--dir"])
+                .arg(&root)
+                .env("HYPERFRAMES_NO_UPDATE_CHECK", "1")
+                .env("HYPERFRAMES_NO_TELEMETRY", "1");
+            checked(
+                &mut command,
+                operation,
+                OperationStage::Resolve,
+                &format!("Hyperframe catalog install for '{}'", item.id),
+            )
+            .await?;
+            let installed = self.hyperframe_catalog_item(item);
+            if !installed.is_file() {
+                bail!(
+                    "Hyperframe reported installing '{}' but {} is missing",
+                    item.id,
+                    installed.display()
+                );
+            }
+        }
+        fs::write(self.hyperframe_catalog(), HYPERFRAME_CATALOG)?;
+        Ok(())
+    }
+
+    /// Stages the installed catalog items into one render workspace, offline.
+    ///
+    /// Mirrors how the managed GSAP runtime is vendored: the generated source
+    /// references `compositions/<id>.html`, so the files have to sit beside it.
+    /// Each item is rewritten on the way in rather than copied: the registry
+    /// ships them with CDN and font URLs the render must not fetch, and ships
+    /// components in a shape `data-composition-src` cannot mount.
+    fn stage_hyperframe_catalog(&self, request: &VideoRenderRequest) -> Result<()> {
+        let catalog = Self::parse_catalog()?;
+        let source_root = &request.source_root;
+        for item in catalog.items() {
+            let installed = self.hyperframe_catalog_item(item);
+            if !installed.is_file() {
+                bail!(
+                    "Managed catalog item '{}' is not installed. Run `sfumato renderer install hyperframe` again.",
+                    item.id
+                );
+            }
+            let staged = match item.kind {
+                VideoCatalogKind::Block => {
+                    source_root.join(format!("compositions/{}.html", item.id))
+                }
+                VideoCatalogKind::Component => {
+                    source_root.join(format!("compositions/components/{}.html", item.id))
+                }
+            };
+            let parent = staged.parent().expect("staged catalog item has a parent");
+            fs::create_dir_all(parent)?;
+            let content = fs::read_to_string(&installed).with_context(|| {
+                format!("Could not read managed catalog item '{}'", item.id)
+            })?;
+            let offline = offline_catalog_item(&item.id, &content)?;
+            let mountable = match item.kind {
+                VideoCatalogKind::Block => offline,
+                VideoCatalogKind::Component => {
+                    mountable_component(&item.id, &offline, request.width, request.height)
+                }
+            };
+            fs::write(&staged, mountable)?;
+        }
+        Ok(())
+    }
+
+    /// Managed Paged.js CLI used to render documents.
+    fn pagedjs_executable(&self) -> PathBuf {
+        self.root.join("pagedjs/node_modules/.bin/pagedjs-cli")
+    }
+
     fn manim_executable(&self) -> PathBuf {
         self.root.join("manim/.venv/bin/manim")
     }
@@ -174,7 +429,10 @@ impl ManagedVideoRenderers {
                 vec!["node", "ffmpeg", "ffprobe"],
             ),
             "manim" => (self.manim_executable(), vec!["ffmpeg", "ffprobe"]),
-            _ => bail!("Unknown renderer '{id}'. Use hyperframe or manim."),
+            // The document renderer drives a browser through Node; the browser
+            // itself is the one Sfumato already requires elsewhere.
+            "pagedjs" => (self.pagedjs_executable(), vec!["node"]),
+            _ => bail!("Unknown renderer '{id}'. Use hyperframe, manim, or pagedjs."),
         };
         let mut details = Vec::new();
         let installed = executable.is_file();
@@ -209,7 +467,24 @@ impl ManagedVideoRenderers {
         }
         if id == "hyperframe" && installed {
             match fs::read_to_string(self.hyperframe_catalog()) {
-                Ok(value) if value == HYPERFRAME_CATALOG => {}
+                Ok(value) if value == HYPERFRAME_CATALOG => {
+                    // The manifest matching is not enough on its own: the items
+                    // it names are separate downloads that a partial install or
+                    // a manual cleanup can remove.
+                    let missing = Self::parse_catalog()?
+                        .items()
+                        .iter()
+                        .filter(|item| !self.hyperframe_catalog_item(item).is_file())
+                        .map(|item| item.id.clone())
+                        .collect::<Vec<_>>();
+                    if !missing.is_empty() {
+                        healthy = false;
+                        details.push(format!(
+                            "managed catalog items not installed: {}; run `sfumato renderer install hyperframe` again",
+                            missing.join(", ")
+                        ));
+                    }
+                }
                 _ => {
                     healthy = false;
                     details.push(
@@ -263,6 +538,7 @@ impl RendererManager for ManagedVideoRenderers {
                 Ok(vec![
                     self.renderer_status("hyperframe", operation).await?,
                     self.renderer_status("manim", operation).await?,
+                    self.renderer_status("pagedjs", operation).await?,
                 ])
             }
             .await,
@@ -298,10 +574,7 @@ impl RendererManager for ManagedVideoRenderers {
                             "Hyperframe installation",
                         )
                         .await?;
-                        let catalog = self.hyperframe_catalog();
-                        let parent = catalog.parent().expect("catalog has parent");
-                        fs::create_dir_all(parent)?;
-                        fs::write(catalog, HYPERFRAME_CATALOG)?;
+                        self.install_hyperframe_catalog(operation).await?;
                     }
                     "manim" => {
                         let package = renderer_package(id)?;
@@ -331,7 +604,24 @@ impl RendererManager for ManagedVideoRenderers {
                         )
                         .await?;
                     }
-                    _ => bail!("Unknown renderer '{id}'. Use hyperframe or manim."),
+                    "pagedjs" => {
+                        let package = renderer_package(id)?;
+                        let prefix = self.root.join("pagedjs");
+                        fs::create_dir_all(&prefix)?;
+                        let mut command = Command::new("npm");
+                        command
+                            .args(["install", "--no-audit", "--no-fund", "--prefix"])
+                            .arg(&prefix)
+                            .arg(format!("{}@{}", package.package, package.version));
+                        checked(
+                            &mut command,
+                            operation,
+                            OperationStage::Resolve,
+                            "Paged.js CLI installation",
+                        )
+                        .await?;
+                    }
+                    _ => bail!("Unknown renderer '{id}'. Use hyperframe, manim, or pagedjs."),
                 }
                 self.renderer_status(id, operation).await
             }
@@ -346,6 +636,7 @@ impl RendererManager for ManagedVideoRenderers {
         let path = match id {
             "hyperframe" => self.root.join("hyperframe"),
             "manim" => self.root.join("manim"),
+            "pagedjs" => self.root.join("pagedjs"),
             _ => return Err(SfumatoError::validation(format!("Unknown renderer '{id}'"))),
         };
         if path.exists() {
@@ -441,6 +732,17 @@ impl VideoRenderer for ManagedVideoRenderers {
             OperationStage::InspectLayout,
         )
     }
+
+    fn catalog(&self, engine: VideoEngine) -> SfumatoResult<Option<VideoCatalog>> {
+        match engine {
+            // Only Hyperframe has a registry to install from; Manim composes
+            // scenes in Python and a direct model receives a prompt.
+            VideoEngine::Hyperframe => {
+                managed_result(Self::parse_catalog().map(Some), OperationStage::Resolve)
+            }
+            VideoEngine::Manim | VideoEngine::Model => Ok(None),
+        }
+    }
 }
 
 impl ManagedVideoRenderers {
@@ -462,6 +764,7 @@ impl ManagedVideoRenderers {
         let vendor = request.source_root.join("vendor");
         fs::create_dir_all(&vendor)?;
         fs::copy(gsap, vendor.join("gsap.min.js"))?;
+        self.stage_hyperframe_catalog(request)?;
         let mut command = Command::new(&executable);
         command
             .arg("check")

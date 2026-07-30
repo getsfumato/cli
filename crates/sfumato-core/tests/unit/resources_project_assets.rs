@@ -134,6 +134,7 @@ fn ferrari_theme() -> ThemePackage {
             adapters: ThemeAdapters {
                 marp_css: "marp/theme.css".into(),
                 html: None,
+                document: None,
             },
         },
     }

@@ -1,0 +1,72 @@
+Write a Markdown prose document that Sfumato will paginate into a PDF.
+
+Project: {{ project }}
+Allowed filesystem root: {{ project_root }}
+Theme: {{ theme_name }}
+Theme colors: {{ theme_colors }}
+Theme fonts: {{ theme_fonts }}
+Page: {{ page_size }}
+Instruction: {{ instruction }}
+
+{% include "shared/project-instructions.md.j2" %}
+
+Structure requirements:
+{% if template_enabled %}
+- A reusable structural template named `{{ template_name }}` is active. Return only the Markdown content that replaces its single `<!-- SFUMATO_CONTENT -->` marker.
+- Do not repeat the template or its static content. Sfumato performs the merge after generation.
+
+Template source (read-only structure):
+
+```markdown
+{{ template_source }}
+```
+{% else %}
+- Return only Markdown. Never wrap the document in a `markdown` or `md` code fence.
+{% endif %}
+{% if title_provided %}
+- Use exactly "{{ title }}" as the single `# H1`, which must be the first line of content.
+{% else %}
+- Open with exactly one `# H1` that names the subject being taught. Do not copy or lightly rephrase the instruction as the title; Sfumato uses it as the artifact filename.
+{% endif %}
+- Use exactly one `# H1` in the whole document. Every other heading is `##` or deeper.
+- The first heading after the title must be `##`, and heading levels may never skip a rank: `##` may be followed by `###`, never directly by `####`.
+- Write a short orienting paragraph between the title and the first `##` section.
+- When the document benefits from a subtitle, open the file with a frontmatter block that declares only `subtitle`, then the title:
+
+```markdown
+---
+subtitle: One short line that sharpens the title
+---
+
+# Your chosen title
+```
+- Declare no other frontmatter key. Omit the block entirely when the title already says everything.
+
+Do not author page furniture. Sfumato generates the cover page{% if table_of_contents %}, the table of contents{% endif %}, the running header, and the page numbers from the document's own structure. Writing your own title page, contents list, "Table of contents" heading, or page references would duplicate them in the finished PDF.
+
+Content requirements:
+- Explain the source material for a student, in prose. Use examples from the provided files.
+- Prefer paragraphs; use lists only for genuinely enumerable things, and tables for real comparisons.
+- Use fenced code blocks with a language for code, and keep lines short enough to print without wrapping awkwardly.
+- Math uses dollar delimiters: `$inline$` and `$$display$$`. Never use `\(...\)` or `\[...\]`, which Markdown consumes before the renderer sees them.
+- You may use Mermaid diagrams in fenced ```mermaid blocks when a visual structure teaches better than prose.
+- Keep Mermaid diagrams simple: at most 6 nodes, short quoted labels, and no formulas inside labels.
+- Use `<br/>` inside Mermaid labels when a label needs two short lines.
+- Do not use raw HTML, inline SVG, or HTML wrapper tags.
+{% if image_generation_available %}
+- Assess whether a purpose-built illustration would teach better than prose or Mermaid, and call `sfumato_image_gen` when it would. Give it a precise subject, composition, labels, and learning purpose. Embed every returned `markdown_path` with plain Markdown image syntax, `![alt](images/file.png)`. Sfumato applies the project theme and sizes it to the text column.
+{% else %}
+- No image generation model is configured. Use Markdown and Mermaid for visuals.
+{% endif %}
+{% if reusable_assets %}
+- The project provides these theme-compatible visual assets. They are copied only when the final document references them. Use one only when it improves the document, and embed its exact path:
+{% for asset in reusable_assets %}
+  - **{{ asset.name }}** — {{ asset.description }}; path=`{{ asset.reference }}`; theme=`{{ asset.theme }}`; type=`{{ asset.media_type }}`; alt=`{{ asset.alt_text }}`; tags=`{{ asset.tags | join(", ") }}`
+{% endfor %}
+{% endif %}
+- You may call Sfumato filesystem tools to list allowed directories or read allowed text files when more context is needed.
+- When calling filesystem tools, prefer absolute paths under the allowed filesystem root.
+- Explore selectively. After reading the most relevant files, stop calling tools and produce the final document.
+
+Source material:
+{{ source_bundle }}

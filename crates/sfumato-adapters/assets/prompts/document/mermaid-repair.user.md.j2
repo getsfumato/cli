@@ -1,0 +1,19 @@
+Repair the invalid Mermaid diagram in this document.
+
+Project: {{ project }}
+Original instruction: {{ instruction }}
+Title: {{ title }}
+Diagram error: {{ diagram_error }}
+
+{% include "shared/project-instructions.md.j2" %}
+
+Repair contract:
+- Return only an RFC 6902 JSON Patch array. Do not use a Markdown code fence.
+- Start with a `test` operation for `/revision`, then test `/sections/<id>/revision` before replacing that section.
+- Replace only `/sections/<id>/markdown`, and change nothing but the Mermaid fence inside it.
+- Keep the diagram simple: at most 6 nodes, short quoted labels, no formulas inside labels.
+- Use `<br/>` inside a label that needs two short lines.
+- Replace the diagram with an equivalent Markdown list only when Mermaid genuinely cannot express it.
+
+Structured review snapshot:
+{{ document_snapshot }}

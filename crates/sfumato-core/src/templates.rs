@@ -22,6 +22,8 @@ pub enum TemplateKind {
     Slides,
     /// Standalone HTML pages.
     Page,
+    /// Paginated prose documents.
+    Document,
 }
 
 impl TemplateKind {
@@ -30,6 +32,7 @@ impl TemplateKind {
         match self {
             Self::Slides => "slides",
             Self::Page => "page",
+            Self::Document => "document",
         }
     }
 
@@ -38,6 +41,7 @@ impl TemplateKind {
         match self {
             Self::Slides => "template.md",
             Self::Page => "template.html",
+            Self::Document => "template.md",
         }
     }
 }
@@ -55,7 +59,8 @@ impl FromStr for TemplateKind {
         match value.to_ascii_lowercase().as_str() {
             "slides" => Ok(Self::Slides),
             "page" | "pages" => Ok(Self::Page),
-            _ => bail!("Unknown template kind '{value}'. Use slides or page."),
+            "document" | "documents" | "doc" | "docs" => Ok(Self::Document),
+            _ => bail!("Unknown template kind '{value}'. Use slides, page, or document."),
         }
     }
 }

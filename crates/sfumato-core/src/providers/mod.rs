@@ -216,6 +216,13 @@ pub enum GenerationStage {
     VideoAuthoring,
     VideoRepair,
     VideoRendering,
+    DocumentDraft,
+    DocumentValidationRepair,
+    DocumentDiagramRepair,
+    DocumentReview,
+    DocumentFormatCheck,
+    DocumentFormatRepair,
+    DocumentRendering,
 }
 
 impl GenerationStage {
@@ -238,6 +245,13 @@ impl GenerationStage {
             Self::VideoAuthoring => "authoring video source",
             Self::VideoRepair => "repairing video source",
             Self::VideoRendering => "rendering video",
+            Self::DocumentDraft => "drafting document",
+            Self::DocumentValidationRepair => "repairing document structure",
+            Self::DocumentDiagramRepair => "repairing document diagrams",
+            Self::DocumentReview => "reviewing document content",
+            Self::DocumentFormatCheck => "checking page format",
+            Self::DocumentFormatRepair => "repairing page format",
+            Self::DocumentRendering => "rendering document PDF",
         }
     }
 }

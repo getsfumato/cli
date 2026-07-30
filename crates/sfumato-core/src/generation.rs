@@ -20,6 +20,7 @@ pub enum ResourceKind {
     Slides,
     Page,
     Video,
+    Document,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, Serialize, PartialEq, Eq)]
@@ -114,6 +115,83 @@ pub struct GenerationOutput {
     pub review: SlideReviewSummary,
     /// Prompt templates that contributed to model requests in this run.
     pub prompts: Vec<PromptProvenance>,
+}
+
+/// Machine-readable result of one document generation.
+#[derive(Clone, Debug, Serialize)]
+pub struct DocumentGenerationOutput {
+    pub project: String,
+    pub project_instructions: Option<PathBuf>,
+    pub models: BTreeMap<String, String>,
+    pub tools: Vec<GenerationToolSummary>,
+    pub template: Option<String>,
+    pub project_assets: Vec<ProjectAssetReference>,
+    pub artifacts: Vec<PathBuf>,
+    pub published_artifacts: Vec<PathBuf>,
+    pub review: DocumentReviewSummary,
+    /// Page setup the document was rendered with.
+    pub page_setup: DocumentPageSetup,
+    /// Offline runtimes embedded into the printable HTML.
+    pub runtimes: Vec<PageRuntimeSelection>,
+    /// Prompt templates that contributed to model requests in this run.
+    pub prompts: Vec<PromptProvenance>,
+}
+
+/// Resolved page geometry and furniture for one document render.
+///
+/// Resolved once, before any model call, so the drafter, the renderer and the
+/// committed manifest all describe the same page.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub struct DocumentPageSetup {
+    /// Physical sheet the PDF is printed on.
+    pub page_size: DocumentPageSize,
+    /// Whether a generated table of contents precedes the body.
+    pub table_of_contents: bool,
+    /// Whether a generated cover page precedes everything.
+    pub cover: bool,
+}
+
+/// Physical sheet a document is printed on.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DocumentPageSize {
+    /// ISO A4, 210 by 297 millimetres.
+    #[default]
+    A4,
+    /// US Letter, 8.5 by 11 inches.
+    Letter,
+}
+
+impl DocumentPageSize {
+    /// Stable identifier used by CSS, themes, and the CLI.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::A4 => "a4",
+            Self::Letter => "letter",
+        }
+    }
+
+    /// The CSS `@page size` value for this sheet.
+    pub const fn css_size(self) -> &'static str {
+        match self {
+            Self::A4 => "210mm 297mm",
+            Self::Letter => "8.5in 11in",
+        }
+    }
+}
+
+impl std::str::FromStr for DocumentPageSize {
+    type Err = crate::errors::SfumatoError;
+
+    fn from_str(value: &str) -> crate::errors::SfumatoResult<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "a4" => Ok(Self::A4),
+            "letter" => Ok(Self::Letter),
+            _ => Err(crate::errors::SfumatoError::validation(format!(
+                "Unsupported page size '{value}'. Use a4 or letter."
+            ))),
+        }
+    }
 }
 
 /// Review and validation state for a generated video.
@@ -275,4 +353,74 @@ pub struct SlideLayoutIssue {
     pub title: String,
     pub vertical_overflow_px: u32,
     pub horizontal_overflow_px: u32,
+}
+
+/// Review and validation state for one generated document.
+#[derive(Clone, Debug, Serialize)]
+pub struct DocumentReviewSummary {
+    pub enabled: bool,
+    pub semantic_review: ReviewStatus,
+    pub context_compaction: ReviewStatus,
+    pub format_check: ReviewStatus,
+    pub repair: ReviewStatus,
+    pub remaining_issues: Vec<DocumentFormatIssue>,
+}
+
+impl DocumentReviewSummary {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            semantic_review: ReviewStatus::Skipped,
+            context_compaction: ReviewStatus::Skipped,
+            format_check: ReviewStatus::Skipped,
+            repair: ReviewStatus::Skipped,
+            remaining_issues: Vec::new(),
+        }
+    }
+
+    pub fn enabled() -> Self {
+        Self {
+            enabled: true,
+            semantic_review: ReviewStatus::Pending,
+            context_compaction: ReviewStatus::NotNeeded,
+            format_check: ReviewStatus::Pending,
+            repair: ReviewStatus::NotNeeded,
+            remaining_issues: Vec::new(),
+        }
+    }
+}
+
+/// What went wrong on one page of a paginated document.
+///
+/// A deck overflows because a slide is a fixed box; prose reflows instead, so
+/// these name the defects that survive pagination rather than a single overflow
+/// measurement.
+#[derive(Clone, Copy, Debug, Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentFormatIssueKind {
+    /// Content reaches past the page's text column, horizontally.
+    OverflowsTextColumn,
+    /// A single block is taller than one page can ever hold.
+    TallerThanPage,
+    /// A heading sits at the very bottom with its body on the next page.
+    OrphanedHeading,
+    /// A page carries almost nothing because a block could not be split.
+    NearlyEmptyPage,
+}
+
+/// One format defect measured on the paginated document.
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq)]
+pub struct DocumentFormatIssue {
+    /// One-based page number the defect appears on.
+    pub page: usize,
+    /// One-based reading position of the section that owns the defect.
+    pub section: usize,
+    /// Heading of that section, for reporting.
+    pub heading: String,
+    /// What is wrong.
+    pub kind: DocumentFormatIssueKind,
+    /// How far past its bounds the offending content reaches, in pixels.
+    pub overflow_px: u32,
+    /// The offending element, as a short CSS-like description.
+    pub element: String,
 }

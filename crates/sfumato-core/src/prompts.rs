@@ -121,6 +121,36 @@ pub enum PromptId {
     VideoSourceRepairUser,
     /// Final user message when video planning tools are exhausted.
     VideoToolExhaustedUser,
+    /// System prompt for a full document draft.
+    DocumentDraftSystem,
+    /// User prompt for a full document draft.
+    DocumentDraftUser,
+    /// System prompt for a compact document draft retry.
+    DocumentCompactDraftSystem,
+    /// User prompt for a compact document draft retry.
+    DocumentCompactDraftUser,
+    /// System prompt for repairing invalid document structure.
+    DocumentValidationRepairSystem,
+    /// User prompt for repairing invalid document structure.
+    DocumentValidationRepairUser,
+    /// System prompt for repairing invalid document Mermaid source.
+    DocumentMermaidRepairSystem,
+    /// User prompt for repairing invalid document Mermaid source.
+    DocumentMermaidRepairUser,
+    /// System prompt for semantic document review.
+    DocumentReviewSystem,
+    /// User prompt for semantic document review.
+    DocumentReviewUser,
+    /// System prompt for compacted semantic document review.
+    DocumentCompactReviewSystem,
+    /// User prompt for compacted semantic document review.
+    DocumentCompactReviewUser,
+    /// System prompt for focused page-format repair.
+    DocumentFormatRepairSystem,
+    /// User prompt for focused page-format repair.
+    DocumentFormatRepairUser,
+    /// Final user message when document tools are exhausted.
+    DocumentToolExhaustedUser,
 }
 
 impl PromptId {
@@ -179,6 +209,21 @@ impl PromptId {
             Self::VideoSourceRepairSystem,
             Self::VideoSourceRepairUser,
             Self::VideoToolExhaustedUser,
+            Self::DocumentDraftSystem,
+            Self::DocumentDraftUser,
+            Self::DocumentCompactDraftSystem,
+            Self::DocumentCompactDraftUser,
+            Self::DocumentValidationRepairSystem,
+            Self::DocumentValidationRepairUser,
+            Self::DocumentMermaidRepairSystem,
+            Self::DocumentMermaidRepairUser,
+            Self::DocumentReviewSystem,
+            Self::DocumentReviewUser,
+            Self::DocumentCompactReviewSystem,
+            Self::DocumentCompactReviewUser,
+            Self::DocumentFormatRepairSystem,
+            Self::DocumentFormatRepairUser,
+            Self::DocumentToolExhaustedUser,
         ]
     }
 
@@ -237,6 +282,21 @@ impl PromptId {
             Self::VideoSourceRepairSystem => "video.source-repair.system",
             Self::VideoSourceRepairUser => "video.source-repair.user",
             Self::VideoToolExhaustedUser => "video.tool-exhausted.user",
+            Self::DocumentDraftSystem => "document.draft.system",
+            Self::DocumentDraftUser => "document.draft.user",
+            Self::DocumentCompactDraftSystem => "document.compact-draft.system",
+            Self::DocumentCompactDraftUser => "document.compact-draft.user",
+            Self::DocumentValidationRepairSystem => "document.validation-repair.system",
+            Self::DocumentValidationRepairUser => "document.validation-repair.user",
+            Self::DocumentMermaidRepairSystem => "document.mermaid-repair.system",
+            Self::DocumentMermaidRepairUser => "document.mermaid-repair.user",
+            Self::DocumentReviewSystem => "document.review.system",
+            Self::DocumentReviewUser => "document.review.user",
+            Self::DocumentCompactReviewSystem => "document.compact-review.system",
+            Self::DocumentCompactReviewUser => "document.compact-review.user",
+            Self::DocumentFormatRepairSystem => "document.format-repair.system",
+            Self::DocumentFormatRepairUser => "document.format-repair.user",
+            Self::DocumentToolExhaustedUser => "document.tool-exhausted.user",
         }
     }
 }

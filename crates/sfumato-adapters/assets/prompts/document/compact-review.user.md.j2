@@ -1,0 +1,26 @@
+Review this generated document before it is published.
+
+Original instruction: {{ instruction }}
+Project: {{ project }}
+Theme: {{ theme_name }} ({{ theme_colors }}; {{ theme_fonts }})
+
+{% include "shared/project-instructions.md.j2" %}
+
+Review requirements:
+- Return only an RFC 6902 JSON Patch array, with no Markdown code fence.
+- Test `/revision` first, then `/sections/<id>/revision` before changing that section.
+- Replace only `/sections/<id>/markdown`, `/subtitle`, or `/preamble`; reorder only `/order`.
+- Never change `/title` or any derived field.
+- Never skip a heading rank.
+- Prefer paragraphs over bullet fragments; keep math as `$inline$` and `$$display$$`.
+- Do not add a cover, a contents list, or page references.
+- Return `[]` when no changes are needed.
+{% if retry_present %}
+{% include "shared/compact-review-retry.md.j2" %}
+{% endif %}
+
+Source material:
+{{ source_bundle }}
+
+Structured review snapshot:
+{{ document_snapshot }}

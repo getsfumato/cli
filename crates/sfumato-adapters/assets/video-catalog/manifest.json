@@ -1,16 +1,167 @@
 {
-  "schema_version": 1,
-  "catalog_version": "sfumato-hyperframe-1",
+  "schema_version": 2,
+  "catalog_version": "sfumato-hyperframe-2",
   "items": [
-    {"id":"data-chart","kind":"block","tags":["data","chart"]},
-    {"id":"code-snippet-dark-modern","kind":"block","tags":["code","terminal"]},
-    {"id":"x-post","kind":"block","tags":["social","overlay"]},
-    {"id":"lower-third-clean-bar","kind":"block","tags":["lower-third","overlay"]},
-    {"id":"us-map","kind":"block","tags":["map","data"]},
-    {"id":"caption-highlight","kind":"component","tags":["caption","text"]},
-    {"id":"transitions-cover","kind":"block","tags":["transition"]},
-    {"id":"grain-overlay","kind":"component","tags":["effect","grain"]},
-    {"id":"vignette","kind":"component","tags":["effect","focus"]},
-    {"id":"shimmer-sweep","kind":"component","tags":["effect","highlight"]}
+    {
+      "id": "flowchart",
+      "kind": "block",
+      "role": "process",
+      "duration_seconds": 12.0,
+      "summary": "Animated decision tree with SVG connectors for a landscape frame"
+    },
+    {
+      "id": "flowchart-vertical",
+      "kind": "block",
+      "role": "process",
+      "duration_seconds": 12.0,
+      "summary": "Portrait animated decision tree for vertical frames"
+    },
+    {
+      "id": "data-chart",
+      "kind": "block",
+      "role": "quantity",
+      "duration_seconds": 15.0,
+      "summary": "Animated bar and line chart with staggered reveal"
+    },
+    {
+      "id": "code-typing",
+      "kind": "block",
+      "role": "code",
+      "duration_seconds": 5.0,
+      "summary": "Token-streamed typing reveal with a tracking caret"
+    },
+    {
+      "id": "code-highlight",
+      "kind": "block",
+      "role": "code",
+      "duration_seconds": 5.0,
+      "summary": "Highlight band sweeping across one target line"
+    },
+    {
+      "id": "code-diff",
+      "kind": "block",
+      "role": "code",
+      "duration_seconds": 6.0,
+      "summary": "An edit shown as a collapsing and expanding coloured diff"
+    },
+    {
+      "id": "code-scroll",
+      "kind": "block",
+      "role": "code",
+      "duration_seconds": 6.0,
+      "summary": "Camera scroll through a long file toward a target line"
+    },
+    {
+      "id": "code-morph",
+      "kind": "block",
+      "role": "code",
+      "duration_seconds": 7.0,
+      "summary": "One snippet transforming into another with gliding tokens"
+    },
+    {
+      "id": "morph-text",
+      "kind": "component",
+      "role": "emphasis",
+      "duration_seconds": null,
+      "summary": "Gooey morph cycling one editable word list"
+    },
+    {
+      "id": "flash-through-white",
+      "kind": "block",
+      "role": "transition",
+      "duration_seconds": 4.0,
+      "summary": "Shader transition with a white flash crossfade"
+    },
+    {
+      "id": "sdf-iris",
+      "kind": "block",
+      "role": "transition",
+      "duration_seconds": 4.0,
+      "summary": "Shader transition with a signed distance field iris reveal"
+    },
+    {
+      "id": "domain-warp-dissolve",
+      "kind": "block",
+      "role": "transition",
+      "duration_seconds": 4.0,
+      "summary": "Shader transition with fractal noise domain warping"
+    },
+    {
+      "id": "whip-pan",
+      "kind": "block",
+      "role": "transition",
+      "duration_seconds": 4.0,
+      "summary": "Shader transition simulating a fast camera whip pan"
+    },
+    {
+      "id": "cross-warp-morph",
+      "kind": "block",
+      "role": "transition",
+      "duration_seconds": 4.0,
+      "summary": "Shader transition with cross-warped morphing"
+    },
+    {
+      "id": "ripple-waves",
+      "kind": "block",
+      "role": "transition",
+      "duration_seconds": 4.0,
+      "summary": "Shader transition with concentric ripple wave distortion"
+    },
+    {
+      "id": "light-leak",
+      "kind": "block",
+      "role": "transition",
+      "duration_seconds": 4.0,
+      "summary": "Shader transition with a cinematic light leak overlay"
+    },
+    {
+      "id": "parallax-zoom",
+      "kind": "component",
+      "role": "transition",
+      "duration_seconds": null,
+      "summary": "Focus card scales up to fill the frame while siblings parallax away"
+    },
+    {
+      "id": "parallax-unzoom",
+      "kind": "component",
+      "role": "transition",
+      "duration_seconds": null,
+      "summary": "Reveal transition scaling the focus card down from the full frame"
+    },
+    {
+      "id": "grid-pixelate-wipe",
+      "kind": "component",
+      "role": "transition",
+      "duration_seconds": null,
+      "summary": "Screen dissolving into a grid of pixelated cells"
+    },
+    {
+      "id": "motion-blur",
+      "kind": "component",
+      "role": "grade",
+      "duration_seconds": null,
+      "summary": "Velocity-driven motion blur sampled from element position"
+    },
+    {
+      "id": "grain-overlay",
+      "kind": "component",
+      "role": "grade",
+      "duration_seconds": null,
+      "summary": "Animated film grain texture overlay"
+    },
+    {
+      "id": "vignette",
+      "kind": "component",
+      "role": "grade",
+      "duration_seconds": null,
+      "summary": "Cinematic radial vignette overlay"
+    },
+    {
+      "id": "shimmer-sweep",
+      "kind": "component",
+      "role": "grade",
+      "duration_seconds": null,
+      "summary": "Animated light sweep across text or elements"
+    }
   ]
 }

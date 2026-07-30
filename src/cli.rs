@@ -62,7 +62,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: ToolCommands,
     },
-    #[command(about = "Install and diagnose local video renderers")]
+    #[command(about = "Install and diagnose local renderers")]
     Renderer {
         #[command(subcommand)]
         command: RendererCommands,
@@ -98,6 +98,8 @@ pub enum InitTarget {
 #[derive(Debug, Subcommand)]
 pub enum GenerateCommands {
     Slides(SlidesArgs),
+    #[command(visible_aliases = ["doc", "docs"])]
+    Document(DocumentArgs),
     #[command(visible_alias = "pages")]
     Page(PageArgs),
     Video(VideoArgs),
@@ -177,6 +179,8 @@ pub struct RendererDoctorArgs {
 pub enum LocalVideoRendererArg {
     Hyperframe,
     Manim,
+    #[value(name = "pagedjs")]
+    PagedJs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -596,6 +600,90 @@ pub struct ConfigDeleteArgs {
 
     #[arg(long, help = "Project name when editing project config")]
     pub project: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum DocumentPageSizeArg {
+    A4,
+    Letter,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct DocumentArgs {
+    pub inputs: Vec<PathBuf>,
+
+    #[arg(long, required = true)]
+    pub instruction: String,
+
+    #[arg(long)]
+    pub title: Option<String>,
+
+    #[arg(
+        long,
+        help = "Opt in to a reusable document structure for this generation"
+    )]
+    pub template: Option<String>,
+
+    #[arg(
+        long,
+        help = "Publish the rendered PDF to this folder; working artifacts remain in Sfumato's project workspace"
+    )]
+    pub out: Option<PathBuf>,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Sheet to print on; the theme decides when omitted"
+    )]
+    pub page_size: Option<DocumentPageSizeArg>,
+
+    #[arg(long, help = "Generate a table of contents", overrides_with = "no_toc")]
+    pub toc: bool,
+
+    #[arg(long = "no-toc", help = "Omit the table of contents")]
+    pub no_toc: bool,
+
+    #[arg(long, help = "Generate a cover page", overrides_with = "no_cover")]
+    pub cover: bool,
+
+    #[arg(long = "no-cover", help = "Omit the cover page")]
+    pub no_cover: bool,
+
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub project: Option<String>,
+
+    #[arg(long)]
+    pub theme: Option<String>,
+
+    #[arg(long = "model", value_name = "CAPABILITY=PROFILE")]
+    pub model_overrides: Vec<String>,
+
+    #[arg(long, value_name = "PROFILE")]
+    pub review_model: Option<String>,
+
+    #[arg(long)]
+    pub no_review: bool,
+
+    #[arg(long)]
+    pub json: bool,
+
+    #[arg(
+        long = "tool",
+        value_enum,
+        help = "Enable an optional generation tool for this request"
+    )]
+    pub tools: Vec<GenerationToolArg>,
+
+    #[arg(
+        long = "disable-tool",
+        value_enum,
+        help = "Disable a project generation tool for this request"
+    )]
+    pub disabled_tools: Vec<GenerationToolArg>,
 }
 
 #[derive(Clone, Debug, Args)]

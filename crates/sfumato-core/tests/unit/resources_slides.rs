@@ -90,6 +90,7 @@ fn theme_package() -> ThemePackage {
             adapters: ThemeAdapters {
                 marp_css: PathBuf::from("marp/theme.css"),
                 html: None,
+                document: None,
             },
         },
     }

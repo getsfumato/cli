@@ -18,7 +18,7 @@ use crate::{
     },
     errors::{ErrorCode, OperationStage, SfumatoError, SfumatoResult},
     filesystem::WorkspaceFileSystem,
-    generation::GenerationRequest,
+    generation::{DocumentPageSize, GenerationRequest},
     models::{ModelDefaultChanged, ModelService, ModelSummary},
     operation::OperationContext,
     page_plugins::{
@@ -39,10 +39,13 @@ use crate::{
         ProviderFactory, TextGenerationEvent,
     },
     renderers::{
-        DiagramRenderer, PageAssembler, PageInspector, RendererManager, RendererStatus,
-        SlideRenderer, VideoRenderer,
+        DiagramRenderer, DocumentAssembler, DocumentRenderer, PageAssembler, PageInspector,
+        RendererManager, RendererStatus, SlideRenderer, VideoRenderer,
     },
     repositories::{GlobalConfigRepository, ProjectRepository, ThemeRepository},
+    resources::documents::{
+        GenerateDocumentOptions, GenerateDocumentResult, generate_document,
+    },
     resources::pages::{GeneratePageOptions, GeneratePageResult, generate_page},
     resources::slides::{
         EditSlidesOptions, EditSlidesRequest, EditSlidesResult, GenerateSlidesOptions,
@@ -89,6 +92,32 @@ pub struct GenerateSlidesCommand {
     /// Resolve and render prompts without invoking providers or writing files.
     pub dry_run: bool,
     /// Run semantic and layout review.
+    pub review: bool,
+    /// Legacy detailed generation events consumed by current frontends.
+    pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+}
+
+/// Complete request for the paginated document-generation use case.
+pub struct GenerateDocumentCommand {
+    /// Job lifecycle, cancellation, deadline, and event context.
+    pub operation: OperationContext,
+    /// Configuration and command-line precedence overrides.
+    pub config: ConfigOverrides,
+    /// Resource instruction, sources, and model selections.
+    pub request: GenerationRequest,
+    /// Optional explicit document title.
+    pub title: Option<String>,
+    /// Optional reusable structural template package.
+    pub template: Option<String>,
+    /// Sheet override; the theme decides when absent.
+    pub page_size: Option<DocumentPageSize>,
+    /// Table-of-contents override; the theme decides when absent.
+    pub table_of_contents: Option<bool>,
+    /// Cover-page override; the theme decides when absent.
+    pub cover: Option<bool>,
+    /// Resolve and render prompts without invoking providers or writing files.
+    pub dry_run: bool,
+    /// Run semantic review and focused page-format repair.
     pub review: bool,
     /// Legacy detailed generation events consumed by current frontends.
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
@@ -193,6 +222,10 @@ pub struct SfumatoApplicationDependencies {
     pub page_assembler: Arc<dyn PageAssembler>,
     /// Browser-backed page inspector.
     pub page_inspector: Arc<dyn PageInspector>,
+    /// Markdown-to-printable-HTML document compiler.
+    pub document_assembler: Arc<dyn DocumentAssembler>,
+    /// Browser-backed document paginator and PDF exporter.
+    pub document_renderer: Arc<dyn DocumentRenderer>,
     /// Hyperframe and Manim renderer adapter.
     pub video_renderer: Arc<dyn VideoRenderer>,
     /// Explicit optional-renderer lifecycle.
@@ -241,6 +274,8 @@ pub struct SfumatoApplication {
     slides: Arc<dyn SlideRenderer>,
     page_assembler: Arc<dyn PageAssembler>,
     page_inspector: Arc<dyn PageInspector>,
+    document_assembler: Arc<dyn DocumentAssembler>,
+    document_renderer: Arc<dyn DocumentRenderer>,
     video_renderer: Arc<dyn VideoRenderer>,
     renderer_manager: Arc<dyn RendererManager>,
     page_plugins: Arc<dyn PagePluginCatalog>,
@@ -325,6 +360,8 @@ impl SfumatoApplication {
             slides,
             page_assembler,
             page_inspector,
+            document_assembler,
+            document_renderer,
             video_renderer,
             renderer_manager,
             page_plugins,
@@ -353,6 +390,8 @@ impl SfumatoApplication {
             slides,
             page_assembler,
             page_inspector,
+            document_assembler,
+            document_renderer,
             video_renderer,
             renderer_manager,
             page_plugins,
@@ -408,6 +447,52 @@ impl SfumatoApplication {
                 tool_factory: Arc::clone(&self.tools),
                 theme_repository: Arc::clone(&self.themes),
                 workspace: Arc::clone(&self.workspace),
+            },
+        )
+        .await
+    }
+
+    /// Generates and transactionally commits a paginated PDF document.
+    pub async fn generate_document(
+        &self,
+        command: GenerateDocumentCommand,
+    ) -> SfumatoResult<GenerateDocumentResult> {
+        command.operation.checkpoint(OperationStage::Resolve)?;
+        let config = self
+            .config
+            .resolve(command.config)
+            .map_err(|error| error.at_stage(OperationStage::Resolve))?;
+        let prompt_catalog = self
+            .prompts
+            .for_project(&config.project_root)
+            .map_err(|error| error.at_stage(OperationStage::RenderPrompt))?;
+        generate_document(
+            config,
+            command.request,
+            GenerateDocumentOptions {
+                operation: command.operation,
+                title: command.title,
+                template: command
+                    .template
+                    .map(|name| self.templates.load(&name, TemplateKind::Document))
+                    .transpose()?,
+                dry_run: command.dry_run,
+                review: command.review,
+                page_size: command.page_size,
+                table_of_contents: command.table_of_contents,
+                cover: command.cover,
+                event_sink: command.event_sink,
+                prompt_catalog,
+                artifact_store: Arc::clone(&self.artifacts),
+                provider_factory: Arc::clone(&self.providers),
+                diagram_renderer: Arc::clone(&self.diagrams),
+                document_assembler: Arc::clone(&self.document_assembler),
+                document_renderer: Arc::clone(&self.document_renderer),
+                source_reader: Arc::clone(&self.sources),
+                tool_factory: Arc::clone(&self.tools),
+                theme_repository: Arc::clone(&self.themes),
+                workspace: Arc::clone(&self.workspace),
+                project_asset_catalog: Arc::clone(&self.project_assets),
             },
         )
         .await

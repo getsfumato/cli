@@ -8,3 +8,7 @@ runtime_packages = { gsap = "3.15.0" }
 [renderers.manim]
 package = "manim"
 version = "0.20.1"
+
+[renderers.pagedjs]
+package = "pagedjs-cli"
+version = "0.4.3"

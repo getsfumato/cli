@@ -72,6 +72,24 @@ fn representative_variables() -> PromptVariables {
         ),
         ("slide_markdown", json!("## Dense\n\nContent")),
         ("max_tool_rounds", json!(8)),
+        ("page_size", json!("a4")),
+        ("table_of_contents", json!(true)),
+        (
+            "document_snapshot",
+            json!({"revision": "document-r1", "sections": {}}),
+        ),
+        (
+            "issue",
+            json!({
+                "page": 2,
+                "section": 1,
+                "heading": "Primero",
+                "kind": "overflows_text_column",
+                "overflow_px": 34,
+                "element": "table"
+            }),
+        ),
+        ("section_markdown", json!("## Primero\n\nCuerpo.")),
         ("template_enabled", json!(false)),
         ("template_name", json!("")),
         ("template_source", json!("")),
@@ -238,6 +256,86 @@ fn every_slide_markdown_prompt_requires_marp_dollar_math_delimiters() {
 }
 
 #[test]
+fn every_prompt_that_can_touch_a_catalog_selection_sees_the_catalog() {
+    // The planner, the reviewer's patch and the repair patch can each decide a
+    // selection, so all three need the installed item list. A stage that judges
+    // selections blind either invents an ID or has its whole patch rejected.
+    let catalog = LayeredPromptCatalog::new(None, None);
+
+    for id in [
+        PromptId::VideoPlanUser,
+        PromptId::VideoReviewUser,
+        PromptId::VideoSourceRepairUser,
+    ] {
+        let rendered = catalog
+            .render(PromptRenderRequest {
+                id,
+                variables: representative_variables(),
+            })
+            .unwrap_or_else(|error| panic!("could not render {id}: {error}"));
+
+        assert!(
+            rendered.text.contains("managed catalog v1: data-chart"),
+            "{id} never shows the installed catalog"
+        );
+    }
+}
+
+#[test]
+fn every_document_prompt_forbids_authoring_the_page_furniture() {
+    // Sfumato composes the cover, the contents and the page numbers from the
+    // document's structure. Without this instruction the model writes its own
+    // title page and contents list, and the finished PDF carries both.
+    let catalog = LayeredPromptCatalog::new(None, None);
+
+    for id in [
+        PromptId::DocumentDraftUser,
+        PromptId::DocumentCompactDraftUser,
+        PromptId::DocumentValidationRepairUser,
+        PromptId::DocumentReviewUser,
+        PromptId::DocumentCompactReviewUser,
+    ] {
+        let rendered = catalog
+            .render(PromptRenderRequest {
+                id,
+                variables: representative_variables(),
+            })
+            .unwrap_or_else(|error| panic!("could not render {id}: {error}"));
+
+        let text = rendered.text.to_ascii_lowercase();
+        assert!(
+            text.contains("cover") && text.contains("contents"),
+            "{id} never tells the model to leave the page furniture alone"
+        );
+    }
+}
+
+#[test]
+fn document_prompts_ban_the_math_delimiters_markdown_consumes() {
+    // `\(...\)` is an escaped parenthesis in CommonMark, so a document that uses
+    // it loses the delimiter before any renderer sees the formula.
+    let catalog = LayeredPromptCatalog::new(None, None);
+
+    for id in [
+        PromptId::DocumentDraftUser,
+        PromptId::DocumentCompactDraftUser,
+        PromptId::DocumentValidationRepairUser,
+    ] {
+        let rendered = catalog
+            .render(PromptRenderRequest {
+                id,
+                variables: representative_variables(),
+            })
+            .unwrap();
+
+        assert!(
+            rendered.text.contains("$inline$") && rendered.text.contains("$$display$$"),
+            "{id} must name the dollar delimiters"
+        );
+    }
+}
+
+#[test]
 fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
     let catalog = LayeredPromptCatalog::new(None, None);
     let mut aggregate = String::new();
@@ -256,7 +354,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "701863b37e7bc7013255e734fee546dc0a9b207286a061c8827ea41a4aea5199"
+        "c9a76a1922bd60caf597e2385daff7267e82c8749d59cb36e3d257afb2f10cf1"
     );
 }
 

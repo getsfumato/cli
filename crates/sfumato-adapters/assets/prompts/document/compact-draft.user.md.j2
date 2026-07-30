@@ -1,0 +1,25 @@
+Write a Markdown prose document that Sfumato will paginate into a PDF.
+
+Project: {{ project }}
+Theme: {{ theme_name }} ({{ theme_colors }}; {{ theme_fonts }})
+Page: {{ page_size }}
+Instruction: {{ instruction }}
+
+{% include "shared/project-instructions.md.j2" %}
+
+Requirements:
+{% if title_provided %}
+- Use exactly "{{ title }}" as the single `# H1`, on the first line.
+{% else %}
+- Open with exactly one `# H1` naming the subject taught, not the instruction.
+{% endif %}
+- Exactly one `# H1`; every other heading is `##` or deeper, starting at `##`, never skipping a rank.
+- A short orienting paragraph between the title and the first `##`.
+- An optional leading frontmatter block may declare only `subtitle`.
+- Do not author a cover, a contents list, a running header, or page numbers: Sfumato generates them.
+- Prose over bullet fragments. Math uses `$inline$` and `$$display$$`, never `\(...\)`.
+- No raw HTML, inline SVG, or HTML wrapper tags.
+- Return only Markdown, with no outer code fence.
+
+Source material:
+{{ source_bundle }}
