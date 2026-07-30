@@ -33,7 +33,7 @@ struct ManagedRendererManifest {
     renderers: BTreeMap<String, ManagedRendererPackage>,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct ManagedRendererPackage {
     package: String,
     version: String,
@@ -107,7 +107,7 @@ fn renderer_package(id: &str) -> Result<ManagedRendererPackage> {
         .renderers
         .get(id)
         .cloned()
-        .with_context(|| format!("Unknown renderer '{id}'. Use hyperframe or manim."))
+        .with_context(|| format!("Unknown renderer '{id}'. Use hyperframe, manim, or pagedjs."))
 }
 
 fn collect_pngs(root: &Path) -> std::collections::BTreeSet<PathBuf> {
@@ -408,6 +408,11 @@ impl ManagedVideoRenderers {
         Ok(())
     }
 
+    /// Managed Paged.js CLI used to render documents.
+    fn pagedjs_executable(&self) -> PathBuf {
+        self.root.join("pagedjs/node_modules/.bin/pagedjs-cli")
+    }
+
     fn manim_executable(&self) -> PathBuf {
         self.root.join("manim/.venv/bin/manim")
     }
@@ -424,7 +429,10 @@ impl ManagedVideoRenderers {
                 vec!["node", "ffmpeg", "ffprobe"],
             ),
             "manim" => (self.manim_executable(), vec!["ffmpeg", "ffprobe"]),
-            _ => bail!("Unknown renderer '{id}'. Use hyperframe or manim."),
+            // The document renderer drives a browser through Node; the browser
+            // itself is the one Sfumato already requires elsewhere.
+            "pagedjs" => (self.pagedjs_executable(), vec!["node"]),
+            _ => bail!("Unknown renderer '{id}'. Use hyperframe, manim, or pagedjs."),
         };
         let mut details = Vec::new();
         let installed = executable.is_file();
@@ -530,6 +538,7 @@ impl RendererManager for ManagedVideoRenderers {
                 Ok(vec![
                     self.renderer_status("hyperframe", operation).await?,
                     self.renderer_status("manim", operation).await?,
+                    self.renderer_status("pagedjs", operation).await?,
                 ])
             }
             .await,
@@ -595,7 +604,24 @@ impl RendererManager for ManagedVideoRenderers {
                         )
                         .await?;
                     }
-                    _ => bail!("Unknown renderer '{id}'. Use hyperframe or manim."),
+                    "pagedjs" => {
+                        let package = renderer_package(id)?;
+                        let prefix = self.root.join("pagedjs");
+                        fs::create_dir_all(&prefix)?;
+                        let mut command = Command::new("npm");
+                        command
+                            .args(["install", "--no-audit", "--no-fund", "--prefix"])
+                            .arg(&prefix)
+                            .arg(format!("{}@{}", package.package, package.version));
+                        checked(
+                            &mut command,
+                            operation,
+                            OperationStage::Resolve,
+                            "Paged.js CLI installation",
+                        )
+                        .await?;
+                    }
+                    _ => bail!("Unknown renderer '{id}'. Use hyperframe, manim, or pagedjs."),
                 }
                 self.renderer_status(id, operation).await
             }
@@ -610,6 +636,7 @@ impl RendererManager for ManagedVideoRenderers {
         let path = match id {
             "hyperframe" => self.root.join("hyperframe"),
             "manim" => self.root.join("manim"),
+            "pagedjs" => self.root.join("pagedjs"),
             _ => return Err(SfumatoError::validation(format!("Unknown renderer '{id}'"))),
         };
         if path.exists() {

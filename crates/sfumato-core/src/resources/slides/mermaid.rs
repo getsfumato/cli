@@ -4,15 +4,43 @@ use super::*;
 
 const MERMAID_IMAGE_HEIGHT_PX: u16 = 300;
 
-pub(super) async fn render_mermaid_diagrams(
-    markdown: &str,
-    diagrams_dir: &Path,
-    theme: &ThemePackage,
-    renderer: &dyn DiagramRenderer,
-    workspace: &dyn WorkspaceFileSystem,
-    operation: &OperationContext,
-    stage: OperationStage,
+/// Everything one Mermaid rendering pass needs.
+pub(crate) struct MermaidRenderRequest<'a> {
+    /// Markdown whose fences are replaced with rendered images.
+    pub(crate) markdown: &'a str,
+    /// Directory that receives the `.mmd` sources and `.svg` artifacts.
+    pub(crate) diagrams_dir: &'a Path,
+    /// Theme whose tokens colour the diagram.
+    pub(crate) theme: &'a ThemePackage,
+    /// Mermaid CLI adapter.
+    pub(crate) renderer: &'a dyn DiagramRenderer,
+    /// Filesystem the artifacts are written through.
+    pub(crate) workspace: &'a dyn WorkspaceFileSystem,
+    /// Cancellation and progress context.
+    pub(crate) operation: &'a OperationContext,
+    /// Stage the work is attributed to.
+    pub(crate) stage: OperationStage,
+    /// How a rendered diagram is written back into the Markdown.
+    ///
+    /// A slide constrains a diagram by height to fit its fixed box; a document
+    /// constrains it by the width of its text column.
+    pub(crate) image_markdown: fn(&str) -> String,
+}
+
+/// Renders every Mermaid fence to a themed SVG and rewrites it as an image.
+pub(crate) async fn render_mermaid_diagrams(
+    request: MermaidRenderRequest<'_>,
 ) -> Result<(String, Vec<PathBuf>)> {
+    let MermaidRenderRequest {
+        markdown,
+        diagrams_dir,
+        theme,
+        renderer,
+        workspace,
+        operation,
+        stage,
+        image_markdown,
+    } = request;
     operation.checkpoint(stage)?;
     let blocks = extract_mermaid_blocks(markdown)?;
     if blocks.is_empty() {
@@ -48,7 +76,7 @@ pub(super) async fn render_mermaid_diagrams(
                 artifact_path.display()
             );
         }
-        rendered.push_str(&mermaid_image_markdown(&name));
+        rendered.push_str(&image_markdown(&name));
         artifacts.push(source_path);
         artifacts.push(artifact_path);
         cursor = block.end;
@@ -59,7 +87,7 @@ pub(super) async fn render_mermaid_diagrams(
     Ok((rendered, artifacts))
 }
 
-pub(super) fn mermaid_image_markdown(name: &str) -> String {
+pub(crate) fn mermaid_image_markdown(name: &str) -> String {
     format!("![height:{MERMAID_IMAGE_HEIGHT_PX}px](diagrams/{name}.svg)",)
 }
 
@@ -89,7 +117,7 @@ fn prune_unreferenced_diagrams(
     Ok(())
 }
 
-pub(super) fn mermaid_theme_config(tokens: &ThemeTokens) -> MermaidThemeConfig {
+pub(crate) fn mermaid_theme_config(tokens: &ThemeTokens) -> MermaidThemeConfig {
     let colors = &tokens.colors;
     let fonts = &tokens.fonts;
     let background = theme_token(colors, "background", "#ffffff");
@@ -128,7 +156,7 @@ pub(super) fn mermaid_theme_config(tokens: &ThemeTokens) -> MermaidThemeConfig {
     ]))
 }
 
-pub(super) fn normalize_mermaid_source(source: &str) -> String {
+pub(crate) fn normalize_mermaid_source(source: &str) -> String {
     let mut normalized = String::new();
     let mut rest = source;
 
@@ -224,13 +252,13 @@ fn is_mermaid_theme_value(value: &str) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct MermaidBlock {
+pub(crate) struct MermaidBlock {
     pub(super) start: usize,
     pub(super) end: usize,
     pub(super) source: String,
 }
 
-pub(super) fn extract_mermaid_blocks(markdown: &str) -> Result<Vec<MermaidBlock>> {
+pub(crate) fn extract_mermaid_blocks(markdown: &str) -> Result<Vec<MermaidBlock>> {
     let mut blocks = Vec::new();
     let mut cursor = 0;
 

@@ -1,0 +1,39 @@
+Review this generated document before it is published.
+
+Original instruction: {{ instruction }}
+Project: {{ project }}
+Theme: {{ theme_name }}
+Theme colors: {{ theme_colors }}
+Theme fonts: {{ theme_fonts }}
+Page: {{ page_size }}
+
+{% include "shared/project-instructions.md.j2" %}
+
+Review requirements:
+- Return only an RFC 6902 JSON Patch array. Do not use a Markdown code fence.
+- The patch target is the object inside `document`; paths therefore start at `/revision`, `/sections`, `/order`, `/subtitle`, or `/preamble`, not `/document`.
+- Start with a `test` operation for `/revision` before any mutation.
+- Before replacing or removing a section, test `/sections/<id>/revision` with the supplied value.
+- Prefer replacing only `/sections/<id>/markdown` for sections that genuinely need correction.
+- You may replace `/subtitle` and `/preamble`, and reorder `/order` entries.
+- Do not change `/title`: the cover page and the published filename both come from it.
+- Do not modify IDs, revisions, levels, headings, or element summaries directly; they are derived from each section's Markdown.
+- Keep every section's heading as the first line of its Markdown, and never skip a heading rank: a `##` section may be followed by `###`, never directly by `####`.
+- Correct factual inconsistencies only when supported by the source material or filesystem tools.
+- Remove duplication and improve the explanatory sequence.
+- This is a document, not a deck: prefer complete paragraphs, and do not compress prose into bullet fragments to save space.
+- Preserve useful explanations instead of deleting them merely to shorten the document.
+- Add, remove, or reorder sections only when a targeted Markdown replacement cannot solve the problem.
+- Keep math in `$inline$` and `$$display$$` form, and keep Mermaid fences valid. Do not add inline CSS, raw HTML, or inline SVG.
+- Do not add a cover page, a contents list, or page references: Sfumato generates those from the structure.
+- Use the filesystem tools only when a claim cannot be checked from the supplied source excerpts.
+- Return `[]` when no changes are needed.
+{% if retry_present %}
+{% include "shared/review-retry.md.j2" %}
+{% endif %}
+
+Source material:
+{{ source_bundle }}
+
+Structured review snapshot:
+{{ document_snapshot }}

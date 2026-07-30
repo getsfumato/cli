@@ -1,0 +1,332 @@
+/* Print stylesheet for sfumato-default documents.
+ *
+ * Margins live here rather than in `@page { margin }` because Paged.js draws the
+ * page box and Chrome prints it; a margin on both sides would apply twice.
+ */
+
+:root {
+  --sfumato-background: #f7f7f5;
+  --sfumato-surface: #ffffff;
+  --sfumato-text: #202124;
+  --sfumato-muted: #5f6368;
+  --sfumato-primary: #315c8c;
+  --sfumato-accent: #b35c24;
+  --sfumato-body-font: Inter, Arial, sans-serif;
+  --sfumato-heading-font: Inter, Arial, sans-serif;
+  --sfumato-mono-font: "JetBrains Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 11pt;
+}
+
+body {
+  margin: 0;
+  background: #ffffff;
+  color: var(--sfumato-text);
+  font-family: var(--sfumato-body-font);
+  line-height: 1.55;
+  hyphens: auto;
+}
+
+/* ---------- Page geometry, running header, page numbers ---------- */
+
+@page {
+  margin: 22mm 20mm 20mm 20mm;
+
+  @top-center {
+    content: string(document-title);
+    font-family: var(--sfumato-heading-font);
+    font-size: 8.5pt;
+    color: var(--sfumato-muted);
+    letter-spacing: 0.04em;
+    padding-bottom: 4mm;
+  }
+
+  @bottom-center {
+    content: counter(page);
+    font-family: var(--sfumato-heading-font);
+    font-size: 9pt;
+    color: var(--sfumato-muted);
+    padding-top: 4mm;
+  }
+}
+
+/* The cover and the contents carry no furniture, and the body numbering starts
+ * at 1 after them so the cover is never page 1 of the visible sequence. */
+@page cover {
+  margin: 0;
+
+  @top-center {
+    content: none;
+  }
+
+  @bottom-center {
+    content: none;
+  }
+}
+
+@page contents {
+  @bottom-center {
+    content: none;
+  }
+}
+
+.sfumato-cover {
+  page: cover;
+  break-after: page;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  padding: 0 24mm;
+  background: var(--sfumato-background);
+}
+
+.sfumato-cover-image {
+  max-width: 46mm;
+  max-height: 46mm;
+  margin-bottom: 14mm;
+}
+
+.sfumato-cover-title {
+  margin: 0;
+  font-family: var(--sfumato-heading-font);
+  font-size: 30pt;
+  line-height: 1.15;
+  color: var(--sfumato-primary);
+}
+
+.sfumato-cover-subtitle {
+  margin: 6mm 0 0;
+  font-size: 13pt;
+  color: var(--sfumato-muted);
+}
+
+.sfumato-cover-meta {
+  display: flex;
+  gap: 6mm;
+  margin: 18mm 0 0;
+  font-family: var(--sfumato-heading-font);
+  font-size: 9.5pt;
+  color: var(--sfumato-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.sfumato-cover-project::after {
+  content: "·";
+  margin-left: 6mm;
+}
+
+/* ---------- Contents ---------- */
+
+.sfumato-contents {
+  page: contents;
+  break-after: page;
+  counter-reset: page 0;
+}
+
+.sfumato-contents-title {
+  margin: 0 0 8mm;
+  font-family: var(--sfumato-heading-font);
+  font-size: 16pt;
+  color: var(--sfumato-primary);
+}
+
+.sfumato-contents-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sfumato-contents-entry {
+  margin: 0 0 2.5mm;
+  font-size: 10.5pt;
+}
+
+.sfumato-contents-entry[data-level="3"] {
+  padding-left: 6mm;
+  font-size: 10pt;
+  color: var(--sfumato-muted);
+}
+
+.sfumato-contents-entry[data-level="4"],
+.sfumato-contents-entry[data-level="5"],
+.sfumato-contents-entry[data-level="6"] {
+  padding-left: 12mm;
+  font-size: 9.5pt;
+  color: var(--sfumato-muted);
+}
+
+.sfumato-contents-entry a {
+  display: flex;
+  align-items: baseline;
+  gap: 2mm;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sfumato-contents-entry a::after {
+  /* Resolved by Paged.js after pagination, so a listed page number is the page
+   * the section actually landed on. */
+  content: target-counter(attr(href), page);
+  flex: 0 0 auto;
+  order: 2;
+  font-variant-numeric: tabular-nums;
+}
+
+.sfumato-contents-entry a::before {
+  content: "";
+  flex: 1 1 auto;
+  order: 1;
+  margin: 0 1mm;
+  border-bottom: 1px dotted currentColor;
+  opacity: 0.35;
+  transform: translateY(-2px);
+}
+
+/* ---------- Body ---------- */
+
+.sfumato-document h1,
+.sfumato-document h2,
+.sfumato-document h3,
+.sfumato-document h4,
+.sfumato-document h5,
+.sfumato-document h6 {
+  font-family: var(--sfumato-heading-font);
+  color: var(--sfumato-primary);
+  line-height: 1.25;
+  /* A heading alone at the foot of a page reads as a mistake. */
+  break-after: avoid;
+  break-inside: avoid;
+}
+
+.sfumato-document h2 {
+  margin: 10mm 0 4mm;
+  font-size: 17pt;
+  string-set: document-title content();
+}
+
+.sfumato-document h2:first-child {
+  margin-top: 0;
+}
+
+.sfumato-document h3 {
+  margin: 7mm 0 3mm;
+  font-size: 13pt;
+}
+
+.sfumato-document h4 {
+  margin: 6mm 0 2mm;
+  font-size: 11.5pt;
+  color: var(--sfumato-text);
+}
+
+.sfumato-document p {
+  margin: 0 0 3.5mm;
+  orphans: 2;
+  widows: 2;
+}
+
+.sfumato-document ul,
+.sfumato-document ol {
+  margin: 0 0 3.5mm;
+  padding-left: 7mm;
+}
+
+.sfumato-document li {
+  margin-bottom: 1.5mm;
+}
+
+.sfumato-document a {
+  color: var(--sfumato-accent);
+  text-decoration: none;
+}
+
+.sfumato-document strong {
+  color: var(--sfumato-text);
+}
+
+.sfumato-document blockquote {
+  margin: 5mm 0;
+  padding: 0 0 0 5mm;
+  border-left: 2px solid var(--sfumato-accent);
+  color: var(--sfumato-muted);
+  font-style: italic;
+  break-inside: avoid;
+}
+
+.sfumato-document pre {
+  margin: 4mm 0;
+  padding: 3.5mm 4mm;
+  background: var(--sfumato-surface);
+  border-radius: 1.5mm;
+  font-family: var(--sfumato-mono-font);
+  font-size: 8.5pt;
+  line-height: 1.45;
+  /* Wrap rather than clip: a printed page has no horizontal scrollbar. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  break-inside: avoid;
+}
+
+.sfumato-document :not(pre) > code {
+  padding: 0.4mm 1mm;
+  background: var(--sfumato-surface);
+  border-radius: 1mm;
+  font-family: var(--sfumato-mono-font);
+  font-size: 0.9em;
+}
+
+.sfumato-document table {
+  width: 100%;
+  margin: 4mm 0;
+  border-collapse: collapse;
+  font-size: 9.5pt;
+  break-inside: avoid;
+}
+
+.sfumato-document th,
+.sfumato-document td {
+  padding: 1.8mm 2.5mm;
+  border-bottom: 1px solid color-mix(in srgb, var(--sfumato-muted) 30%, transparent);
+  text-align: left;
+  vertical-align: top;
+}
+
+.sfumato-document thead th {
+  font-family: var(--sfumato-heading-font);
+  font-size: 9pt;
+  color: var(--sfumato-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sfumato-document img,
+.sfumato-document svg {
+  display: block;
+  max-width: 100%;
+  /* Never taller than the text column, so a diagram cannot orphan a page. */
+  max-height: 200mm;
+  margin: 5mm auto;
+  break-inside: avoid;
+}
+
+.sfumato-document hr {
+  margin: 7mm 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--sfumato-muted) 30%, transparent);
+}
+
+.sfumato-document .footnotes {
+  margin-top: 10mm;
+  padding-top: 4mm;
+  border-top: 1px solid color-mix(in srgb, var(--sfumato-muted) 30%, transparent);
+  font-size: 9pt;
+  color: var(--sfumato-muted);
+}

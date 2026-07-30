@@ -9,6 +9,7 @@ use crate::{
     },
 };
 
+pub mod documents;
 pub mod pages;
 pub(crate) mod project_assets;
 pub mod slides;

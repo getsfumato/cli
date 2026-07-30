@@ -8,7 +8,8 @@ use serde_json::Value;
 use crate::{
     cli::{
         ArtifactCommands, Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs,
-        ConfigShowArgs, ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, EditCommands,
+        ConfigShowArgs, ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, DocumentArgs,
+        DocumentPageSizeArg, EditCommands,
         EditSlidesArgs, GenerateCommands, GenerationToolArg, InitProjectArgs, InitTarget,
         LocalVideoRendererArg, ModelAddArgs, ModelCommands, ModelEditArgs, ModelNameArgs,
         ModelUseArgs, PageArgs, PluginCommands, ProjectCommands, ProjectNameArgs, ProjectShowArgs,
@@ -22,17 +23,19 @@ use crate::{
 };
 use sfumato_core::{
     application::{
-        AddProjectAssetCommand, ApproveVideoReviewCommand, EditSlidesCommand, GeneratePageCommand,
+        AddProjectAssetCommand, ApproveVideoReviewCommand, EditSlidesCommand,
+        GenerateDocumentCommand, GeneratePageCommand,
         GenerateSlidesCommand, GenerateVideoCommand, PreviewVideoReviewCommand, SfumatoApplication,
         UpdateProjectAssetCommand,
     },
     config::{Capability, ConfigOverrides, GenerationToolKind, VideoAudioMode},
     config_editor::ConfigTarget,
     connectors::ConnectorPreset as CoreConnectorPreset,
-    generation::{GenerationRequest, ResourceKind},
+    generation::{DocumentPageSize, GenerationRequest, ResourceKind},
     operation::OperationContext,
     prompts::{PromptId, PromptOrigin, PromptOverrideScope},
     providers::TextGenerationEvent,
+    resources::documents::GenerateDocumentResult,
     resources::pages::GeneratePageResult,
     resources::slides::{EditSlidesRequest, EditSlidesResult, GenerateSlidesResult},
     resources::videos::{GenerateVideoRequest, GenerateVideoResult},
@@ -482,6 +485,7 @@ fn local_renderer(renderer: LocalVideoRendererArg) -> &'static str {
     match renderer {
         LocalVideoRendererArg::Hyperframe => "hyperframe",
         LocalVideoRendererArg::Manim => "manim",
+        LocalVideoRendererArg::PagedJs => "pagedjs",
     }
 }
 
@@ -1062,6 +1066,7 @@ impl RunnableCommand for GenerateCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         match self {
             Self::Slides(args) => args.run(application).await,
+            Self::Document(args) => args.run(application).await,
             Self::Page(args) => args.run(application).await,
             Self::Video(args) => args.run(application).await,
         }
@@ -1453,6 +1458,156 @@ impl RunnableCommand for SlidesArgs {
             Err(error) => Err(error),
         }
     }
+}
+
+#[async_trait]
+impl RunnableCommand for DocumentArgs {
+    async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
+        let json = self.json;
+        let dry_run = self.dry_run;
+        let event_sink = (!json && !dry_run)
+            .then_some(std::sync::Arc::new(render_generation_event)
+                as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
+        match execute_document(&application, self, event_sink, OperationContext::detached()).await {
+            Ok(result) => {
+                render_document_result(result, json, dry_run)?;
+                Ok(())
+            }
+            Err(error) if json => {
+                println!("{}", json_operation_error(&error));
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+pub(crate) async fn execute_document(
+    application: &SfumatoApplication,
+    args: DocumentArgs,
+    event_sink: Option<std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    operation: OperationContext,
+) -> Result<GenerateDocumentResult> {
+    if args.instruction.trim().is_empty() {
+        bail!("Instruction cannot be empty");
+    }
+    let model_overrides = parse_model_overrides(&args.model_overrides)?;
+    let config = ConfigOverrides {
+        project: args.project.clone(),
+        theme: args.theme,
+        model_overrides: model_overrides.clone(),
+        reviewer_model: args.review_model,
+        publish_dir: args.out,
+        pdf: false,
+        tool_overrides: parse_tool_overrides(&args.tools, &args.disabled_tools)?,
+    };
+    let request = GenerationRequest {
+        instruction: args.instruction,
+        sources: args.inputs,
+        resource_kind: ResourceKind::Document,
+        project: args.project,
+        model_overrides,
+    };
+    Ok(application
+        .generate_document(GenerateDocumentCommand {
+            operation,
+            config,
+            request,
+            title: args.title,
+            template: args.template,
+            page_size: args.page_size.map(|value| match value {
+                DocumentPageSizeArg::A4 => DocumentPageSize::A4,
+                DocumentPageSizeArg::Letter => DocumentPageSize::Letter,
+            }),
+            // Absent means "let the theme decide", so only an explicit flag
+            // becomes an override.
+            table_of_contents: flag_override(args.toc, args.no_toc),
+            cover: flag_override(args.cover, args.no_cover),
+            dry_run: args.dry_run,
+            review: !args.no_review,
+            event_sink,
+        })
+        .await?)
+}
+
+/// Turns a `--flag` / `--no-flag` pair into an explicit override.
+fn flag_override(enabled: bool, disabled: bool) -> Option<bool> {
+    match (enabled, disabled) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    }
+}
+
+fn render_document_result(
+    result: GenerateDocumentResult,
+    json: bool,
+    dry_run: bool,
+) -> Result<()> {
+    for warning in &result.warnings {
+        eprintln!("{warning}");
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result.output)?);
+    } else if dry_run {
+        match &result.output.project_instructions {
+            Some(path) => println!("Project instructions: {}\n", path.display()),
+            None => println!("Project instructions: no SFUMATO.md found\n"),
+        }
+        println!(
+            "Template: {}",
+            result.output.template.as_deref().unwrap_or("none")
+        );
+        let setup = result.output.page_setup;
+        println!(
+            "Page: {}, cover {}, contents {}",
+            setup.page_size.as_str(),
+            if setup.cover { "on" } else { "off" },
+            if setup.table_of_contents { "on" } else { "off" }
+        );
+        if !result.output.project_assets.is_empty() {
+            println!("Reusable project artifacts:");
+            for asset in &result.output.project_assets {
+                println!("- {}: {}", asset.name, asset.reference);
+            }
+            println!();
+        }
+        if !result.tool_summaries.is_empty() {
+            println!("Injected tools:");
+            for tool in &result.tool_summaries {
+                println!("- {}: {}", tool.name, tool.description);
+            }
+            println!();
+        }
+        if let Some(prompt) = &result.prompt_preview {
+            println!("{prompt}");
+        }
+        if result.output.review.enabled {
+            let reviewer = result
+                .output
+                .models
+                .get("reviewer")
+                .map(String::as_str)
+                .unwrap_or("draft model");
+            println!(
+                "Review: enabled with model profile '{reviewer}' (semantic review and conditional page-format repair)."
+            );
+        } else {
+            println!("Review: disabled.");
+        }
+        println!("Planned PDF: {}", result.markdown_path.with_extension("pdf").display());
+        println!("Dry run complete; no files were written.");
+    } else {
+        println!("Wrote {}", result.markdown_path.display());
+        if let Some(pdf_path) = &result.pdf_path {
+            println!("Wrote {}", pdf_path.display());
+        }
+        if let Some(published) = &result.published_pdf_path {
+            println!("Published {}", published.display());
+        }
+    }
+    Ok(())
 }
 
 fn json_operation_error(error: &anyhow::Error) -> serde_json::Value {

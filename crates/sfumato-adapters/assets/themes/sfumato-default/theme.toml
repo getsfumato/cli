@@ -22,3 +22,9 @@ marp_css = "marp/theme.css"
 shell = "html/page.html"
 css = "html/style.css"
 script = "html/script.js"
+
+[adapters.document]
+css = "document/print.css"
+page_size = "a4"
+table_of_contents = true
+cover = true

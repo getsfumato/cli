@@ -191,6 +191,9 @@ fn scaffold(kind: TemplateKind) -> String {
         TemplateKind::Page => format!(
             "<main id=\"sfumato-template\" class=\"sfumato-template\">\n  {TEMPLATE_CONTENT_SLOT}\n</main>\n"
         ),
+        // No frontmatter in the scaffold: a document declares only an optional
+        // subtitle, and the drafter supplies that when it has one to give.
+        TemplateKind::Document => format!("{TEMPLATE_CONTENT_SLOT}\n"),
     }
 }
 

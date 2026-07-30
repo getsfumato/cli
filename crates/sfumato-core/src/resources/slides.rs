@@ -42,10 +42,10 @@ use crate::{
     tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
 
-mod document;
+pub(crate) mod document;
 mod edit;
 mod layout;
-mod mermaid;
+pub(crate) mod mermaid;
 mod prompting;
 mod publishing;
 mod source_bundle;
@@ -56,9 +56,9 @@ pub use edit::{EditSlidesRequest, EditSlidesResult};
 use layout::LayoutAssessment;
 #[cfg(test)]
 use layout::layout_score;
-#[cfg(test)]
-use mermaid::mermaid_image_markdown;
-use mermaid::{extract_mermaid_blocks, render_mermaid_diagrams};
+use mermaid::{
+    MermaidRenderRequest, extract_mermaid_blocks, mermaid_image_markdown, render_mermaid_diagrams,
+};
 #[cfg(test)]
 use mermaid::{mermaid_theme_config, normalize_mermaid_source};
 use prompting::*;
@@ -893,15 +893,16 @@ pub(crate) async fn generate_slides(
         BTreeMap::new(),
     );
     workspace.create_dir_all(&slides_dir)?;
-    let (markdown, diagram_artifacts) = render_mermaid_diagrams(
-        &markdown,
-        &diagrams_dir,
-        &theme,
-        diagram_renderer.as_ref(),
-        workspace.as_ref(),
-        &operation,
-        OperationStage::Render,
-    )
+    let (markdown, diagram_artifacts) = render_mermaid_diagrams(MermaidRenderRequest {
+        markdown: &markdown,
+        diagrams_dir: &diagrams_dir,
+        theme: &theme,
+        renderer: diagram_renderer.as_ref(),
+        workspace: workspace.as_ref(),
+        operation: &operation,
+        stage: OperationStage::Render,
+        image_markdown: mermaid_image_markdown,
+    })
     .await?;
     let (used_project_asset_paths, used_project_assets) =
         prepared_assets.materialize_referenced(&markdown, workspace.as_ref())?;
@@ -1428,15 +1429,16 @@ async fn validate_mermaid_candidate(
 ) -> Result<()> {
     let temp = workspace.temporary_directory("sfumato-mermaid-review-")?;
     let diagrams_dir = temp.path().join("diagrams");
-    render_mermaid_diagrams(
+    render_mermaid_diagrams(MermaidRenderRequest {
         markdown,
-        &diagrams_dir,
+        diagrams_dir: &diagrams_dir,
         theme,
-        diagram_renderer,
+        renderer: diagram_renderer,
         workspace,
         operation,
-        OperationStage::Repair,
-    )
+        stage: OperationStage::Repair,
+        image_markdown: mermaid_image_markdown,
+    })
     .await
     .map(|_| ())
 }
@@ -1481,15 +1483,16 @@ async fn inspect_candidate_layout(
         temp.path(),
         context.workspace,
     )?;
-    let (rendered, _) = render_mermaid_diagrams(
+    let (rendered, _) = render_mermaid_diagrams(MermaidRenderRequest {
         markdown,
-        &diagrams_dir,
+        diagrams_dir: &diagrams_dir,
         theme,
-        context.diagram_renderer,
-        context.workspace,
-        context.operation,
-        OperationStage::InspectLayout,
-    )
+        renderer: context.diagram_renderer,
+        workspace: context.workspace,
+        operation: context.operation,
+        stage: OperationStage::InspectLayout,
+        image_markdown: mermaid_image_markdown,
+    })
     .await?;
     copy_theme_css(theme, &theme_path, context.workspace)?;
     context

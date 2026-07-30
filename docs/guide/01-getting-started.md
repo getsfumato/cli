@@ -11,7 +11,8 @@ Individual resource types have additional optional dependencies:
 | OpenRouter models | An OpenRouter API key. |
 | Codex models | An installed and authenticated `codex` executable. |
 | Slide PDF | Marp CLI and a Chromium-compatible browser. |
-| Mermaid in slides | Mermaid CLI (`mmdc`). |
+| Document PDF | Managed Paged.js renderer (`sfumato renderer install pagedjs`), Node.js, and a Chromium-compatible browser. |
+| Mermaid in slides and documents | Mermaid CLI (`mmdc`). |
 | Browser-inspected pages | Chrome, Chromium, or Edge. |
 | Hyperframes video | Managed Hyperframes renderer, Node.js, FFmpeg, FFprobe, and Chrome. |
 | Manim video | Managed Manim renderer, `uv`, FFmpeg, and FFprobe. |

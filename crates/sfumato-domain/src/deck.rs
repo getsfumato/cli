@@ -6,7 +6,13 @@ use serde_json::Value;
 
 use crate::{
     Patch, PatchReport, ReviewConstraint, ReviewError, ReviewFormat, ReviewSnapshot,
-    ReviewableDocument, RevisionId, ValidationReport, validate_rfc6902_patch,
+    ReviewableDocument, RevisionId, ValidationReport,
+    markdown::{
+        code_fence as markdown_code_fence, fences as markdown_fences, first_heading,
+        image_sources as markdown_image_sources, revision_for, validate_fenced_code_blocks,
+        validate_node_id,
+    },
+    validate_rfc6902_patch,
 };
 
 /// The current schema version for [`DeckDocument`] review snapshots.
@@ -745,72 +751,6 @@ fn summarize_elements(markdown: &str) -> Vec<SlideElement> {
     elements
 }
 
-fn markdown_image_sources(markdown: &str) -> Vec<String> {
-    let mut sources = Vec::new();
-    let mut remainder = markdown;
-    while let Some(image_start) = remainder.find("![") {
-        remainder = &remainder[image_start + 2..];
-        let Some(label_end) = remainder.find("](") else {
-            break;
-        };
-        remainder = &remainder[label_end + 2..];
-        let Some(source_end) = remainder.find(')') else {
-            break;
-        };
-        let source = remainder[..source_end].trim();
-        if !source.is_empty() {
-            sources.push(source.to_owned());
-        }
-        remainder = &remainder[source_end + 1..];
-    }
-    sources
-}
-
-fn first_heading(markdown: &str) -> Option<String> {
-    let mut code_fence: Option<(char, usize)> = None;
-    for line in markdown.lines() {
-        let trimmed = line.trim_start();
-        if let Some((marker, length)) = markdown_code_fence(trimmed) {
-            match code_fence {
-                Some((open_marker, open_length))
-                    if marker == open_marker && length >= open_length =>
-                {
-                    code_fence = None;
-                }
-                None => code_fence = Some((marker, length)),
-                _ => {}
-            }
-        } else if code_fence.is_none() {
-            let heading = trimmed.trim_start_matches('#');
-            if heading.len() != trimmed.len() && heading.starts_with(' ') {
-                return Some(clean_heading(heading));
-            }
-        }
-    }
-    None
-}
-
-fn clean_heading(heading: &str) -> String {
-    let mut heading = heading.trim().trim_end_matches('#').trim();
-    loop {
-        let mut changed = false;
-        for delimiter in ["**", "__", "`", "*", "_"] {
-            if let Some(inner) = heading
-                .strip_prefix(delimiter)
-                .and_then(|value| value.strip_suffix(delimiter))
-            {
-                heading = inner.trim();
-                changed = true;
-                break;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    heading.to_owned()
-}
-
 fn deck_revision(
     title: &str,
     order: &[SlideId],
@@ -824,17 +764,6 @@ fn deck_revision(
         }
     }
     revision_for(&input)
-}
-
-fn revision_for(value: &str) -> RevisionId {
-    // Stable FNV-1a is sufficient for optimistic concurrency; this is not a
-    // cryptographic content-addressing boundary.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    RevisionId::new(format!("{hash:016x}")).expect("hex revision is a valid domain token")
 }
 
 fn slide_revision_path(path: &str) -> Option<&str> {
@@ -860,52 +789,7 @@ fn is_order_path(path: &str, allow_append: bool) -> bool {
 }
 
 fn validate_slide_id(id: &str) -> Result<(), String> {
-    if id.is_empty()
-        || !id.chars().all(|character| {
-            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
-        })
-        || id.starts_with('-')
-        || id.ends_with('-')
-    {
-        return Err(format!(
-            "invalid slide ID `{id}`; use lowercase letters, numbers, and hyphens"
-        ));
-    }
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-struct Fence {
-    start: usize,
-    end: usize,
-}
-
-fn markdown_fences(markdown: &str) -> Vec<Fence> {
-    let mut fences = Vec::new();
-    let mut cursor = 0;
-    let mut code_fence: Option<(char, usize)> = None;
-    for line in markdown.split_inclusive('\n') {
-        let line_without_newline = line.trim_end_matches('\n').trim_end_matches('\r');
-        let trimmed = line_without_newline.trim_start();
-        if let Some((marker, length)) = markdown_code_fence(trimmed) {
-            match code_fence {
-                Some((open_marker, open_length))
-                    if marker == open_marker && length >= open_length =>
-                {
-                    code_fence = None;
-                }
-                None => code_fence = Some((marker, length)),
-                _ => {}
-            }
-        } else if code_fence.is_none() && line_without_newline.trim() == "---" {
-            fences.push(Fence {
-                start: cursor,
-                end: cursor + line.len(),
-            });
-        }
-        cursor += line.len();
-    }
-    fences
+    validate_node_id(id, "slide")
 }
 
 fn split_slide_fragment(markdown: &str) -> Vec<String> {
@@ -918,48 +802,6 @@ fn split_slide_fragment(markdown: &str) -> Vec<String> {
     }
     fragments.push(markdown[start..].trim().to_owned());
     fragments
-}
-
-fn markdown_code_fence(line: &str) -> Option<(char, usize)> {
-    let marker = line.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-    let length = line.chars().take_while(|value| *value == marker).count();
-    (length >= 3).then_some((marker, length))
-}
-
-fn validate_fenced_code_blocks(markdown: &str, slide_id: &str) -> Result<(), String> {
-    let mut open: Option<(char, usize, String)> = None;
-    for line in markdown.lines() {
-        let trimmed = line.trim_start();
-        let Some((marker, length)) = markdown_code_fence(trimmed) else {
-            continue;
-        };
-        match &open {
-            Some((open_marker, open_length, _))
-                if marker == *open_marker && length >= *open_length =>
-            {
-                open = None;
-            }
-            None => {
-                let language = trimmed[length..].trim().to_owned();
-                open = Some((marker, length, language));
-            }
-            _ => {}
-        }
-    }
-    if let Some((_, _, language)) = open {
-        let kind = if language.is_empty() {
-            "code".to_owned()
-        } else {
-            language
-        };
-        return Err(format!(
-            "slide `{slide_id}` has an unclosed `{kind}` fenced code block"
-        ));
-    }
-    Ok(())
 }
 
 fn frontmatter_contains_key(frontmatter: &str, key: &str) -> bool {

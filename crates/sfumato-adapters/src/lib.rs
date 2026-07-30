@@ -14,6 +14,7 @@ pub mod ollama;
 pub(crate) mod openai_compatible;
 pub mod openrouter;
 pub mod page_plugins;
+pub mod documents;
 pub mod pages;
 pub mod project_assets;
 pub mod prompts;

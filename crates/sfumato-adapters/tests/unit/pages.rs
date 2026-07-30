@@ -42,6 +42,7 @@ fn theme() -> (tempfile::TempDir, ThemePackage) {
                     css: "html/style.css".into(),
                     script: Some("html/script.js".into()),
                 }),
+                document: None,
             },
         },
     };

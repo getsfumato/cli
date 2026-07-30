@@ -1,0 +1,25 @@
+Repair this document so Sfumato can paginate it.
+
+Project: {{ project }}
+Original instruction: {{ instruction }}
+Title: {{ title }}
+Validation error: {{ validation_error }}
+
+{% include "shared/project-instructions.md.j2" %}
+
+Repair contract:
+- Keep every section's teaching content. Fix structure, not substance.
+- Exactly one `# H1`, and it is the first line of content.
+- The first heading after the title is `##`. Heading levels never skip a rank.
+- A leading frontmatter block, if present, declares only `subtitle`.
+- Every fenced code block is closed, and every Mermaid fence stays valid.
+- No cover page, contents list, or page references: Sfumato generates those.
+- No raw HTML, inline SVG, or HTML wrapper tags.
+- Math uses `$inline$` and `$$display$$`.
+- Return the complete corrected document and nothing else.
+
+Invalid document:
+
+```markdown
+{{ draft_markdown }}
+```

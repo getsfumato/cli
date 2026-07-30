@@ -23,6 +23,8 @@ pub enum ReviewFormat {
     VideoPlan,
     /// Renderer-owned source files used to produce a video.
     VideoSource,
+    /// A hierarchical prose document made of sections.
+    SectionedDocument,
 }
 
 /// Machine-readable mutation policies attached to a review snapshot.
@@ -57,6 +59,14 @@ pub enum ReviewConstraint {
     VideoPlanFieldsOnly,
     /// Only declared renderer source files may be replaced.
     VideoSourceFilesOnly,
+    /// A section mutation must first test that section's revision.
+    TestSectionRevision,
+    /// The document title cannot be changed.
+    PreserveDocumentTitle,
+    /// Heading levels may not skip a rank between consecutive sections.
+    PreserveHeadingHierarchy,
+    /// Replacing section Markdown is the preferred mutation.
+    PreferSectionMarkdown,
 }
 
 /// A serializable, immutable view of a document that a reviewer may patch.

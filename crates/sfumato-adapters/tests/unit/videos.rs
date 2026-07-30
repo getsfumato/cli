@@ -300,3 +300,35 @@ fn the_curated_catalog_excludes_items_that_cannot_render_silently() {
             .is_empty()
     );
 }
+
+#[test]
+fn the_manifest_pins_the_document_renderer() {
+    // The paginator's version decides where pages break, so it is pinned like
+    // every other renderer rather than left to whatever npm resolves today.
+    let pagedjs = renderer_package("pagedjs").unwrap();
+
+    assert_eq!(pagedjs.package, "pagedjs-cli");
+    assert_eq!(pagedjs.version, "0.4.3");
+    assert!(pagedjs.runtime_packages.is_empty());
+}
+
+#[test]
+fn the_document_renderer_installs_under_its_own_managed_prefix() {
+    // A shared prefix would let one renderer's dependency tree overwrite
+    // another's, which is how a pinned version silently stops being pinned.
+    let renderers = ManagedVideoRenderers::new(PathBuf::from("/managed"));
+
+    assert_eq!(
+        renderers.pagedjs_executable(),
+        PathBuf::from("/managed/pagedjs/node_modules/.bin/pagedjs-cli")
+    );
+}
+
+#[test]
+fn an_unknown_renderer_names_the_ones_that_exist() {
+    let error = renderer_package("weasyprint").unwrap_err().to_string();
+
+    assert!(error.contains("hyperframe"), "{error}");
+    assert!(error.contains("manim"), "{error}");
+    assert!(error.contains("pagedjs"), "{error}");
+}

@@ -614,6 +614,73 @@ Runtime errors or missing assets remaining after one repair fail the artifact
 transaction. Responsive overflow may remain as a warning. Use the reported
 viewport/kind/message in JSON `review.remaining_issues`.
 
+## Document Rendering
+
+### Paged.js CLI is missing
+
+Install the pinned managed copy and verify it:
+
+```bash
+sfumato renderer install pagedjs
+sfumato renderer doctor pagedjs
+```
+
+A global `npm install -g pagedjs-cli` also works; the renderer prefers the managed
+copy and falls back to the shell's.
+
+Document generation fails rather than committing a Markdown-only revision: a
+document whose PDF was never produced is not the artifact the command promised.
+
+### The PDF is Letter when the theme asks for A4
+
+Page geometry comes from the theme's `[adapters.document]` block, and `--page-size`
+overrides it for one generation. A theme that declares an unsupported sheet fails
+loudly rather than falling back, so check `theme show` first. If the theme is
+correct and the sheet still looks wrong, the print stylesheet is probably
+declaring its own `@page size`, which wins over the injected setup.
+
+### The cover or contents appear twice
+
+Sfumato composes both from the document's structure, and the prompts forbid the
+model from authoring them. A duplicate means the model wrote its own title page or
+contents list anyway. The `# H1` is stripped from the body on purpose, so a
+duplicated title usually indicates a second level-1 heading, which validation
+rejects; a duplicated contents list is model output and is worth reporting.
+
+### Contents page numbers are blank
+
+The numbers are resolved by `target-counter()` after pagination, which needs each
+entry's `href` to match a real heading anchor. A blank number means the anchor is
+missing, typically because a heading was rewritten between assembly and printing.
+
+### Format defects remain after review
+
+Each repair rewrites one section and the document is re-measured; a repair is kept
+only when both the defect count and the total severity improve. A defect that
+cannot be improved is abandoned by design, so a wide table that genuinely cannot
+fit the column stays reported in `review.remaining_issues` rather than looping.
+Reduce columns in the source material or pass `--page-size letter` for a wider
+text column.
+
+### Math prints as literal text
+
+Documents use dollar delimiters, `$inline$` and `$$display$$`. LaTeX-style
+`\(...\)` is consumed by Markdown before any renderer sees it, so a formula
+written that way loses its delimiters. The prompts state this, and existing
+sources written for slides may still carry the old form.
+
+### Pagination never completes
+
+The renderer bounds itself and fails rather than hanging. A document that exceeds
+the limit is usually one whose stylesheet the paginator cannot parse; open the
+committed `<slug>.html` in a browser to see the failure directly.
+
+### The page count changes between runs
+
+It should not: that is precisely what going through the CLI prevents. If it does,
+check that the printable HTML embeds no paginator of its own, since two paginators
+racing each other is the one way to reintroduce the problem.
+
 ## Hyperframe Video
 
 ### `renderer doctor hyperframe` reports unhealthy

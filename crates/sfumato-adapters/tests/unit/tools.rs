@@ -211,6 +211,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
             adapters: ThemeAdapters {
                 marp_css: "marp/theme.css".into(),
                 html: None,
+                document: None,
             },
         },
     };
@@ -307,6 +308,7 @@ async fn page_video_tool_injects_theme_tracks_mp4_and_allows_one_call() {
             adapters: ThemeAdapters {
                 marp_css: "marp/theme.css".into(),
                 html: None,
+                document: None,
             },
         },
     };

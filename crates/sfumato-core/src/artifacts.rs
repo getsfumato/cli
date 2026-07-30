@@ -21,6 +21,8 @@ pub enum ArtifactResourceKind {
     Pages,
     /// A playable MP4 and its reviewed plan and renderer sources.
     Videos,
+    /// A paginated PDF document and its Markdown, printable HTML, and assets.
+    Documents,
 }
 
 impl ArtifactResourceKind {
@@ -30,6 +32,7 @@ impl ArtifactResourceKind {
             Self::Slides => "slides",
             Self::Pages => "pages",
             Self::Videos => "videos",
+            Self::Documents => "documents",
         }
     }
 }

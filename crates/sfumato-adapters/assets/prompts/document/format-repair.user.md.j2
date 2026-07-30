@@ -1,0 +1,36 @@
+One section of this document does not fit its printed page.
+
+Project: {{ project }}
+Original instruction: {{ instruction }}
+Title: {{ title }}
+Page: {{ page_size }}
+
+{% include "shared/project-instructions.md.j2" %}
+
+Measured defect on page {{ issue.page }}, section "{{ issue.heading }}":
+- Kind: {{ issue.kind }}
+- Offending element: {{ issue.element }}
+- Overflow: {{ issue.overflow_px }}px
+
+What each kind means and how to fix it:
+- `overflows_text_column`: the element is wider than the text column. Narrow a table by dropping or merging columns, shorten cell text, split one wide table into two, or break long unbroken strings in code.
+- `taller_than_page`: the element can never fit one page. Split it: a long table into two tables with repeated headers, a long code block into two blocks with a sentence between them, an oversized diagram into two simpler ones.
+- `orphaned_heading`: the heading landed alone at the foot of a page. Add a sentence of lead-in prose under it, or tighten the preceding section so the heading moves.
+- `nearly_empty_page`: a block could not be split and pushed itself to a fresh page, leaving the previous one almost blank. Shorten or divide that block.
+
+Repair contract:
+- Return only this section's Markdown, starting with its existing heading at its existing level.
+- Keep the heading text and level exactly as they are.
+- Preserve the teaching content. Reshape it; do not delete the explanation to make it fit.
+- Do not add or remove sections, and do not touch any other section.
+- Keep math as `$inline$` and `$$display$$`, and keep any Mermaid fence valid.
+- No raw HTML, inline SVG, or HTML wrapper tags.
+{% if retry_present %}
+{% include "shared/layout-repair-retry.md.j2" %}
+{% endif %}
+
+Current section Markdown:
+
+```markdown
+{{ section_markdown }}
+```

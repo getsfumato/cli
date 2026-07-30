@@ -16,7 +16,7 @@ use crate::{
     themes::ThemePackage,
 };
 use sfumato_domain::PageDocument;
-pub use sfumato_domain::VideoEngine;
+pub use sfumato_domain::{SectionedDocument, VideoEngine};
 
 /// Semantic Mermaid styling derived from a Sfumato theme.
 #[derive(Clone, Debug, Serialize)]
@@ -354,6 +354,86 @@ pub trait PageInspector: Send + Sync {
         browser_path: Option<&Path>,
         operation: &OperationContext,
     ) -> SfumatoResult<Vec<PageInspectionIssue>>;
+}
+
+/// Complete inputs for turning document Markdown into printable HTML.
+pub struct DocumentAssemblyRequest<'a> {
+    /// Validated document the assembler renders.
+    pub document: &'a SectionedDocument,
+    /// Selected visual theme package.
+    pub theme: &'a ThemePackage,
+    /// Resolved page geometry and furniture.
+    pub setup: crate::generation::DocumentPageSetup,
+    /// Project name shown on the cover.
+    pub project: &'a str,
+    /// Cover date, taken from the revision rather than the clock so the same
+    /// revision always produces the same page.
+    pub revision_date: &'a str,
+    /// Generated assets the markup may reference.
+    pub allowed_assets: &'a [PathBuf],
+}
+
+/// Printable HTML plus the offline runtimes embedded into it.
+#[derive(Debug)]
+pub struct AssembledDocument {
+    /// Complete standalone HTML document, ready to paginate.
+    pub html: String,
+    /// Runtimes embedded into the document, for the revision manifest.
+    pub runtimes: Vec<PageRuntimeSelection>,
+}
+
+/// Deterministic Markdown-to-printable-HTML compiler for documents.
+pub trait DocumentAssembler: Send + Sync {
+    /// Assembles one printable HTML document from validated Markdown.
+    fn assemble(&self, request: DocumentAssemblyRequest<'_>) -> SfumatoResult<AssembledDocument>;
+}
+
+/// Complete inputs for rendering one printable document workspace.
+///
+/// A workspace root rather than a single path, because a document is a tree: the
+/// printable HTML resolves its diagrams, images and fonts relative to that root.
+/// A renderer that runs somewhere else therefore receives the whole root, which
+/// is also what a future service boundary would have to ship.
+pub struct DocumentRenderRequest<'a> {
+    /// Directory holding the document and every asset it references.
+    pub workspace_root: &'a Path,
+    /// Printable HTML, relative to the workspace root.
+    pub document: &'a Path,
+    /// Artifact destination, relative to the workspace root.
+    pub output: &'a Path,
+    /// Page setup the document was assembled for.
+    pub setup: crate::generation::DocumentPageSetup,
+}
+
+/// What one rendering pass produced.
+#[derive(Clone, Debug)]
+pub struct RenderedDocument {
+    /// Pages the renderer reported writing.
+    pub pages: usize,
+}
+
+/// Pagination and PDF export for printable documents.
+///
+/// Pagination, the page numbers, the running header and the contents page
+/// references are all resolved by one paginating renderer in a single session.
+/// Splitting them — paginating in one process and printing in another — loses the
+/// cross-page references, and printing without waiting for pagination produces a
+/// different page count on every run.
+#[async_trait]
+pub trait DocumentRenderer: Send + Sync {
+    /// Renders the document to PDF.
+    async fn render_pdf(
+        &self,
+        request: DocumentRenderRequest<'_>,
+        operation: &OperationContext,
+    ) -> SfumatoResult<RenderedDocument>;
+
+    /// Paginates the document and measures its page-format defects.
+    async fn inspect_format(
+        &self,
+        request: DocumentRenderRequest<'_>,
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<crate::generation::DocumentFormatIssue>>;
 }
 
 /// Engine-specific local video rendering parameters.

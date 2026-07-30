@@ -438,3 +438,78 @@ required = ["engine", "source_snapshot", "validation_error", "catalog"]
 id = "video.tool-exhausted.user"
 path = "video/tool-exhausted.user.md.j2"
 required = ["max_tool_rounds"]
+
+[[prompts]]
+id = "document.draft.system"
+path = "document/draft.system.md.j2"
+required = ["learning_style"]
+
+[[prompts]]
+id = "document.draft.user"
+path = "document/draft.user.md.j2"
+required = ["project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "title", "title_provided", "reusable_assets", "image_generation_available", "page_size", "table_of_contents"]
+
+[[prompts]]
+id = "document.compact-draft.system"
+path = "document/compact-draft.system.md.j2"
+required = ["learning_style"]
+
+[[prompts]]
+id = "document.compact-draft.user"
+path = "document/compact-draft.user.md.j2"
+required = ["project", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "title", "title_provided", "page_size"]
+
+[[prompts]]
+id = "document.validation-repair.system"
+path = "document/validation-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "document.validation-repair.user"
+path = "document/validation-repair.user.md.j2"
+required = ["project", "instruction", "title", "validation_error", "project_instructions", "draft_markdown"]
+
+[[prompts]]
+id = "document.mermaid-repair.system"
+path = "document/mermaid-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "document.mermaid-repair.user"
+path = "document/mermaid-repair.user.md.j2"
+required = ["project", "instruction", "title", "diagram_error", "project_instructions", "document_snapshot"]
+
+[[prompts]]
+id = "document.review.system"
+path = "document/review.system.md.j2"
+required = []
+
+[[prompts]]
+id = "document.review.user"
+path = "document/review.user.md.j2"
+required = ["instruction", "project", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "source_bundle", "document_snapshot", "page_size"]
+
+[[prompts]]
+id = "document.compact-review.system"
+path = "document/compact-review.system.md.j2"
+required = []
+
+[[prompts]]
+id = "document.compact-review.user"
+path = "document/compact-review.user.md.j2"
+required = ["instruction", "project", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "source_bundle", "document_snapshot"]
+
+[[prompts]]
+id = "document.format-repair.system"
+path = "document/format-repair.system.md.j2"
+required = []
+
+[[prompts]]
+id = "document.format-repair.user"
+path = "document/format-repair.user.md.j2"
+required = ["project", "instruction", "title", "project_instructions", "issue", "section_markdown", "page_size"]
+
+[[prompts]]
+id = "document.tool-exhausted.user"
+path = "document/tool-exhausted.user.md.j2"
+required = ["max_tool_rounds"]

@@ -665,6 +665,50 @@ v5 workflow; new callers should not use the hidden flag.
 
 See [Generate slides](05-generate-slides.md) for the complete pipeline.
 
+### `sfumato generate document` / `doc` / `docs`
+
+```text
+sfumato generate document [INPUTS]... \
+  --instruction <TEXT> \
+  [--title <TITLE>] \
+  [--template <NAME>] \
+  [--out <FOLDER>] \
+  [--page-size <a4|letter>] \
+  [--toc | --no-toc] \
+  [--cover | --no-cover] \
+  [--project <NAME>] \
+  [--theme <NAME>] \
+  [--model <CAPABILITY=PROFILE>]... \
+  [--review-model <PROFILE>] \
+  [--no-review] \
+  [--tool <image-gen|video-gen>]... \
+  [--disable-tool <image-gen|video-gen>]... \
+  [--dry-run] \
+  [--json]
+```
+
+`doc` and `docs` are visible aliases for `document`.
+
+| Flag | Meaning |
+| --- | --- |
+| `--title` | Explicit document title; otherwise generated from content. |
+| `--template` | Opt into one document structural template. No template is implicit. |
+| `--out` | Publish under `<FOLDER>/_sfumato/documents`. |
+| `--page-size` | Sheet to print on. The theme decides when omitted. |
+| `--toc` / `--no-toc` | Force the table of contents on or off for this generation. |
+| `--cover` / `--no-cover` | Force the cover page on or off for this generation. |
+| `--model`, `--review-model` | Capability and reviewer overrides. |
+| `--no-review` | Skip semantic review and page-format repair. Structural validation, Mermaid validation, and printing still apply. |
+| `--tool`, `--disable-tool` | Override the image-generation tool. |
+| `--dry-run`, `--json` | Preflight or machine-readable output. |
+
+Omitting a page-setup flag is not the same as passing its negative form: an
+omitted flag defers to the theme, while `--no-toc` overrides a theme that asks
+for one.
+
+See [Generate documents](12-generate-documents.md) for the pipeline, the
+structure contract, the cover, and format repair.
+
 ### `sfumato generate page` / `pages`
 
 ```text

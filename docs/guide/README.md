@@ -15,6 +15,7 @@ side effects, managed files, publication layouts, and failure behavior.
 | [Generate slides](05-generate-slides.md) | Marp generation, review, Mermaid, MathJax, images, PDF, and publication. |
 | [Generate pages](06-generate-pages.md) | Standalone HTML, UI libraries, utilities, offline runtimes, browser review, and publication. |
 | [Generate videos](07-generate-videos.md) | Hyperframes, Manim, remote video models, options, repair, inspection, and publication. |
+| [Generate documents](12-generate-documents.md) | Paginated PDF prose: sections, cover, contents, page setup, format repair, and publication. |
 | [Editing, TUI, and automation](08-editing-tui-and-automation.md) | Focused deck editing, interactive mode, JSON mode, progress events, and agent usage. |
 | [Command reference](09-command-reference.md) | Every command, positional argument, flag, accepted value, and immediate effect. |
 | [Troubleshooting](10-troubleshooting.md) | Configuration, provider, browser, Marp, Mermaid, plugin, Hyperframes, and Manim failures. |
