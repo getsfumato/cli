@@ -236,3 +236,26 @@ fn a_silent_turn_says_so_rather_than_quoting_an_empty_answer() {
         "{error}"
     );
 }
+
+#[test]
+fn the_tool_ceiling_leaves_room_for_calls_already_in_flight() {
+    // Measured on a real run: the planner made nine tool calls inside a single agent
+    // turn against a budget of eight, and the tenth killed the whole generation. This
+    // transport cannot withdraw a model's tools mid-turn, so calls queued before the
+    // notice arrived were being punished as defiance.
+    assert_eq!(super::tool_call_ceiling(8), 16);
+    assert_eq!(super::tool_call_ceiling(16), 24);
+
+    // Calls up to the budget run; past it they are refused, not fatal.
+    let budget = 8;
+    assert!(9 <= super::tool_call_ceiling(budget), "the ninth is refused, not fatal");
+    assert!(
+        super::tool_call_ceiling(budget) + 1 > super::tool_call_ceiling(budget),
+        "a model that ignores every refusal still terminates"
+    );
+}
+
+#[test]
+fn the_ceiling_cannot_overflow_on_an_absurd_budget() {
+    assert_eq!(super::tool_call_ceiling(usize::MAX), usize::MAX);
+}

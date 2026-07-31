@@ -59,6 +59,24 @@ rendered output-contract instruction after exhaustion.
 
 Speech and video stages must use capability-specific connectors.
 
+## Tool Budget
+
+`max_tool_rounds` counts something different here than on the HTTP connectors, and
+the difference is large enough to matter when configuring a profile. Those connectors
+spend one unit per model round trip, and a single round trip may carry several tool
+calls. This transport runs one continuous agent turn with no round boundary inside
+it, so the only countable unit is the individual call. A real planning stage made
+nine calls inside one turn while an HTTP connector made nineteen across fifteen
+rounds and stayed inside a budget of twelve.
+
+So a profile on this connector wants a higher number than the same work needs
+elsewhere, particularly for a project whose sources are spread across many
+directories. Exhausting the budget is not fatal: further calls are refused with the
+request's exhaustion notice and the model answers from the context it has, the same
+degradation the HTTP connectors get by omitting the tool list. A model that keeps
+calling through every refusal eventually fails the turn, because the tools cannot be
+withdrawn once the turn has started.
+
 ## Image Input
 
 `turn/start` accepts images alongside the prompt, and the protocol takes a local

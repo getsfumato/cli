@@ -607,12 +607,12 @@ impl CodexAppServerProcess {
                 && message.get("id").is_some()
             {
                 tool_calls += 1;
-                if tool_calls > request.max_tool_rounds.saturating_add(1) {
+                if tool_calls > tool_call_ceiling(request.max_tool_rounds) {
                     return Err(SfumatoError::provider(
                         ErrorClass::InvalidOutput,
                         format!(
-                            "Codex App Server continued requesting tools after Sfumato's limit of {} was reported",
-                            request.max_tool_rounds
+                            "Codex App Server kept requesting tools through {} refusals after Sfumato's limit of {} was reported",
+                            TOOL_REFUSALS_BEFORE_FAILING, request.max_tool_rounds
                         ),
                     )
                     .at_stage(stage));
@@ -923,6 +923,22 @@ fn dynamic_tools(tools: &[ToolDefinition]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Refused tool calls tolerated after the budget is reported spent.
+///
+/// This transport cannot take a model's tools away. The HTTP connectors send the
+/// exhaustion notice and then simply omit the tool list, so the model physically
+/// cannot ask again; here the tools are registered for the whole turn and the only
+/// available answer is to refuse each further call. Failing on the first refused
+/// call punished a model for work it had already queued before it could read the
+/// notice, and killed the whole generation for it.
+const TOOL_REFUSALS_BEFORE_FAILING: usize = 8;
+
+/// The call number past which the model is ignoring the notice rather than
+/// draining a queue.
+fn tool_call_ceiling(max_tool_rounds: usize) -> usize {
+    max_tool_rounds.saturating_add(TOOL_REFUSALS_BEFORE_FAILING)
 }
 
 /// Builds one turn's input items, attaching any images the request carries.
