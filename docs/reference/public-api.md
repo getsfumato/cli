@@ -41,7 +41,8 @@ cases. CLI and TUI construct the same command DTOs.
 - `PromptManager` and schema-aware `ConfigEditor`;
 - `ArtifactStore`, repositories, and `WorkspaceFileSystem`;
 - `ProviderFactory`, `ConnectorIntrospection`, `TextModel`,
-  `ImageGenerationProvider`, and `VideoGenerationProvider`;
+  `ImageGenerationProvider`, `VideoGenerationProvider`, and
+  `SpeechGenerationProvider`;
 - `SecretResolver` for provider authentication and `SecretStore` for secure
   connector login, status, and logout workflows;
 - `DiagramRenderer`, `SlideRenderer`, `VideoRenderer`, `RendererManager`,

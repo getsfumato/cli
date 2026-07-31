@@ -39,7 +39,10 @@ impl PromptCatalog for TestPromptCatalog {
                     "image_alt_text": "Accessible alternative text.",
                     "video_generation": "Generate a video.",
                     "video_prompt": "Video prompt.",
-                    "video_accessible_description": "Accessible video description."
+                    "video_accessible_description": "Accessible video description.",
+                    "audio_generation": "Speak a line of narration.",
+                    "audio_text": "Words to speak.",
+                    "audio_voice": "Voice identifier."
                 })
                 .to_string(),
                 provenance: PromptProvenance {
@@ -230,6 +233,7 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
                 project_instructions: Some("Use Spanish labels.".to_string()),
             }),
             video: None,
+            audio: None,
             prompt_catalog: Arc::new(TestPromptCatalog),
         })
         .unwrap();
@@ -279,6 +283,7 @@ fn filesystem_only_tools_do_not_declare_image_generation() {
             sources: Vec::new(),
             image: None,
             video: None,
+            audio: None,
             prompt_catalog: Arc::new(TestPromptCatalog),
         })
         .unwrap();
@@ -329,6 +334,7 @@ async fn page_video_tool_injects_theme_tracks_mp4_and_allows_one_call() {
                 references: Vec::new(),
                 options: Default::default(),
             }),
+            audio: None,
             prompt_catalog: Arc::new(TestPromptCatalog),
         })
         .unwrap();

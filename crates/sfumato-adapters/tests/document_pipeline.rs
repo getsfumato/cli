@@ -10,7 +10,7 @@ use std::{
 
 use sfumato_adapters::{documents::PagedDocumentAssembler, renderers::PagedDocumentCliRenderer};
 use sfumato_core::{
-    generation::{DocumentPageSize, DocumentPageSetup},
+    generation::{DocumentPageSetup, DocumentPageSize},
     operation::OperationContext,
     renderers::{
         DocumentAssembler, DocumentAssemblyRequest, DocumentRenderRequest, DocumentRenderer,
@@ -40,13 +40,16 @@ fn theme() -> ThemePackage {
 }
 
 fn long_markdown() -> String {
-    let mut markdown = String::from("---\nsubtitle: Prueba de paginado\n---\n\n# Conceptos de repaso\n\nIntroducción al material.\n");
+    let mut markdown = String::from(
+        "---\nsubtitle: Prueba de paginado\n---\n\n# Conceptos de repaso\n\nIntroducción al material.\n",
+    );
     for section in 1..=4 {
         markdown.push_str(&format!("\n## Sección {section}\n\n"));
         for paragraph in 1..=6 {
             markdown.push_str(&format!(
                 "Párrafo {paragraph} de la sección {section}. {}\n\n",
-                "Texto de relleno suficientemente largo para forzar varios saltos de página. ".repeat(4)
+                "Texto de relleno suficientemente largo para forzar varios saltos de página. "
+                    .repeat(4)
             ));
         }
         markdown.push_str(&format!("### Detalle {section}\n\n| columna | valor |\n| --- | --- |\n| uno | 1 |\n| dos | 2 |\n\n"));
@@ -127,4 +130,3 @@ async fn a_document_paginates_numbers_its_pages_and_prints_a_pdf() {
         "pagination is deterministic across runs"
     );
 }
-

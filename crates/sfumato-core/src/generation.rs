@@ -342,10 +342,25 @@ pub struct VideoGenerationOutput {
     pub review_session: Option<VideoReviewSession>,
     /// Automated visual-review findings, if an image reviewer was configured.
     pub visual_report: Option<VideoVisualReport>,
+    /// Spoken narration layered onto the film, when it speaks.
+    pub narration: Option<VideoNarrationSummary>,
     /// Prompt provenance.
     pub prompts: Vec<PromptProvenance>,
     /// Non-fatal workflow warnings.
     pub warnings: Vec<String>,
+}
+
+/// What was spoken over one film, for callers that never see the audio.
+#[derive(Clone, Debug, Serialize)]
+pub struct VideoNarrationSummary {
+    /// Model profile that voiced the film.
+    pub profile: String,
+    /// Number of spoken passages, normally one per scene.
+    pub segments: usize,
+    /// Total spoken length in seconds, gaps included.
+    pub spoken_seconds: f32,
+    /// Caption groups generated from the provider's word alignment.
+    pub caption_groups: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]

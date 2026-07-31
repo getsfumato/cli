@@ -29,19 +29,22 @@ use crate::{
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
-        GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
-        TextGenerationRequest, ToolDefinition, VideoGenerationProvider,
+        GenerationStage, ImageGenerationProvider, ProviderFactory, SpeechGenerationProvider,
+        TextGenerationEvent, TextGenerationRequest, ToolDefinition, VideoGenerationProvider,
     },
     renderers::{AssembledPage, PageAssembler, PageAssemblyRequest, PageInspector},
     repositories::ThemeRepository,
     sources::{SourceDocument, SourceReader},
     templates::GenerationTemplate,
     themes::ThemePackage,
-    tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig, VideoToolConfig},
+    tools::{
+        AudioToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig,
+        VideoToolConfig,
+    },
 };
 
 use super::{
-    DryRunImageProvider, DryRunVideoProvider,
+    DryRunImageProvider, DryRunSpeechProvider, DryRunVideoProvider,
     project_assets::{
         PrepareProjectAssetsRequest, prepare_project_assets, referenced_generated_assets,
         retain_referenced_generated_assets,
@@ -195,6 +198,7 @@ pub(crate) async fn generate_page(
         });
     let images_dir = staging_root.join("assets/images");
     let videos_dir = staging_root.join("assets/videos");
+    let audio_dir = staging_root.join("assets/audio");
     operation.emit(
         OperationStage::ReadSources,
         OperationEventKind::Started,
@@ -263,6 +267,23 @@ pub(crate) async fn generate_page(
     } else {
         Vec::new()
     };
+    // A page can speak: the drafter embeds an <audio> element and, when it
+    // wants captions, reads the word timings written beside the file.
+    let audio_selection = config
+        .generation_tool_enabled(GenerationToolKind::AudioGen)
+        .then(|| config.resolve_model(Capability::Speech))
+        .transpose()?;
+    let audio_provider = audio_selection
+        .map(|(_, profile)| {
+            if dry_run {
+                Ok::<Arc<dyn SpeechGenerationProvider>, SfumatoError>(Arc::new(
+                    DryRunSpeechProvider,
+                ))
+            } else {
+                provider_factory.speech(&config, profile).map(Arc::from)
+            }
+        })
+        .transpose()?;
     let image = image_selection
         .map(|(name, _)| {
             let provider = image_provider
@@ -296,6 +317,13 @@ pub(crate) async fn generate_page(
                 .map(|value| value.content.clone()),
             references: video_references,
             options: profile.options.video.clone(),
+        }),
+        audio: audio_selection.map(|(name, profile)| AudioToolConfig {
+            provider: audio_provider.expect("speech provider resolved above"),
+            profile_name: name.to_string(),
+            output_dir: audio_dir,
+            reference_prefix: "assets/audio".into(),
+            options: profile.options.speech.clone(),
         }),
         prompt_catalog: prompt_catalog.clone(),
     })?;

@@ -26,7 +26,7 @@ fn plan() -> VideoPlanDocument {
 fn the_master_composition_satisfies_the_renderer_contract() {
     // Every one of these is a rule the renderer enforces. Generating them removes
     // the whole class of authoring failure that used to need a repair pass.
-    let html = master_index_html(&plan(), 1280, 720);
+    let html = master_index_html(&plan(), 1280, 720, &NarrationLayer::default());
 
     assert!(html.starts_with("<!DOCTYPE html>"));
     assert!(html.contains("<html>") && html.contains("<body>"));
@@ -36,13 +36,16 @@ fn the_master_composition_satisfies_the_renderer_contract() {
     assert!(html.contains("gsap.timeline"));
     assert!(html.contains("window.__timelines"));
     // The validator compacts whitespace before looking for this.
-    let compact: String = html.chars().filter(|value| !value.is_whitespace()).collect();
+    let compact: String = html
+        .chars()
+        .filter(|value| !value.is_whitespace())
+        .collect();
     assert!(compact.contains("paused:true"));
 }
 
 #[test]
 fn every_planned_scene_is_mounted_at_its_planned_position() {
-    let html = master_index_html(&plan(), 1920, 1080);
+    let html = master_index_html(&plan(), 1920, 1080, &NarrationLayer::default());
 
     for (scene, start, duration, track) in [
         ("scene-1", "0", "4", "0"),
@@ -60,7 +63,7 @@ fn every_planned_scene_is_mounted_at_its_planned_position() {
 fn a_mount_carries_its_own_identifier_beside_the_source() {
     // Measured against the renderer: a host with only `data-composition-src` is
     // reported as a composition host missing its ID, and the scene never mounts.
-    let html = master_index_html(&plan(), 1280, 720);
+    let html = master_index_html(&plan(), 1280, 720, &NarrationLayer::default());
 
     assert!(
         html.contains("id=\"mount-scene-1\" class=\"clip\" data-composition-id=\"mount-scene-1\"")
@@ -69,7 +72,7 @@ fn a_mount_carries_its_own_identifier_beside_the_source() {
 
 #[test]
 fn the_master_timeline_runs_for_the_requested_duration() {
-    let html = master_index_html(&plan(), 1280, 720);
+    let html = master_index_html(&plan(), 1280, 720, &NarrationLayer::default());
 
     assert!(
         html.contains("tl.set({}, {}, 24);"),
@@ -153,7 +156,8 @@ fn a_scene_using_bundled_and_substituted_families_is_accepted() {
 #[test]
 fn the_font_gate_reads_svg_attributes_and_ignores_other_font_properties() {
     let attribute = "<template><div data-composition-id=\"s\" data-width=\"1\" data-height=\"1\"><text font-family=\"Comic Sans MS\">x</text></div><script>window.__timelines={}</script></template>";
-    let error = validate_scene_composition("s", attribute).expect_err("the attribute spelling counts");
+    let error =
+        validate_scene_composition("s", attribute).expect_err("the attribute spelling counts");
     assert!(error.contains("comic sans ms"), "{error}");
 
     // `font-size` and `font-weight` name no family and must not be misread as one.
@@ -194,4 +198,101 @@ fn a_font_declared_through_a_custom_property_is_not_a_missing_family() {
     let markup = "<template><div data-composition-id=\"s\" data-width=\"1\" data-height=\"1\"><style>#root{font-family:var(--font-body, sans-serif)}</style></div><script>window.__timelines={}</script></template>";
 
     assert_eq!(validate_scene_composition("s", markup), Ok(()));
+}
+
+#[test]
+fn a_narrated_film_mounts_its_audio_at_the_composition_root() {
+    // The renderer only decodes media that is a direct child of the host root, so
+    // a narration file nested inside a scene would render silently.
+    let layer = NarrationLayer {
+        clips: vec![
+            NarrationClip {
+                reference: "assets/audio/narration-scene-1.mp3".into(),
+                start_seconds: 0.0,
+                duration_seconds: 3.5,
+            },
+            NarrationClip {
+                reference: "assets/audio/narration-scene-2.mp3".into(),
+                start_seconds: 4.0,
+                duration_seconds: 8.0,
+            },
+        ],
+        captions: true,
+    };
+    let html = master_index_html(&plan(), 1280, 720, &layer);
+
+    // No data-duration: the renderer derives an audio clip's end from the file
+    // itself and rejects the element when both are present.
+    assert!(html.contains(
+        "<audio id=\"narration-0\" class=\"clip\" src=\"assets/audio/narration-scene-1.mp3\" data-start=\"0\" data-track-index=\"4\" data-volume=\"1\">"
+    ), "{html}");
+    assert!(!html.contains("<audio id=\"narration-0\" class=\"clip\" src=\"assets/audio/narration-scene-1.mp3\" data-start=\"0\" data-duration"));
+    assert!(html.contains("src=\"assets/audio/narration-scene-2.mp3\" data-start=\"4\""));
+    // Captions ride above every scene, and audio above the captions.
+    assert!(html.contains("data-composition-src=\"compositions/captions.html\" data-start=\"0\" data-duration=\"24\" data-track-index=\"3\""), "{html}");
+}
+
+#[test]
+fn a_silent_film_mounts_neither_audio_nor_captions() {
+    let html = master_index_html(&plan(), 1280, 720, &NarrationLayer::default());
+
+    assert!(!html.contains("<audio"));
+    assert!(!html.contains("captions.html"));
+}
+
+#[test]
+fn the_caption_overlay_tracks_the_words_that_were_spoken() {
+    let groups = crate::resources::narration::caption_groups(
+        &[
+            crate::providers::SpeechWordTiming {
+                text: "light".into(),
+                start_seconds: 0.0,
+                end_seconds: 0.4,
+            },
+            crate::providers::SpeechWordTiming {
+                text: "travels.".into(),
+                start_seconds: 0.4,
+                end_seconds: 0.9,
+            },
+        ],
+        2.0,
+    );
+    let html = captions_composition_html(&groups, 1920, 1080);
+
+    assert!(html.contains("<template>"));
+    assert!(html.contains("data-composition-id=\"captions\""));
+    assert!(html.contains("data-width=\"1920\"") && html.contains("data-height=\"1080\""));
+    assert!(html.contains("window.__timelines[\"captions\"]"));
+    // Placed where the voice is, not where the plan guessed.
+    assert!(html.contains("data-start=\"2\""), "{html}");
+    assert!(html.contains("light travels."));
+    // A scrim rather than a shadow alone: the film's own palette decides what is
+    // behind a caption, and white-on-cream is exactly the case a shadow loses.
+    assert!(
+        html.contains("<span class=\"caption-line\">light travels.</span>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("background: rgba(12, 14, 17, 0.66)"),
+        "{html}"
+    );
+    // A group that never hard-stops stacks over the next one.
+    assert!(
+        html.contains("tl.set(\"#caption-0\", { opacity: 0 }, 2.9);"),
+        "{html}"
+    );
+}
+
+#[test]
+fn caption_text_cannot_inject_markup() {
+    let groups = vec![crate::resources::narration::CaptionGroup {
+        text: "a < b & <script>".into(),
+        start_seconds: 0.0,
+        end_seconds: 1.0,
+        words: Vec::new(),
+    }];
+    let html = captions_composition_html(&groups, 1280, 720);
+
+    assert!(html.contains("a &lt; b &amp; &lt;script&gt;"), "{html}");
+    assert!(!html.contains("<script>a"), "{html}");
 }

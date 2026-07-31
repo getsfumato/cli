@@ -70,7 +70,9 @@ fn assemble_document(request: DocumentAssemblyRequest<'_>) -> Result<AssembledDo
     if request.setup.table_of_contents {
         content.push_str(&table_of_contents_html(request.document));
     }
-    content.push_str(&format!("<main class=\"sfumato-document\">\n{body}</main>\n"));
+    content.push_str(&format!(
+        "<main class=\"sfumato-document\">\n{body}</main>\n"
+    ));
 
     let mut scripts = String::new();
     if uses_math {
@@ -126,7 +128,9 @@ fn restore_math_delimiters(html: &str) -> String {
             break;
         };
         let display = &tail[23..style_end] == "display";
-        let Some(open_end) = tail.find('>') else { break };
+        let Some(open_end) = tail.find('>') else {
+            break;
+        };
         let Some(close) = tail.find("</span>") else {
             break;
         };
@@ -193,7 +197,10 @@ fn theme_print_css(theme: &ThemePackage) -> Result<String> {
 
 fn fallback_print_css(theme: &ThemePackage) -> String {
     let token = |group: &std::collections::BTreeMap<String, String>, key: &str, default: &str| {
-        group.get(key).cloned().unwrap_or_else(|| default.to_owned())
+        group
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| default.to_owned())
     };
     let colors = &theme.manifest.tokens.colors;
     let fonts = &theme.manifest.tokens.fonts;
@@ -292,7 +299,9 @@ fn validate_local_references(html: &str, allowed_assets: &[std::path::PathBuf]) 
     let mut remainder = html;
     while let Some(start) = remainder.find("src=\"") {
         remainder = &remainder[start + 5..];
-        let Some(end) = remainder.find('"') else { break };
+        let Some(end) = remainder.find('"') else {
+            break;
+        };
         let source = &remainder[..end];
         if source.starts_with("data:") {
             remainder = &remainder[end..];

@@ -40,7 +40,11 @@ async fn a_minimal_project_passes_check_with_every_catalog_item_staged() {
     };
 
     let result = renderers
-        .validate(VideoEngine::Hyperframe, &request, &OperationContext::detached())
+        .validate(
+            VideoEngine::Hyperframe,
+            &request,
+            &OperationContext::detached(),
+        )
         .await;
 
     if let Err(error) = &result {
@@ -52,5 +56,8 @@ async fn a_minimal_project_passes_check_with_every_catalog_item_staged() {
         .map(|entry| entry.path())
         .collect();
     println!("staged compositions: {}", staged.len());
-    assert!(result.is_ok(), "a minimal project must pass with the catalog staged");
+    assert!(
+        result.is_ok(),
+        "a minimal project must pass with the catalog staged"
+    );
 }

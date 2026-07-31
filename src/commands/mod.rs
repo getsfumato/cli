@@ -9,14 +9,13 @@ use crate::{
     cli::{
         ArtifactCommands, Commands, ConfigCommands, ConfigDeleteArgs, ConfigSetArgs,
         ConfigShowArgs, ConnectorCommands, ConnectorSetupArgs, ConnectorShowArgs, DocumentArgs,
-        DocumentPageSizeArg, EditCommands,
-        EditSlidesArgs, GenerateCommands, GenerationToolArg, InitProjectArgs, InitTarget,
-        LocalVideoRendererArg, ModelAddArgs, ModelCommands, ModelEditArgs, ModelNameArgs,
-        ModelUseArgs, PageArgs, PluginCommands, ProjectCommands, ProjectNameArgs, ProjectShowArgs,
-        PromptCommands, PromptCustomizeArgs, PromptProjectArgs, PromptScope, PromptShowArgs,
-        RendererCommands, SlidesArgs, TemplateCommands, TemplateKindArg, ThemeCommands,
-        ThemeUseArgs, ToolCommands, VideoArgs, VideoAudioArg, VideoCommands, VideoEngineArg,
-        VideoWorkflowArg,
+        DocumentPageSizeArg, EditCommands, EditSlidesArgs, GenerateCommands, GenerationToolArg,
+        InitProjectArgs, InitTarget, LocalVideoRendererArg, ModelAddArgs, ModelCommands,
+        ModelEditArgs, ModelNameArgs, ModelUseArgs, PageArgs, PluginCommands, ProjectCommands,
+        ProjectNameArgs, ProjectShowArgs, PromptCommands, PromptCustomizeArgs, PromptProjectArgs,
+        PromptScope, PromptShowArgs, RendererCommands, SlidesArgs, TemplateCommands,
+        TemplateKindArg, ThemeCommands, ThemeUseArgs, ToolCommands, VideoArgs, VideoAudioArg,
+        VideoCommands, VideoEngineArg, VideoWorkflowArg,
     },
     init::InitService,
     presentation::{Cell, print_table},
@@ -24,9 +23,8 @@ use crate::{
 use sfumato_core::{
     application::{
         AddProjectAssetCommand, ApproveVideoReviewCommand, EditSlidesCommand,
-        GenerateDocumentCommand, GeneratePageCommand,
-        GenerateSlidesCommand, GenerateVideoCommand, PreviewVideoReviewCommand, SfumatoApplication,
-        UpdateProjectAssetCommand,
+        GenerateDocumentCommand, GeneratePageCommand, GenerateSlidesCommand, GenerateVideoCommand,
+        PreviewVideoReviewCommand, SfumatoApplication, UpdateProjectAssetCommand,
     },
     config::{Capability, ConfigOverrides, GenerationToolKind, VideoAudioMode},
     config_editor::ConfigTarget,
@@ -478,6 +476,7 @@ fn generation_tool(tool: GenerationToolArg) -> GenerationToolKind {
     match tool {
         GenerationToolArg::ImageGen => GenerationToolKind::ImageGen,
         GenerationToolArg::VideoGen => GenerationToolKind::VideoGen,
+        GenerationToolArg::AudioGen => GenerationToolKind::AudioGen,
     }
 }
 
@@ -1206,9 +1205,18 @@ pub(crate) async fn execute_video(
         Some(VideoAudioArg::Auto) => VideoAudioMode::Auto,
         Some(VideoAudioArg::On) => VideoAudioMode::On,
         Some(VideoAudioArg::Off) => VideoAudioMode::Off,
+        // Hyperframe narrates when the project can: a configured speech profile
+        // is the opt-in, the same way a configured image profile enables
+        // illustrations. Manim has no audio track to fill.
+        None if matches!(engine, sfumato_core::renderers::VideoEngine::Hyperframe) => {
+            VideoAudioMode::Auto
+        }
         None if local => VideoAudioMode::Off,
         None => VideoAudioMode::Auto,
     };
+    if args.voice.is_some() && !matches!(engine, sfumato_core::renderers::VideoEngine::Hyperframe) {
+        bail!("--voice is only valid with --engine hyperframe");
+    }
     let config = ConfigOverrides {
         project: args.project.clone(),
         theme: args.theme,
@@ -1239,6 +1247,7 @@ pub(crate) async fn execute_video(
                 fps: args.fps.unwrap_or(30),
                 quality: args.quality.unwrap_or_else(|| "high".into()),
                 audio,
+                voice: args.voice,
                 allow_code_execution: args.allow_code_execution,
                 workflow: match args.workflow {
                     VideoWorkflowArg::Auto => sfumato_domain::VideoWorkflow::Auto,
@@ -1295,6 +1304,15 @@ fn render_video_result(result: GenerateVideoResult, json: bool, dry_run: bool) -
             println!("Then: sfumato video approve {}", session.review_id);
         } else {
             println!("Wrote {}", result.video_path.display());
+        }
+        if let Some(narration) = &result.output.narration {
+            println!(
+                "Narrated {} passages in {:.1}s with {} ({} caption groups)",
+                narration.segments,
+                narration.spoken_seconds,
+                narration.profile,
+                narration.caption_groups
+            );
         }
         for path in result.published_paths {
             println!("Published {}", path.display());
@@ -1539,11 +1557,7 @@ fn flag_override(enabled: bool, disabled: bool) -> Option<bool> {
     }
 }
 
-fn render_document_result(
-    result: GenerateDocumentResult,
-    json: bool,
-    dry_run: bool,
-) -> Result<()> {
+fn render_document_result(result: GenerateDocumentResult, json: bool, dry_run: bool) -> Result<()> {
     for warning in &result.warnings {
         eprintln!("{warning}");
     }
@@ -1596,7 +1610,10 @@ fn render_document_result(
         } else {
             println!("Review: disabled.");
         }
-        println!("Planned PDF: {}", result.markdown_path.with_extension("pdf").display());
+        println!(
+            "Planned PDF: {}",
+            result.markdown_path.with_extension("pdf").display()
+        );
         println!("Dry run complete; no files were written.");
     } else {
         println!("Wrote {}", result.markdown_path.display());

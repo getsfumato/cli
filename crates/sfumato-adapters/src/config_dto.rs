@@ -6,11 +6,12 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sfumato_core::config::{
     AnthropicConnectorConfig, Capability, CodexAppServerConnectorConfig, ConnectorConfig,
-    GenerationToolDefaults, GenerationToolKind, GlobalConfig, ImageModelOptions,
-    LmStudioConnectorConfig, MarpConfig, ModelDefaults, ModelOptions, ModelProfile, ModelRole,
-    OllamaConnectorConfig, OpenAiCompatibleConnectorConfig, OpenRouterConnectorConfig,
-    PageDefaults, ProjectConfig, ProjectRegistry, ProjectSecurityConfig, RegisteredProject,
-    SecretRef, TextModelOptions, UserConfig, VideoAudioMode, VideoModelOptions,
+    ElevenLabsConnectorConfig, GenerationToolDefaults, GenerationToolKind, GlobalConfig,
+    ImageModelOptions, LmStudioConnectorConfig, MarpConfig, ModelDefaults, ModelOptions,
+    ModelProfile, ModelRole, OllamaConnectorConfig, OpenAiCompatibleConnectorConfig,
+    OpenRouterConnectorConfig, PageDefaults, ProjectConfig, ProjectRegistry, ProjectSecurityConfig,
+    RegisteredProject, SecretRef, SpeechModelOptions, TextModelOptions, UserConfig, VideoAudioMode,
+    VideoModelOptions,
 };
 
 /// Current persisted configuration schema.
@@ -65,6 +66,7 @@ enum ConnectorKindDto {
     #[serde(rename = "lmstudio", alias = "lm_studio")]
     LmStudio,
     Anthropic,
+    Elevenlabs,
     #[serde(alias = "codex_cli")]
     CodexAppServer,
 }
@@ -118,6 +120,24 @@ struct ModelOptionsDto {
     video_poll_interval_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     video_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_voice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_output_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_stability: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_similarity_boost: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_style: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_speed: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_speaker_boost: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speech_segment_gap_seconds: Option<f32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -266,6 +286,20 @@ impl GlobalConfigDto {
                                 headers: connector.headers,
                             })
                         }
+                        ConnectorKindDto::Elevenlabs => {
+                            if connector.executable.is_some()
+                                || connector.native_base_url.is_some()
+                            {
+                                bail!("ElevenLabs connector '{name}' cannot define executable or native_base_url");
+                            }
+                            ConnectorConfig::ElevenLabs(ElevenLabsConnectorConfig {
+                                base_url: connector.base_url.ok_or_else(|| anyhow::anyhow!(
+                                    "ElevenLabs connector '{name}' requires base_url"
+                                ))?,
+                                credential: connector.credential,
+                                headers: connector.headers,
+                            })
+                        }
                         ConnectorKindDto::CodexAppServer => {
                             if connector.base_url.is_some()
                                 || connector.credential.is_some()
@@ -355,6 +389,14 @@ impl GlobalConfigDto {
                         },
                         ConnectorConfig::Anthropic(connector) => ConnectorDto {
                             kind: ConnectorKindDto::Anthropic,
+                            base_url: Some(connector.base_url.clone()),
+                            credential: connector.credential.clone(),
+                            headers: connector.headers.clone(),
+                            executable: None,
+                            native_base_url: None,
+                        },
+                        ConnectorConfig::ElevenLabs(connector) => ConnectorDto {
+                            kind: ConnectorKindDto::Elevenlabs,
                             base_url: Some(connector.base_url.clone()),
                             credential: connector.credential.clone(),
                             headers: connector.headers.clone(),
@@ -498,6 +540,17 @@ impl From<ModelOptionsDto> for ModelOptions {
                 poll_interval_seconds: options.video_poll_interval_seconds,
                 timeout_seconds: options.video_timeout_seconds,
             },
+            speech: SpeechModelOptions {
+                voice: options.speech_voice,
+                output_format: options.speech_output_format,
+                language: options.speech_language,
+                stability: options.speech_stability,
+                similarity_boost: options.speech_similarity_boost,
+                style: options.speech_style,
+                speed: options.speech_speed,
+                speaker_boost: options.speech_speaker_boost,
+                segment_gap_seconds: options.speech_segment_gap_seconds,
+            },
         }
     }
 }
@@ -522,6 +575,15 @@ impl From<&ModelOptions> for ModelOptionsDto {
             video_seed: options.video.seed,
             video_poll_interval_seconds: options.video.poll_interval_seconds,
             video_timeout_seconds: options.video.timeout_seconds,
+            speech_voice: options.speech.voice.clone(),
+            speech_output_format: options.speech.output_format.clone(),
+            speech_language: options.speech.language.clone(),
+            speech_stability: options.speech.stability,
+            speech_similarity_boost: options.speech.similarity_boost,
+            speech_style: options.speech.style,
+            speech_speed: options.speech.speed,
+            speech_speaker_boost: options.speech.speaker_boost,
+            speech_segment_gap_seconds: options.speech.segment_gap_seconds,
         }
     }
 }

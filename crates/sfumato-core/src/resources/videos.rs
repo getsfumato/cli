@@ -18,22 +18,25 @@ use crate::{
     artifacts::{
         ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
     },
-    config::{Capability, EffectiveConfig, GenerationToolKind, ModelRole, VideoAudioMode},
+    config::{
+        Capability, EffectiveConfig, GenerationToolKind, ModelRole, SpeechModelOptions,
+        VideoAudioMode,
+    },
     errors::{
         ErrorClass, OperationStage, ResultContext as Context, SfumatoError, SfumatoResult as Result,
     },
     filesystem::WorkspaceFileSystem,
     generation::{
         GenerationRequest, GenerationToolSummary, ReviewStatus, VideoFrameDefect,
-        VideoFrameDefectKind, VideoFrameMeasurement, VideoGenerationOutput, VideoReviewSession,
-        VideoReviewSummary, VideoVisualReport, VideoVisualReviewMode,
+        VideoFrameDefectKind, VideoFrameMeasurement, VideoGenerationOutput, VideoNarrationSummary,
+        VideoReviewSession, VideoReviewSummary, VideoVisualReport, VideoVisualReviewMode,
     },
     operation::OperationContext,
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
-        GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
-        TextGenerationRequest, ToolDefinition, VideoGenerationRequest,
+        GenerationStage, ImageGenerationProvider, ProviderFactory, SpeechGenerationProvider,
+        TextGenerationEvent, TextGenerationRequest, ToolDefinition, VideoGenerationRequest,
     },
     renderers::{
         VideoCatalog, VideoCatalogViolation, VideoInspection, VideoRenderRequest, VideoRenderer,
@@ -47,8 +50,14 @@ use crate::{
 mod assembly;
 
 use assembly::{
+    CAPTIONS_COMPOSITION_ID, NarrationClip, NarrationLayer, captions_composition_html,
     master_index_html, master_meta_json, scene_composition_path, strip_markup_fence,
     validate_scene_composition,
+};
+
+use super::narration::{
+    CaptionGroup, NarrationSegmentRequest, NarrationTrack, SynthesizeNarrationRequest,
+    caption_groups, synthesize_narration,
 };
 
 use super::{
@@ -75,8 +84,10 @@ pub struct GenerateVideoRequest {
     pub fps: u32,
     /// Local renderer quality.
     pub quality: String,
-    /// Native audio policy for direct models.
+    /// Audio policy: narration for Hyperframe, native audio for direct models.
     pub audio: VideoAudioMode,
+    /// Voice override for this film, replacing the speech profile's own.
+    pub voice: Option<String>,
     /// One-time generated Python execution approval.
     pub allow_code_execution: bool,
     /// Requested Hyperframe production workflow.
@@ -164,6 +175,8 @@ struct VideoPromptContext {
     title_provided: bool,
     reusable_assets: Vec<ProjectAssetReference>,
     image_generation_available: bool,
+    /// Whether a speech profile will voice this film's planned narration.
+    narration_available: bool,
     plan_snapshot: String,
     source_snapshot: String,
     validation_error: String,
@@ -178,6 +191,8 @@ struct VideoPromptContext {
     scene_position: usize,
     scene_count: usize,
     scene_snapshot: String,
+    /// The words spoken over this beat, so the visuals land with the voice.
+    scene_narration: String,
     scene_start_seconds: f32,
     scene_duration_seconds: f32,
     scene_catalog_items: Vec<SceneCatalogReference>,
@@ -220,6 +235,7 @@ struct VideoContextInput<'a> {
     project_instructions: &'a str,
     reusable_assets: Vec<ProjectAssetReference>,
     image_generation_available: bool,
+    narration_available: bool,
     max_tool_rounds: usize,
     catalog: Option<&'a VideoCatalog>,
 }
@@ -340,6 +356,7 @@ pub async fn approve_video_review(
         fps: record.fps,
         quality: record.quality.clone(),
         audio: VideoAudioMode::Off,
+        voice: None,
         allow_code_execution: false,
         workflow: plan.workflow(),
         urls: Vec::new(),
@@ -354,7 +371,14 @@ pub async fn approve_video_review(
         .render(VideoEngine::Hyperframe, &request, &operation)
         .await?;
     let inspection = video_renderer.inspect(&output_path, &operation).await?;
-    validate_inspection(&inspection, &video, Some(false))?;
+    // The approved source decides this rather than the request: a narrated film
+    // reaches approval with its audio already on the timeline, and asserting
+    // silence here would reject exactly the films narration was built for.
+    let narrated_source = source
+        .files()
+        .get("index.html")
+        .is_some_and(|html| html.contains("<audio"));
+    validate_inspection(&inspection, &video, Some(narrated_source))?;
     let snapshots = review_root.join("snapshots");
     if snapshots.is_dir() {
         workspace.copy_tree(&snapshots, &staging_root.join("snapshots"), &[])?;
@@ -436,6 +460,7 @@ pub async fn approve_video_review(
             visual_review_mode: VideoVisualReviewMode::HumanApprovalRequired,
             review_session: None,
             visual_report: None,
+            narration: None,
             prompts: Vec::new(),
             warnings,
         },
@@ -512,7 +537,7 @@ fn hash_text(value: &str) -> String {
 pub(crate) async fn generate_video(
     config: EffectiveConfig,
     request: GenerationRequest,
-    video: GenerateVideoRequest,
+    mut video: GenerateVideoRequest,
     options: GenerateVideoOptions,
 ) -> Result<GenerateVideoResult> {
     let GenerateVideoOptions {
@@ -555,6 +580,7 @@ pub(crate) async fn generate_video(
         source_root.join("assets")
     };
     let image_dir = asset_root.join("images");
+    let audio_dir = asset_root.join("audio");
 
     let project_instructions = source_reader.project_instructions(&config.project_root)?;
     let documents = source_reader.collect(&request.sources)?;
@@ -572,6 +598,19 @@ pub(crate) async fn generate_video(
             }
         })
         .transpose()?;
+    // Narration is a Hyperframe-only stage: a direct model produces its own
+    // audio, and Manim has no timeline to hang an audio track on.
+    let narration_requested = video.engine == VideoEngine::Hyperframe
+        && video.audio != VideoAudioMode::Off
+        && config.generation_tool_enabled(GenerationToolKind::AudioGen);
+    let speech_selection = match (narration_requested, video.audio) {
+        (false, _) => None,
+        // An explicit `--audio on` that cannot be honoured is a failure, not a
+        // silent film: the caller asked for a voice and would otherwise only
+        // discover its absence by watching the result.
+        (true, VideoAudioMode::On) => Some(config.resolve_model(Capability::Speech)?),
+        (true, _) => config.resolve_model(Capability::Speech).ok(),
+    };
     let prepared_assets = prepare_project_assets(PrepareProjectAssetsRequest {
         catalog: project_asset_catalog.as_ref(),
         project_root: &config.project_root,
@@ -607,6 +646,11 @@ pub(crate) async fn generate_video(
         sources: request.sources.clone(),
         image,
         video: None,
+        // Narration is not a tool here. The planner writes the spoken line for
+        // each beat and Sfumato speaks the whole script at once, because the
+        // timeline is retimed around it: a tool that returned audio mid-plan
+        // would have nowhere to put the seconds it just created.
+        audio: None,
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let tool_summaries = summarize_tools(&tool_set.definitions);
@@ -636,6 +680,9 @@ pub(crate) async fn generate_video(
     }
     if let Some((name, _)) = image_selection {
         models.insert("image".into(), name.to_string());
+    }
+    if let Some((name, _)) = speech_selection {
+        models.insert("speech".into(), name.to_string());
     }
     let engine_profile = match video.engine {
         VideoEngine::Model => {
@@ -672,6 +719,7 @@ pub(crate) async fn generate_video(
             .unwrap_or_default(),
         reusable_assets: reusable_assets.clone(),
         image_generation_available: image_selection.is_some(),
+        narration_available: speech_selection.is_some(),
         max_tool_rounds: draft_profile.options.tool_rounds(),
         catalog: managed_catalog.as_ref(),
     })?;
@@ -708,6 +756,7 @@ pub(crate) async fn generate_video(
                 visual_review_mode: VideoVisualReviewMode::Disabled,
                 review_session: None,
                 visual_report: None,
+                narration: None,
                 prompts,
                 warnings: prepared_assets.warnings,
             },
@@ -824,6 +873,53 @@ pub(crate) async fn generate_video(
             }
         }
     }
+    // Narration is spoken before anything is written, because it decides the
+    // timeline: a beat's window has to be at least as long as the words carried
+    // over it, and every downstream document — plan, storyboard, master
+    // composition, render request, inspection — has to agree on the result.
+    let mut narrated: Option<NarratedFilm> = None;
+    if let Some((speech_name, speech_profile)) = speech_selection {
+        if plan
+            .scenes()
+            .iter()
+            .all(|scene| scene.narration.trim().is_empty())
+        {
+            warnings.push(
+                "A speech profile is configured but the plan carries no narration; the film stays silent"
+                    .into(),
+            );
+        } else {
+            emit_stage(
+                &event_sink,
+                GenerationStage::VideoNarration,
+                Some(speech_name),
+            );
+            let provider = provider_factory.speech(&config, speech_profile)?;
+            let mut speech_options = speech_profile.options.speech.clone();
+            if let Some(voice) = video.voice.clone() {
+                speech_options.voice = Some(voice);
+            }
+            let film = narrate_film(NarrateFilmRequest {
+                plan: &mut plan,
+                requested_duration: video.duration_seconds,
+                provider: provider.as_ref(),
+                options: &speech_options,
+                output_dir: &audio_dir,
+                workspace: workspace.as_ref(),
+                operation: &operation,
+            })
+            .await?;
+            if film.duration_seconds != video.duration_seconds {
+                warnings.push(format!(
+                    "Narration runs {}s, so the film was retimed from the requested {}s",
+                    film.duration_seconds, video.duration_seconds
+                ));
+                video.duration_seconds = film.duration_seconds;
+                context.duration_seconds = film.duration_seconds;
+            }
+            narrated = Some(film);
+        }
+    }
     let plan_text = plan.render().map_err(review_error)?;
     // Which assets survive is decided by the document that actually references
     // them, and for a local engine that document is the authored source, not the
@@ -855,11 +951,27 @@ pub(crate) async fn generate_video(
         &staging_root.join("SCRIPT.md"),
         script_document(&plan).as_bytes(),
     )?;
+    // The spoken track is evidence: it is what the captions were built from, so
+    // a mis-timed caption can be traced to the alignment that produced it.
+    if let Some(film) = &narrated {
+        workspace.write(
+            &staging_root.join("narration.json"),
+            serde_json::to_vec_pretty(&film.track)?.as_slice(),
+        )?;
+    }
 
-    let expected_audio = match video.audio {
-        VideoAudioMode::Auto => None,
-        VideoAudioMode::On => Some(true),
-        VideoAudioMode::Off => Some(false),
+    let expected_audio = match video.engine {
+        // A local render's audio is exactly what Sfumato put on the timeline, so
+        // the inspection asserts that rather than restating the request: a film
+        // that lost its narration between synthesis and mux is a defect, and a
+        // silent film that grew an audio stream is one too.
+        VideoEngine::Hyperframe => Some(narrated.is_some()),
+        VideoEngine::Manim => Some(false),
+        VideoEngine::Model => match video.audio {
+            VideoAudioMode::Auto => None,
+            VideoAudioMode::On => Some(true),
+            VideoAudioMode::Off => Some(false),
+        },
     };
     match video.engine {
         VideoEngine::Model => {
@@ -928,6 +1040,7 @@ pub(crate) async fn generate_video(
                     resolution_dimensions(&video.resolution, &video.aspect_ratio)?;
                 author_hyperframe_scenes(AuthorScenesRequest {
                     plan: &plan,
+                    narration: narrated.as_ref(),
                     catalog: managed_catalog.as_ref(),
                     renderer: video_renderer.as_ref(),
                     engine: video.engine,
@@ -1068,8 +1181,7 @@ pub(crate) async fn generate_video(
                                 let Some(next_scene) = next_scene else {
                                     return Err(next);
                                 };
-                                warnings
-                                    .push(format!("Video source needed repair: {next}"));
+                                warnings.push(format!("Video source needed repair: {next}"));
                                 if let Some(sink) = &event_sink {
                                     sink(TextGenerationEvent::SourceRepairStarted {
                                         reason: next.to_string(),
@@ -1082,36 +1194,36 @@ pub(crate) async fn generate_video(
                         }
                     }
                 } else {
-                context.source_snapshot =
-                    serde_json::to_string_pretty(&source.snapshot().map_err(review_error)?)?;
-                context.validation_error = error.to_string();
-                let mut repair_request = render_request(
-                    prompt_catalog.as_ref(),
-                    PromptId::VideoSourceRepairSystem,
-                    PromptId::VideoSourceRepairUser,
-                    &context,
-                )?;
-                repair_request.event_sink = event_sink.clone();
-                prompts.extend(repair_request.prompt_provenance.clone());
-                let repairer = provider_factory.text(&config, reviewer_profile)?;
-                let response = repairer
-                    .generate_text(repair_request, &operation, OperationStage::Repair)
+                    context.source_snapshot =
+                        serde_json::to_string_pretty(&source.snapshot().map_err(review_error)?)?;
+                    context.validation_error = error.to_string();
+                    let mut repair_request = render_request(
+                        prompt_catalog.as_ref(),
+                        PromptId::VideoSourceRepairSystem,
+                        PromptId::VideoSourceRepairUser,
+                        &context,
+                    )?;
+                    repair_request.event_sink = event_sink.clone();
+                    prompts.extend(repair_request.prompt_provenance.clone());
+                    let repairer = provider_factory.text(&config, reviewer_profile)?;
+                    let response = repairer
+                        .generate_text(repair_request, &operation, OperationStage::Repair)
+                        .await?;
+                    let patch =
+                        crate::review::parse_json_patch(&response.text).map_err(review_error)?;
+                    source.apply_patch(&patch).map_err(review_error)?;
+                    source = normalize_hyperframe_parent_paths(source)?;
+                    validate_write_source(
+                        &source,
+                        &source_root,
+                        workspace.as_ref(),
+                        video_renderer.as_ref(),
+                        video.engine,
+                        &local_request,
+                        &operation,
+                    )
                     .await?;
-                let patch =
-                    crate::review::parse_json_patch(&response.text).map_err(review_error)?;
-                source.apply_patch(&patch).map_err(review_error)?;
-                source = normalize_hyperframe_parent_paths(source)?;
-                validate_write_source(
-                    &source,
-                    &source_root,
-                    workspace.as_ref(),
-                    video_renderer.as_ref(),
-                    video.engine,
-                    &local_request,
-                    &operation,
-                )
-                .await?;
-                review_summary.source_repair = ReviewStatus::Completed;
+                    review_summary.source_repair = ReviewStatus::Completed;
                 }
             }
             // The source has settled: keep exactly the assets it references.
@@ -1335,6 +1447,7 @@ pub(crate) async fn generate_video(
                     &video,
                     title,
                     video.engine,
+                    narration_summary(narrated.as_ref(), models.get("speech")),
                     models,
                     tool_summaries,
                     used_project_assets,
@@ -1352,6 +1465,7 @@ pub(crate) async fn generate_video(
     let inspection = video_renderer.inspect(&video_path, &operation).await?;
     validate_inspection(&inspection, &video, expected_audio)?;
     review_summary.media_inspection = ReviewStatus::Completed;
+    let narration_summary = narration_summary(narrated.as_ref(), models.get("speech"));
     deduplicate_prompts(&mut prompts);
     let staged_files = workspace.list_files(&staging_root, &["manifest.json"])?;
     let files = staged_files
@@ -1415,6 +1529,7 @@ pub(crate) async fn generate_video(
             },
             review_session: None,
             visual_report,
+            narration: narration_summary,
             prompts,
             warnings,
         },
@@ -1431,6 +1546,7 @@ fn video_context(input: VideoContextInput<'_>) -> Result<VideoPromptContext> {
         project_instructions,
         reusable_assets,
         image_generation_available,
+        narration_available,
         max_tool_rounds,
         catalog,
     } = input;
@@ -1456,6 +1572,7 @@ fn video_context(input: VideoContextInput<'_>) -> Result<VideoPromptContext> {
         title_provided: video.title.is_some(),
         reusable_assets,
         image_generation_available,
+        narration_available,
         max_tool_rounds,
         workflow: video.workflow.as_str().into(),
         urls: video.urls.clone(),
@@ -1770,8 +1887,117 @@ fn normalize_hyperframe_parent_paths(source: VideoSourceDocument) -> Result<Vide
     VideoSourceDocument::new(VideoEngine::Hyperframe, files).map_err(review_error)
 }
 
+/// A film whose narration has been spoken and whose timeline follows it.
+struct NarratedFilm {
+    /// Every spoken passage, written to disk and timed.
+    track: NarrationTrack,
+    /// Audio placed on the film's timeline, and whether captions accompany it.
+    layer: NarrationLayer,
+    /// Caption groups already offset onto the film's timeline.
+    captions: Vec<CaptionGroup>,
+    /// The film's length once every beat holds the words spoken over it.
+    duration_seconds: u32,
+}
+
+struct NarrateFilmRequest<'a> {
+    plan: &'a mut VideoPlanDocument,
+    /// The duration the caller asked for, kept as a floor for the timeline.
+    requested_duration: u32,
+    provider: &'a dyn SpeechGenerationProvider,
+    options: &'a SpeechModelOptions,
+    output_dir: &'a Path,
+    workspace: &'a dyn WorkspaceFileSystem,
+    operation: &'a OperationContext,
+}
+
+/// Speaks the plan's narration and retimes the film around what came back.
+///
+/// The plan's own durations are an estimate written before a single word
+/// existed. Once the audio exists, a beat lasts at least as long as its line
+/// plus the pause after it, and the film lasts as long as its beats — so this
+/// stretches windows and never shortens them: cutting a scene down to fit the
+/// audio would throw away pacing the planner chose deliberately.
+async fn narrate_film(request: NarrateFilmRequest<'_>) -> Result<NarratedFilm> {
+    let NarrateFilmRequest {
+        plan,
+        requested_duration,
+        provider,
+        options,
+        output_dir,
+        workspace,
+        operation,
+    } = request;
+    let track = synthesize_narration(SynthesizeNarrationRequest {
+        segments: plan
+            .scenes()
+            .iter()
+            .map(|scene| NarrationSegmentRequest {
+                id: scene.id.clone(),
+                text: scene.narration.trim().to_string(),
+            })
+            .collect(),
+        provider,
+        options,
+        output_dir,
+        reference_prefix: "assets/audio",
+        workspace,
+        operation,
+        stage: OperationStage::Draft,
+    })
+    .await?;
+
+    let mut scenes = plan.scenes().to_vec();
+    let mut clips = Vec::new();
+    let mut captions = Vec::new();
+    let mut cursor = 0.0_f32;
+    for scene in &mut scenes {
+        let spoken = track.segment(&scene.id);
+        let duration = spoken
+            .map(|segment| segment.duration_seconds + track.segment_gap_seconds)
+            .unwrap_or(0.0)
+            .max(scene.duration_seconds);
+        scene.start_seconds = cursor;
+        scene.duration_seconds = duration;
+        if let Some(segment) = spoken {
+            clips.push(NarrationClip {
+                reference: segment.reference.clone(),
+                start_seconds: cursor,
+                duration_seconds: segment.duration_seconds,
+            });
+            captions.extend(caption_groups(&segment.words, cursor));
+        }
+        cursor += duration;
+    }
+    // Rounded up so the last word is never clipped by a timeline that ends mid
+    // syllable, and floored at the request so a short script still fills the
+    // film the caller asked for.
+    let duration_seconds = cursor.ceil().max(1.0) as u32;
+    let duration_seconds = duration_seconds.max(requested_duration);
+    if duration_seconds > MAX_NARRATED_SECONDS {
+        return Err(SfumatoError::validation(format!(
+            "Narration would make this film {duration_seconds}s, past the {MAX_NARRATED_SECONDS}s limit; shorten the script or split the video"
+        )));
+    }
+    plan.set_timeline(scenes, duration_seconds)
+        .map_err(review_error)?;
+    Ok(NarratedFilm {
+        layer: NarrationLayer {
+            clips,
+            captions: !captions.is_empty(),
+        },
+        captions,
+        track,
+        duration_seconds,
+    })
+}
+
+/// Longest film narration may produce, matching the domain's own ceiling.
+const MAX_NARRATED_SECONDS: u32 = 3_600;
+
 struct AuthorScenesRequest<'a> {
     plan: &'a VideoPlanDocument,
+    /// Narration to layer over the assembled film, when the film speaks.
+    narration: Option<&'a NarratedFilm>,
     /// Installed catalog, so a selected piece reaches the author as an example.
     catalog: Option<&'a VideoCatalog>,
     renderer: &'a dyn VideoRenderer,
@@ -1792,11 +2018,10 @@ struct AuthorScenesRequest<'a> {
 /// The entry composition is generated, so the model never restates the renderer's
 /// contract; each request carries one beat, its own window, and how the previous
 /// beat leaves the frame.
-async fn author_hyperframe_scenes(
-    request: AuthorScenesRequest<'_>,
-) -> Result<VideoSourceDocument> {
+async fn author_hyperframe_scenes(request: AuthorScenesRequest<'_>) -> Result<VideoSourceDocument> {
     let AuthorScenesRequest {
         plan,
+        narration,
         catalog,
         renderer,
         engine,
@@ -1810,13 +2035,22 @@ async fn author_hyperframe_scenes(
         event_sink,
         operation,
     } = request;
+    let layer = narration
+        .map(|narration| narration.layer.clone())
+        .unwrap_or_default();
     let mut files = BTreeMap::from([
         ("meta.json".to_string(), master_meta_json(slug)),
         (
             "index.html".to_string(),
-            master_index_html(plan, width, height),
+            master_index_html(plan, width, height, &layer),
         ),
     ]);
+    if let Some(narration) = narration.filter(|narration| narration.layer.captions) {
+        files.insert(
+            format!("compositions/{CAPTIONS_COMPOSITION_ID}.html"),
+            captions_composition_html(&narration.captions, width, height),
+        );
+    }
     let scenes = plan.scenes();
     for (index, scene) in scenes.iter().enumerate() {
         operation.checkpoint(OperationStage::Draft)?;
@@ -1827,6 +2061,7 @@ async fn author_hyperframe_scenes(
         context.scene_duration_seconds = scene.duration_seconds;
         context.scene_catalog_items = scene_catalog_references(scene, catalog, renderer, engine);
         context.scene_artifacts = scene.artifacts.clone();
+        context.scene_narration = scene.narration.clone();
         context.previous_scene_exit = index
             .checked_sub(1)
             .and_then(|previous| scenes.get(previous))
@@ -1888,6 +2123,9 @@ fn failing_scene(source: &VideoSourceDocument, error: &SfumatoError) -> Option<S
             path.strip_prefix("compositions/")
                 .and_then(|name| name.strip_suffix(".html"))
         })
+        // The caption overlay is generated, not authored: naming it here would
+        // send a re-author request for a scene the plan does not contain.
+        .filter(|name| *name != CAPTIONS_COMPOSITION_ID)
         .collect::<Vec<_>>();
     // The path when the renderer quotes one, and otherwise the scene ID, because
     // the errors that matter most for quality — overflowing, occluded and
@@ -1951,6 +2189,7 @@ async fn reauthor_scene(request: ReauthorSceneRequest<'_>) -> Result<VideoSource
     context.scene_duration_seconds = scene.duration_seconds;
     context.scene_catalog_items = scene_catalog_references(scene, catalog, renderer, engine);
     context.scene_artifacts = scene.artifacts.clone();
+    context.scene_narration = scene.narration.clone();
     context.previous_scene_exit = position
         .checked_sub(1)
         .and_then(|previous| scenes.get(previous))
@@ -2083,7 +2322,10 @@ async fn review_frames_visually(
 /// so both spellings are read and the count wins when present. A failure that
 /// itemises nothing at all is still one thing to fix.
 fn reported_faults(message: &str) -> usize {
-    if let Some(counted) = message.split(" error(s)").next().filter(|_| message.contains(" error(s)"))
+    if let Some(counted) = message
+        .split(" error(s)")
+        .next()
+        .filter(|_| message.contains(" error(s)"))
         && let Some(digits) = counted
             .rsplit(|value: char| !value.is_ascii_digit())
             .next()
@@ -2153,11 +2395,13 @@ fn scene_catalog_references(
 
 /// The one-based scene a timeline position falls in.
 fn scene_at(plan: &VideoPlanDocument, at_seconds: f32) -> Option<usize> {
-    plan.scenes().iter().position(|scene| {
-        at_seconds >= scene.start_seconds
-            && at_seconds < scene.start_seconds + scene.duration_seconds
-    })
-    .map(|index| index + 1)
+    plan.scenes()
+        .iter()
+        .position(|scene| {
+            at_seconds >= scene.start_seconds
+                && at_seconds < scene.start_seconds + scene.duration_seconds
+        })
+        .map(|index| index + 1)
 }
 
 /// The text that decides which assets one authored source references.
@@ -2232,9 +2476,17 @@ fn validate_video_options(config: &EffectiveConfig, video: &GenerateVideoRequest
             "Video quality must be draft, standard, or high",
         ));
     }
-    if video.engine != VideoEngine::Model && video.audio != VideoAudioMode::Off {
+    if video.engine == VideoEngine::Manim && video.audio == VideoAudioMode::On {
         return Err(SfumatoError::validation(
-            "Hyperframe and Manim are silent in this version; use --audio off",
+            "Manim renders silently; use --audio off or generate with --engine hyperframe",
+        ));
+    }
+    if video.engine == VideoEngine::Hyperframe
+        && video.audio == VideoAudioMode::On
+        && !config.generation_tool_enabled(GenerationToolKind::AudioGen)
+    {
+        return Err(SfumatoError::validation(
+            "--audio on needs the audio-gen tool; enable it with `sfumato tool enable audio-gen` or --tool audio-gen",
         ));
     }
     if video.engine == VideoEngine::Manim
@@ -2354,6 +2606,7 @@ fn pause_for_visual_review(
     video: &GenerateVideoRequest,
     title: String,
     engine: VideoEngine,
+    narration: Option<VideoNarrationSummary>,
     models: BTreeMap<String, String>,
     tools: Vec<GenerationToolSummary>,
     project_assets: Vec<ProjectAssetReference>,
@@ -2422,9 +2675,24 @@ fn pause_for_visual_review(
                 root,
             }),
             visual_report: None,
+            narration,
             prompts,
             warnings,
         },
+    })
+}
+
+/// Describes a narrated film for callers that never open its audio.
+fn narration_summary(
+    narrated: Option<&NarratedFilm>,
+    profile: Option<&String>,
+) -> Option<VideoNarrationSummary> {
+    let narrated = narrated?;
+    Some(VideoNarrationSummary {
+        profile: profile.cloned().unwrap_or_default(),
+        segments: narrated.track.segments.len(),
+        spoken_seconds: narrated.track.total_seconds(),
+        caption_groups: narrated.captions.len(),
     })
 }
 
@@ -2466,9 +2734,7 @@ fn classify_frames(
             }
             let scene = starts
                 .iter()
-                .find(|(_, start)| {
-                    (start - measurement.at_seconds).abs() <= FRAME_MATCH_EPSILON
-                })
+                .find(|(_, start)| (start - measurement.at_seconds).abs() <= FRAME_MATCH_EPSILON)
                 .map(|(position, _)| *position);
             // Off a scene boundary, only a frame with literally nothing on it is
             // a defect; a sparse held beat is legitimate.
@@ -2497,10 +2763,9 @@ fn describe_frame_defect(defect: &VideoFrameDefect) -> String {
             defect.measurement.ink_ratio * 100.0,
             defect.measurement.distinct_colours
         ),
-        VideoFrameDefectKind::BlankFrame => format!(
-            "the frame at {:.2}s is blank",
-            defect.at_seconds
-        ),
+        VideoFrameDefectKind::BlankFrame => {
+            format!("the frame at {:.2}s is blank", defect.at_seconds)
+        }
     }
 }
 
@@ -2541,10 +2806,15 @@ fn script_document(plan: &VideoPlanDocument) -> String {
     let mut output = format!("# SCRIPT\n\n{}\n\n", plan.narrative_arc());
     for scene in plan.scenes() {
         output.push_str(&format!(
-            "## {}\n{}\n\n",
+            "## {} ({:.2}s-{:.2}s)\n\nOn screen:\n{}\n\n",
             scene.id,
+            scene.start_seconds,
+            scene.start_seconds + scene.duration_seconds,
             scene.production.on_screen_copy.join("\n")
         ));
+        if !scene.narration.trim().is_empty() {
+            output.push_str(&format!("Spoken:\n{}\n\n", scene.narration.trim()));
+        }
     }
     output
 }
@@ -2586,6 +2856,9 @@ fn artifact_file(root: &Path, path: &Path) -> Result<ResourceArtifactFile> {
         .unwrap_or_default();
     let (kind, media_type) = match extension {
         "mp4" => (ArtifactKind::Video, Some("video/mp4".into())),
+        "mp3" => (ArtifactKind::Audio, Some("audio/mpeg".into())),
+        "wav" => (ArtifactKind::Audio, Some("audio/wav".into())),
+        "opus" => (ArtifactKind::Audio, Some("audio/ogg".into())),
         "json" => (ArtifactKind::Data, Some("application/json".into())),
         "md" => (ArtifactKind::Markdown, Some("text/markdown".into())),
         "py" | "js" | "css" => (ArtifactKind::Source, Some("text/plain".into())),

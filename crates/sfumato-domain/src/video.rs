@@ -130,6 +130,14 @@ pub struct VideoScene {
     /// Reusable project artifact references selected for the scene.
     #[serde(default)]
     pub artifacts: Vec<String>,
+    /// Words spoken over this scene, or empty for a silent beat.
+    ///
+    /// Optional so every existing silent plan still deserializes. The spoken line
+    /// is planned rather than derived from `content`: what a viewer hears is
+    /// written for the ear, while `content` states what the beat teaches, and a
+    /// synthesiser reading the latter aloud produces prose nobody would say.
+    #[serde(default, deserialize_with = "deserialize_text_or_structured")]
+    pub narration: String,
     /// Buildable composition, motion, and acceptance direction.
     #[serde(default)]
     pub production: VideoSceneProduction,
@@ -277,9 +285,31 @@ impl VideoPlanDocument {
     pub fn title(&self) -> &str {
         &self.title
     }
+    /// Returns the teaching objective.
+    pub fn objective(&self) -> &str {
+        &self.objective
+    }
     /// Returns the requested duration.
     pub const fn duration_seconds(&self) -> u32 {
         self.duration_seconds
+    }
+
+    /// Replaces the scene timeline and the film's total length.
+    ///
+    /// Narration is what makes this necessary: a spoken line runs as long as it
+    /// runs, so the planned windows are an estimate until the words exist. The
+    /// replacement goes through the document's own validation, which keeps a
+    /// retimed plan as trustworthy as a drafted one — scenes that overrun the
+    /// total are rejected here rather than at render time.
+    pub fn set_timeline(
+        &mut self,
+        scenes: Vec<VideoScene>,
+        duration_seconds: u32,
+    ) -> Result<(), ReviewError> {
+        self.scenes = scenes;
+        self.duration_seconds = duration_seconds;
+        self.refresh_revision();
+        self.validate_document().map(|_| ())
     }
     /// Returns the reviewed scene sequence.
     pub fn scenes(&self) -> &[VideoScene] {
@@ -367,6 +397,7 @@ impl VideoPlanDocument {
             }
             validate_text("scene content", &scene.content, MAX_TEXT_CHARS, true)?;
             validate_text("scene visual", &scene.visual, MAX_TEXT_CHARS, true)?;
+            validate_text("scene narration", &scene.narration, MAX_TEXT_CHARS, false)?;
             validate_scene_production(&scene.production)?;
         }
         let mut expected = self.clone();

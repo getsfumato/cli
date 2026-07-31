@@ -423,7 +423,7 @@ pub(super) fn execute_operation(
                 ModelProfile {
                     connector,
                     model: required_field(form, "Model ID")?,
-                    capabilities: vec![Capability::Text, Capability::Code],
+                    capabilities: preset.default_capabilities().to_vec(),
                     options: ModelOptions {
                         // Preset-derived rather than hardcoded: Anthropic rejects
                         // sampling parameters and shares `max_tokens` with

@@ -1,7 +1,7 @@
 use super::*;
 
 use sfumato_core::{
-    generation::{DocumentPageSize, DocumentPageSetup},
+    generation::{DocumentPageSetup, DocumentPageSize},
     themes::{ThemeAdapters, ThemeManifest, ThemeTokens},
 };
 use std::{collections::BTreeMap, path::PathBuf};
@@ -103,7 +103,10 @@ fn no_contents_emits_no_navigation() {
 
 #[test]
 fn a_document_without_a_subtitle_leaves_no_empty_line_on_the_cover() {
-    let assembled = assemble("# Solo título\n\n## Sección\n\nCuerpo.\n", setup(true, false));
+    let assembled = assemble(
+        "# Solo título\n\n## Sección\n\nCuerpo.\n",
+        setup(true, false),
+    );
 
     // Matched against the emitted element, not the class name: the bundled
     // stylesheet is inlined into the same document and always mentions the class.
@@ -167,7 +170,11 @@ fn a_theme_without_a_document_adapter_falls_back_to_bundled_print_css() {
     // The fallback still carries the theme's own tokens rather than hard-coded
     // colours, so a pre-existing theme prints in its own palette.
     assert!(assembled.html.contains("--sfumato-primary: #123456"));
-    assert!(assembled.html.contains("--sfumato-body-font: Georgia, serif"));
+    assert!(
+        assembled
+            .html
+            .contains("--sfumato-body-font: Georgia, serif")
+    );
     assert!(assembled.html.contains("@bottom-center"));
 }
 

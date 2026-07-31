@@ -6,6 +6,16 @@ This scene runs {{ scene_duration_seconds }} seconds. Its timeline must finish a
 Scene plan:
 {{ scene_snapshot }}
 
+{% if scene_narration %}
+Spoken over this beat: "{{ scene_narration }}"
+Time the visuals to those words: what the voice names should be on screen as it is
+said, and nothing should arrive so late that the sentence has moved on. Never put
+the spoken line on screen as text — Sfumato composites captions from the recorded
+voice, so a written copy of the same sentence is duplicate text. Captions ride the
+lower eighth of the frame as an overlay; keep essential elements clear of that band
+rather than shifting the composition up to avoid it.
+{% endif %}
+
 {% if previous_scene_exit %}
 The previous scene exits like this: {{ previous_scene_exit }}
 Enter carrying that direction and speed, so the boundary reads as one continuous move rather than two animations meeting. **Every element must already be visible at the scene's first frame**: animate from a state that is on screen, never from nothing. Sfumato measures this scene's first frame and rejects the film when it is empty.

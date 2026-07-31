@@ -6,10 +6,13 @@ use std::{
 };
 
 use crate::{
-    config::VideoModelOptions,
+    config::{SpeechModelOptions, VideoModelOptions},
     errors::{SfumatoError, SfumatoResult},
     prompts::{PromptCatalog, PromptProvenance},
-    providers::{ImageGenerationProvider, ToolDefinition, ToolExecutor, VideoGenerationProvider},
+    providers::{
+        ImageGenerationProvider, SpeechGenerationProvider, ToolDefinition, ToolExecutor,
+        VideoGenerationProvider,
+    },
     themes::ThemePackage,
 };
 
@@ -80,6 +83,23 @@ pub struct VideoToolConfig {
     pub options: VideoModelOptions,
 }
 
+/// Optional speech stage exposed to a text model as a tool.
+///
+/// Deliberately carries no theme: a voice is not styled by a palette, and the
+/// only direction a synthesiser accepts is the profile's own voice settings.
+pub struct AudioToolConfig {
+    /// Speech model selected for the project.
+    pub provider: Arc<dyn SpeechGenerationProvider>,
+    /// Human-readable model profile name used in results.
+    pub profile_name: String,
+    /// Transaction staging directory for generated audio.
+    pub output_dir: PathBuf,
+    /// Relative artifact directory returned to the model.
+    pub reference_prefix: String,
+    /// Typed speech defaults from the selected profile.
+    pub options: SpeechModelOptions,
+}
+
 /// Inputs required to construct one operation-scoped tool set.
 pub struct GenerationToolsRequest {
     /// Project working directory allowed to filesystem tools.
@@ -90,6 +110,8 @@ pub struct GenerationToolsRequest {
     pub image: Option<ImageToolConfig>,
     /// Optional page-only generated-video tool.
     pub video: Option<VideoToolConfig>,
+    /// Optional speech-synthesis tool.
+    pub audio: Option<AudioToolConfig>,
     /// Catalog used for model-visible tool descriptions and image prompts.
     pub prompt_catalog: Arc<dyn PromptCatalog>,
 }

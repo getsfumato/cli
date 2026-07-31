@@ -80,9 +80,8 @@ fn the_theme_supplies_the_defaults() {
 fn an_explicit_flag_overrides_the_theme() {
     let theme = theme(Some(adapter(Some("letter"), Some(false), Some(false))));
 
-    let setup =
-        resolve_page_setup(&theme, Some(DocumentPageSize::A4), Some(true), Some(true))
-            .expect("resolves");
+    let setup = resolve_page_setup(&theme, Some(DocumentPageSize::A4), Some(true), Some(true))
+        .expect("resolves");
 
     assert_eq!(setup.page_size, DocumentPageSize::A4);
     assert!(setup.table_of_contents);

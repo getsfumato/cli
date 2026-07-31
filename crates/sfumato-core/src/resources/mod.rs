@@ -5,11 +5,13 @@ use crate::{
     operation::OperationContext,
     providers::{
         ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
+        SpeechGenerationProvider, SpeechGenerationRequest, SpeechGenerationResponse,
         VideoGenerationProvider, VideoGenerationRequest, VideoGenerationResponse,
     },
 };
 
 pub mod documents;
+pub mod narration;
 pub mod pages;
 pub(crate) mod project_assets;
 pub mod slides;
@@ -45,6 +47,23 @@ impl VideoGenerationProvider for DryRunVideoProvider {
         Err(SfumatoError::provider(
             ErrorClass::Unavailable,
             "Dry-run video provider cannot execute",
+        ))
+    }
+}
+
+pub(crate) struct DryRunSpeechProvider;
+
+#[async_trait]
+impl SpeechGenerationProvider for DryRunSpeechProvider {
+    async fn generate_speech(
+        &self,
+        _request: SpeechGenerationRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
+    ) -> SfumatoResult<SpeechGenerationResponse> {
+        Err(SfumatoError::provider(
+            ErrorClass::Unavailable,
+            "Dry-run speech provider cannot execute",
         ))
     }
 }

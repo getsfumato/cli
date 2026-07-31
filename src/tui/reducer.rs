@@ -577,7 +577,9 @@ impl App {
                     // to follow the chosen one instead of staying Ollama-shaped.
                     FormField::Select {
                         label: "Connector",
-                        options: ConnectorPreset::ALL
+                        // Text-capable only: this form seeds the drafting
+                        // profile, which a speech connector cannot back.
+                        options: ConnectorPreset::text_capable()
                             .into_iter()
                             .map(|preset| preset.as_str().to_string())
                             .collect(),
@@ -585,12 +587,12 @@ impl App {
                     },
                     text_field(
                         "Profile",
-                        ConnectorPreset::ALL[0].default_text_profile_name(),
+                        ConnectorPreset::ALL[0].default_profile_name(),
                         "model profile name",
                     ),
                     text_field(
                         "Model ID",
-                        ConnectorPreset::ALL[0].default_text_model(),
+                        ConnectorPreset::ALL[0].default_model(),
                         "provider model identifier",
                     ),
                     FormField::Toggle {

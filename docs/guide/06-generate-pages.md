@@ -15,8 +15,8 @@ sfumato generate page [INPUTS]... \
   [--ui <id|none>] \
   [--plugin <utility-id>]... \
   [--disable-plugin <utility-id>]... \
-  [--tool image-gen|video-gen]... \
-  [--disable-tool image-gen|video-gen]... \
+  [--tool image-gen|video-gen|audio-gen]... \
+  [--disable-tool image-gen|video-gen|audio-gen]... \
   [--no-review] \
   [--dry-run] \
   [--json]
@@ -40,7 +40,7 @@ sfumato generate page [INPUTS]... \
 | `--ui` | Select one installed UI library or `none` to disable the project UI for this request. |
 | `--plugin` | Add one installed utility plugin for this request; repeatable and deduplicated. |
 | `--disable-plugin` | Remove one project utility for this request. |
-| `--tool` | Enable `image-gen` or `video-gen` for this request. |
+| `--tool` | Enable `image-gen`, `video-gen`, or `audio-gen` for this request. |
 | `--disable-tool` | Disable one project/default tool for this request. |
 | `--no-review` | Skip semantic review and browser-focused model repair. Static validation still applies. |
 | `--dry-run` | Resolve/render without provider, browser, or artifact writes. |
@@ -113,7 +113,7 @@ and references to unregistered assets are rejected.
 11. Repair browser issues once with focused RFC 6902 patches and accept only improvement.
 12. Commit an immutable revision and optionally publish it.
 
-## Image And Video Tools
+## Image, Video, And Audio Tools
 
 ### `image-gen`
 
@@ -130,6 +130,13 @@ tools. Sfumato augments the prompt with theme/artifact context, waits for the
 remote result, stores the MP4, and returns a local path suitable for `<video>`.
 Unreferenced generated video is discarded.
 
+### `audio-gen`
+
+When enabled and backed by a `speech` profile, the drafter can call
+`sfumato_audio_gen` with a line to speak. Sfumato stores the audio locally and
+returns its relative path, its spoken length, and a sidecar JSON file of
+word-level timings the page can use to synchronise captions or highlighting.
+
 Example:
 
 ```bash
@@ -137,7 +144,8 @@ sfumato generate page ./notes \
   --instruction "Explain Fourier synthesis with an animation" \
   --ui shadcn \
   --tool image-gen \
-  --tool video-gen
+  --tool video-gen \
+  --tool audio-gen
 ```
 
 ## Math

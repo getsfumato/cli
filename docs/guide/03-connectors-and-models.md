@@ -16,13 +16,14 @@ their connector to construct the matching provider implementation.
 | `ollama` | OpenAI-compatible local `/v1` | None by default | Local model catalog, version, and running processes. |
 | `openrouter` | OpenAI-compatible text/image plus asynchronous video API | OS keyring by default or explicit environment reference | Model catalog and key usage/limits. |
 | `codex` | Codex App Server JSON-RPC over stdio | Owned by `codex login` | Model catalog, account, and rate limits. |
+| `elevenlabs` | Native speech synthesis returning audio plus word-level timings | OS keyring by default or explicit environment reference | Model and voice catalog, subscription tier, and character budget. |
 
 ## Connector Commands
 
 ### Setup
 
 ```bash
-sfumato connector setup <ollama|openrouter|codex> \
+sfumato connector setup <ollama|lmstudio|openrouter|anthropic|codex|elevenlabs> \
   [--name <connector-name>] \
   [--api-key-env <environment-variable>]
 ```
@@ -41,7 +42,12 @@ sfumato connector setup ollama
 sfumato connector setup openrouter
 sfumato connector setup openrouter --name team-router --api-key-env TEAM_OPENROUTER_KEY
 sfumato connector setup codex
+sfumato connector setup elevenlabs
 ```
+
+`elevenlabs` only speaks. It is deliberately absent from first-run setup, which
+asks for the connector that will draft; add it afterwards alongside a text
+connector.
 
 ### List And Show
 
@@ -113,7 +119,7 @@ Profiles accept one or more of:
 | `code` | Hyperframes HTML/JavaScript and Manim Python authoring. |
 | `image` | `sfumato_image_gen` and project artifact variant regeneration. |
 | `video` | Remote standalone video and page `sfumato_video_gen`. |
-| `speech` | Reserved for future speech workflows. |
+| `speech` | Hyperframe narration and the page `sfumato_audio_gen` tool. |
 | `embedding` | Reserved for future retrieval workflows. |
 
 Declaring a capability is a contract. A profile selected for a stage must have
@@ -166,6 +172,22 @@ sfumato model add remote-video \
   --option video_audio=auto \
   --option video_poll_interval_seconds=5 \
   --option video_timeout_seconds=900
+```
+
+Example speech profile. A speech profile carries two identifiers: `--id` selects
+the synthesis model and `speech_voice` selects who speaks. Run `sfumato connector
+models elevenlabs` to see both — each row says which one it fills in.
+
+```bash
+sfumato model add elevenlabs-speech \
+  --connector elevenlabs \
+  --id eleven_multilingual_v2 \
+  --capability speech \
+  --option speech_voice=21m00Tcm4TlvDq8ikWAM \
+  --option speech_output_format=mp3_44100_128 \
+  --option speech_stability=0.5 \
+  --option speech_similarity_boost=0.75 \
+  --option speech_segment_gap_seconds=0.45
 ```
 
 ### Edit

@@ -51,12 +51,24 @@ Return exactly:
   "message": "the one thing the viewer should retain",
   "narrative_arc": "hook → explanation → payoff",
   "design_direction": "palette, typography, focal hierarchy, depth and guardrails",
-  "scenes": [{"id":"scene-1","start_seconds":0,"duration_seconds":4,"content":"...","visual":"...","artifacts":[],"production":{"narrative_role":"hook","on_screen_copy":["..."],"focal_element":"...","layout":"split-left","layers":["background","midground","foreground"],"motion_rules":["rule-a","rule-b"],"catalog_items":[],"entrance":"...","exit":"...","transition":"...","acceptance":["..."]}}],
+  "scenes": [{"id":"scene-1","start_seconds":0,"duration_seconds":4,"content":"...","visual":"...","narration":"{% if narration_available %}the words spoken over this beat{% endif %}","artifacts":[],"production":{"narrative_role":"hook","on_screen_copy":["..."],"focal_element":"...","layout":"split-left","layers":["background","midground","foreground"],"motion_rules":["rule-a","rule-b"],"catalog_items":[],"entrance":"...","exit":"...","transition":"...","acceptance":["..."]}}],
   "artifacts": [],
   "visual_direction": "...",
   "remote_prompt": "a complete motion/camera/style prompt when engine is model; otherwise an empty string"
 }
 Scene timing must remain within {{ duration_seconds }} seconds.
+{% if narration_available %}
+Narration. Every scene carries a `narration` string: exactly the words spoken over
+that beat, written for the ear rather than the page. Keep a beat's line to what a
+person can say inside its window at a conversational pace — roughly two and a half
+words per second — because Sfumato speaks these lines, measures how long they
+actually take, and stretches any beat whose window is too short, which pushes the
+whole film past the requested length. Say what the frame cannot: never read the
+on-screen copy aloud. Write numbers, units and symbols as words. Leave `narration`
+empty for a beat that is deliberately silent.
+{% else %}
+This film is silent: omit `narration` or leave it empty on every scene.
+{% endif %}
 Select at most four motion_rules per scene. Every scene must have a deliberate entrance and every boundary a transition unless a hard cut is explicitly justified.
 
 Decide the visual means beat by beat, and say which one each scene uses. For every

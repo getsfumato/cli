@@ -4,7 +4,9 @@ use sfumato_core::{
     providers::{ToolDefinition, ToolFunctionDefinition},
 };
 
-use super::{CodexModel, completed_agent_text, dynamic_tools, resolve_model, turn_error, turn_input};
+use super::{
+    CodexModel, completed_agent_text, dynamic_tools, resolve_model, turn_error, turn_input,
+};
 
 fn model(id: &str, is_default: bool) -> CodexModel {
     CodexModel {
@@ -105,7 +107,13 @@ fn attaches_images_as_local_paths_the_app_server_reads_itself() {
     let mut model = model("gpt-5.6-sol", true);
     model.input_modalities = vec!["text".to_string(), "image".to_string()];
 
-    let input = turn_input("review these", &[image(frame)], &model, OperationStage::Review).unwrap();
+    let input = turn_input(
+        "review these",
+        &[image(frame)],
+        &model,
+        OperationStage::Review,
+    )
+    .unwrap();
 
     let items = input.as_array().unwrap();
     assert_eq!(items.len(), 3);
@@ -116,7 +124,10 @@ fn attaches_images_as_local_paths_the_app_server_reads_itself() {
         items[1],
         json!({"type": "text", "text": "Frame at 4.00s, scene 2"})
     );
-    assert_eq!(items[2], json!({"type": "localImage", "path": "/tmp/frame-01.png"}));
+    assert_eq!(
+        items[2],
+        json!({"type": "localImage", "path": "/tmp/frame-01.png"})
+    );
 }
 
 #[test]
@@ -128,8 +139,13 @@ fn refuses_images_only_when_the_model_says_it_cannot_read_them() {
     let mut text_only = model("gpt-5.6-sol", true);
     text_only.input_modalities = vec!["text".to_string()];
 
-    let error = turn_input("review these", &[image(frame)], &text_only, OperationStage::Review)
-        .expect_err("a text-only model must refuse rather than answer blind");
+    let error = turn_input(
+        "review these",
+        &[image(frame)],
+        &text_only,
+        OperationStage::Review,
+    )
+    .expect_err("a text-only model must refuse rather than answer blind");
 
     assert_eq!(error.class, ErrorClass::Permanent);
     assert!(error.to_string().contains("accepts text only"), "{error}");
@@ -147,8 +163,13 @@ fn an_older_catalog_without_declared_modalities_still_accepts_images() {
     let mut unknown = model("gpt-5.6-sol", true);
     unknown.input_modalities.clear();
 
-    let input =
-        turn_input("review these", &[image(frame)], &unknown, OperationStage::Review).unwrap();
+    let input = turn_input(
+        "review these",
+        &[image(frame)],
+        &unknown,
+        OperationStage::Review,
+    )
+    .unwrap();
 
     assert_eq!(input.as_array().unwrap().len(), 3);
 }
@@ -220,7 +241,10 @@ fn a_turn_that_answered_in_prose_is_reported_as_a_failed_tool_with_a_worked_exam
     let message = error.to_string();
     assert!(message.contains("did not generate an image"), "{message}");
     // The model's own words, so the cause is visible without re-running anything.
-    assert!(message.contains("I can describe the illustration"), "{message}");
+    assert!(
+        message.contains("I can describe the illustration"),
+        "{message}"
+    );
     assert!(message.contains("chooses to invoke its own"), "{message}");
     // A copy-pasteable profile for a connector that does return bytes.
     assert!(message.contains("[models.gpt-image]"), "{message}");
@@ -231,10 +255,7 @@ fn a_turn_that_answered_in_prose_is_reported_as_a_failed_tool_with_a_worked_exam
 fn a_silent_turn_says_so_rather_than_quoting_an_empty_answer() {
     let error = super::missing_image_error("gpt-5.6-sol", "   ", OperationStage::Draft);
 
-    assert!(
-        error.to_string().contains("no message at all"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("no message at all"), "{error}");
 }
 
 #[test]
@@ -248,7 +269,10 @@ fn the_tool_ceiling_leaves_room_for_calls_already_in_flight() {
 
     // Calls up to the budget run; past it they are refused, not fatal.
     let budget = 8;
-    assert!(9 <= super::tool_call_ceiling(budget), "the ninth is refused, not fatal");
+    assert!(
+        9 <= super::tool_call_ceiling(budget),
+        "the ninth is refused, not fatal"
+    );
     assert!(
         super::tool_call_ceiling(budget) + 1 > super::tool_call_ceiling(budget),
         "a model that ignores every refusal still terminates"

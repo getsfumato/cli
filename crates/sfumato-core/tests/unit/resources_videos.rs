@@ -541,7 +541,11 @@ fn a_scene_that_opens_on_an_empty_frame_is_a_defect() {
 
     let defects = classify_frames(&plan, &measurements);
 
-    assert_eq!(defects.len(), 2, "both scene starts are reported: {defects:?}");
+    assert_eq!(
+        defects.len(),
+        2,
+        "both scene starts are reported: {defects:?}"
+    );
     assert_eq!(defects[0].scene, Some(2));
     assert_eq!(defects[0].kind, VideoFrameDefectKind::EmptySceneStart);
     assert_eq!(defects[1].scene, Some(3));
@@ -751,7 +755,11 @@ fn the_repair_budget_follows_how_much_the_renderer_reported() {
     // cut it off with three left, while another reported one and never needed four.
     let nine = "✗ clipped_text #scene-3-ratio overflowed right 80px\n9 error(s), 1 warning(s)";
     assert_eq!(reported_faults(nine), 9);
-    assert_eq!(repair_rounds(reported_faults(nine)), 8, "capped, not unbounded");
+    assert_eq!(
+        repair_rounds(reported_faults(nine)),
+        8,
+        "capped, not unbounded"
+    );
 
     let one = "✗ text_box_overflow #scene-2-ghost overflowed top 9px\n1 error(s), 51 warning(s)";
     assert_eq!(reported_faults(one), 1);
@@ -773,7 +781,10 @@ fn a_failure_that_itemises_nothing_is_still_worth_repairing() {
     assert_eq!(repair_rounds(reported_faults("Chrome could not start")), 3);
 
     // A clean count must not be read as work to do.
-    assert_eq!(reported_faults("✗ font_family_without_font_face\n0 error(s)"), 1);
+    assert_eq!(
+        reported_faults("✗ font_family_without_font_face\n0 error(s)"),
+        1
+    );
 }
 
 #[test]

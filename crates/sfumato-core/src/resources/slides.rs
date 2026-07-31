@@ -233,6 +233,9 @@ pub(crate) async fn generate_slides(
         sources: request.sources.clone(),
         image: image_tool,
         video: None,
+        // Neither a deck nor a printable document has a timeline to hang audio
+        // on, so speech is not offered here.
+        audio: None,
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let review_tool_definitions = tool_set

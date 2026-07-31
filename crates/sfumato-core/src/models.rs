@@ -431,9 +431,24 @@ fn parse_options(values: &[String]) -> Result<ModelOptions> {
             "video_timeout_seconds" => {
                 options.video.timeout_seconds = Some(parse_option(raw, key)?)
             }
+            "speech_voice" => options.speech.voice = Some(required_option_string(raw, key)?),
+            "speech_output_format" => {
+                options.speech.output_format = Some(required_option_string(raw, key)?)
+            }
+            "speech_language" => options.speech.language = Some(required_option_string(raw, key)?),
+            "speech_stability" => options.speech.stability = Some(parse_option(raw, key)?),
+            "speech_similarity_boost" => {
+                options.speech.similarity_boost = Some(parse_option(raw, key)?)
+            }
+            "speech_style" => options.speech.style = Some(parse_option(raw, key)?),
+            "speech_speed" => options.speech.speed = Some(parse_option(raw, key)?),
+            "speech_speaker_boost" => options.speech.speaker_boost = Some(parse_option(raw, key)?),
+            "speech_segment_gap_seconds" => {
+                options.speech.segment_gap_seconds = Some(parse_option(raw, key)?)
+            }
             "" => bail!("Model option key cannot be empty"),
             _ => bail!(
-                "Unknown model option '{key}'. Supported options include text/image options and video_duration_seconds, video_resolution, video_aspect_ratio, video_audio, video_seed, video_poll_interval_seconds, video_timeout_seconds."
+                "Unknown model option '{key}'. Supported options include text/image options, video_duration_seconds, video_resolution, video_aspect_ratio, video_audio, video_seed, video_poll_interval_seconds, video_timeout_seconds, and speech_voice, speech_output_format, speech_language, speech_stability, speech_similarity_boost, speech_style, speech_speed, speech_speaker_boost, speech_segment_gap_seconds."
             ),
         }
     }

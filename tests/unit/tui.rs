@@ -412,8 +412,9 @@ fn connector_setup_hides_the_credential_field_for_externally_managed_presets() {
 
 #[test]
 fn setup_user_follows_the_selected_connector_preset() {
-    // Every preset is accepted here now, so the profile name and model id must
-    // follow the choice rather than staying Ollama-shaped.
+    // Every text-capable preset is accepted here, so the profile name and model
+    // id must follow the choice rather than staying Ollama-shaped. A speech-only
+    // preset is deliberately absent: it cannot back a drafting profile.
     let mut app = App::new(Picker::halfblocks(), test_application());
     app.operation = Some(app.operation_for_action(BrowseAction::SetupUser).unwrap());
     let operation = app.operation.as_mut().unwrap();
@@ -423,12 +424,16 @@ fn setup_user_follows_the_selected_connector_preset() {
         .position(|field| field.label() == "Connector")
         .expect("the connector field is present");
 
-    for (index, preset) in ConnectorPreset::ALL.into_iter().enumerate().skip(1) {
+    for (index, preset) in ConnectorPreset::text_capable()
+        .into_iter()
+        .enumerate()
+        .skip(1)
+    {
         app.handle_operation_key(KeyEvent::from(KeyCode::Right));
         let form = app.operation.as_ref().unwrap();
         assert_eq!(form.select("Connector"), preset.as_str(), "option {index}");
-        assert_eq!(form.text("Profile"), preset.default_text_profile_name());
-        assert_eq!(form.text("Model ID"), preset.default_text_model());
+        assert_eq!(form.text("Profile"), preset.default_profile_name());
+        assert_eq!(form.text("Model ID"), preset.default_model());
     }
 }
 

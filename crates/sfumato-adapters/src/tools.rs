@@ -18,11 +18,13 @@ use sfumato_core::{
     operation::OperationContext,
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
-        ImageGenerationRequest, ToolDefinition, ToolExecutionRequest, ToolExecutor,
-        ToolFunctionDefinition, VideoGenerationRequest,
+        ImageGenerationRequest, SpeechGenerationRequest, ToolDefinition, ToolExecutionRequest,
+        ToolExecutor, ToolFunctionDefinition, VideoGenerationRequest,
     },
+    resources::narration::{audio_extension, audio_media_type},
     tools::{
-        GenerationToolFactory, GenerationToolsRequest, ImageToolConfig, ToolSet, VideoToolConfig,
+        AudioToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig, ToolSet,
+        VideoToolConfig,
     },
 };
 use sha2::{Digest, Sha256};
@@ -31,6 +33,10 @@ const MAX_DIRECTORY_ENTRIES: usize = 200;
 const MAX_FILE_BYTES: u64 = 128 * 1024;
 const MAX_GENERATED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GENERATED_VIDEO_BYTES: usize = 512 * 1024 * 1024;
+const MAX_GENERATED_AUDIO_BYTES: usize = 64 * 1024 * 1024;
+/// Longest passage one tool call may speak, so a runaway request is refused
+/// before it is billed rather than after.
+const MAX_SPOKEN_CHARACTERS: usize = 5_000;
 
 /// Builds filesystem-backed tools for one generation operation.
 #[derive(Clone, Copy, Debug, Default)]
@@ -260,6 +266,94 @@ struct GenerationToolExecutor {
     filesystem: FilesystemToolExecutor,
     image: Option<ImageGenerationTool>,
     video: Option<VideoGenerationTool>,
+    audio: Option<AudioGenerationTool>,
+}
+
+/// Speaks text and returns the audio plus the word timings behind it.
+///
+/// The timings are written beside the audio rather than returned inline: a
+/// paragraph produces hundreds of them, which would crowd out the rest of the
+/// model's context for a file it can read when it actually needs to caption.
+struct AudioGenerationTool {
+    config: AudioToolConfig,
+    artifacts: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+impl AudioGenerationTool {
+    async fn execute(
+        &self,
+        arguments: &Value,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<String> {
+        operation.checkpoint(stage)?;
+        let text = string_arg(arguments, "text")?;
+        if text.trim().is_empty() {
+            bail!("sfumato_audio_gen needs text to speak");
+        }
+        if text.chars().count() > MAX_SPOKEN_CHARACTERS {
+            bail!(
+                "Requested narration is {} characters; the per-call limit is {MAX_SPOKEN_CHARACTERS}",
+                text.chars().count()
+            );
+        }
+        let response = self
+            .config
+            .provider
+            .generate_speech(
+                SpeechGenerationRequest {
+                    text: text.clone(),
+                    voice: optional_string_arg(arguments, "voice")?
+                        .or_else(|| self.config.options.voice.clone()),
+                    previous_text: None,
+                    next_text: None,
+                },
+                operation,
+                stage,
+            )
+            .await?;
+        operation.checkpoint(stage)?;
+        if response.bytes.len() > MAX_GENERATED_AUDIO_BYTES {
+            bail!(
+                "Generated audio is {} bytes; the current limit is {MAX_GENERATED_AUDIO_BYTES} bytes",
+                response.bytes.len()
+            );
+        }
+        let format = self.config.options.output_format.as_deref();
+        let extension = audio_extension(format);
+        let content_hash = format!("{:x}", Sha256::digest(&response.bytes));
+        let stem = format!("audio-{}", &content_hash[..24]);
+        let filename = format!("{stem}.{extension}");
+        fs::create_dir_all(&self.config.output_dir)
+            .with_context(|| format!("Could not create {}", self.config.output_dir.display()))?;
+        let path = self.config.output_dir.join(&filename);
+        fs::write(&path, &response.bytes)
+            .with_context(|| format!("Could not write generated audio {}", path.display()))?;
+        self.artifacts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Generated audio artifact registry is unavailable"))?
+            .push(path.clone());
+        let mut timings_reference = None;
+        if !response.words.is_empty() {
+            let timings_name = format!("{stem}.words.json");
+            let timings_path = self.config.output_dir.join(&timings_name);
+            fs::write(&timings_path, serde_json::to_vec_pretty(&response.words)?)?;
+            self.artifacts
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Generated audio artifact registry is unavailable"))?
+                .push(timings_path);
+            timings_reference = Some(format!("{}/{timings_name}", self.config.reference_prefix));
+        }
+        Ok(json!({
+            "path": path,
+            "html_path": format!("{}/{filename}", self.config.reference_prefix),
+            "word_timings_path": timings_reference,
+            "duration_seconds": response.duration_seconds,
+            "media_type": audio_media_type(format),
+            "model_profile": self.config.profile_name,
+        })
+        .to_string())
+    }
 }
 
 struct VideoGenerationTool {
@@ -390,6 +484,21 @@ impl ToolExecutor for GenerationToolExecutor {
                 .await
                 .map_err(|error| tool_error(error, stage));
         }
+        if request.name == "sfumato_audio_gen" {
+            return self
+                .audio
+                .as_ref()
+                .ok_or_else(|| {
+                    SfumatoError::tool(
+                        ErrorClass::Permanent,
+                        "No speech model is configured for this project",
+                    )
+                    .at_stage(stage)
+                })?
+                .execute(&request.arguments, operation, stage)
+                .await
+                .map_err(|error| tool_error(error, stage));
+        }
         if request.name == "sfumato_video_gen" {
             return self
                 .video
@@ -428,6 +537,7 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
                 sources,
                 image,
                 video,
+                audio,
                 prompt_catalog,
             } = request;
             let mut roots = vec![project_root];
@@ -472,12 +582,20 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
                     used: AtomicBool::new(false),
                 }
             });
+            let audio = audio.map(|config| {
+                definitions.push(audio_generation_tool(&descriptions));
+                AudioGenerationTool {
+                    config,
+                    artifacts: artifacts.clone(),
+                }
+            });
             Ok(ToolSet {
                 definitions,
                 executor: Arc::new(GenerationToolExecutor {
                     filesystem: FilesystemToolExecutor::new(roots)?,
                     image,
                     video,
+                    audio,
                 }),
                 artifacts,
                 prompts,
@@ -508,6 +626,9 @@ struct ToolDescriptions {
     video_generation: String,
     video_prompt: String,
     video_accessible_description: String,
+    audio_generation: String,
+    audio_text: String,
+    audio_voice: String,
 }
 
 fn list_directory_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
@@ -586,6 +707,24 @@ fn video_generation_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
                     }
                 },
                 "required": ["prompt", "accessible_description"]
+            }),
+        },
+    }
+}
+
+fn audio_generation_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
+    ToolDefinition {
+        kind: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "sfumato_audio_gen".to_string(),
+            description: descriptions.audio_generation.clone(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": descriptions.audio_text },
+                    "voice": { "type": "string", "description": descriptions.audio_voice }
+                },
+                "required": ["text"]
             }),
         },
     }

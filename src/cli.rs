@@ -150,9 +150,13 @@ pub struct ToolProjectArgs {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+// Spellings mirror `GenerationToolKind`, which is the configuration and CLI
+// vocabulary; renaming them to please the lint would rename the flags.
+#[allow(clippy::enum_variant_names)]
 pub enum GenerationToolArg {
     ImageGen,
     VideoGen,
+    AudioGen,
 }
 
 #[derive(Debug, Subcommand)]
@@ -900,8 +904,18 @@ pub struct VideoArgs {
     pub fps: Option<u32>,
     #[arg(long, help = "Local renderer quality: draft, standard, or high")]
     pub quality: Option<String>,
-    #[arg(long, value_enum)]
+    #[arg(
+        long,
+        value_enum,
+        help = "Narration policy: on requires a speech profile, off renders silent"
+    )]
     pub audio: Option<VideoAudioArg>,
+    #[arg(
+        long,
+        value_name = "VOICE_ID",
+        help = "Override the speech profile's voice for this film"
+    )]
+    pub voice: Option<String>,
     #[arg(long)]
     pub allow_code_execution: bool,
     #[arg(long = "tool", value_enum)]
@@ -942,6 +956,7 @@ pub enum ConnectorPreset {
     Openrouter,
     Anthropic,
     Codex,
+    Elevenlabs,
 }
 
 impl From<ConnectorPreset> for sfumato_core::connectors::ConnectorPreset {
@@ -954,6 +969,7 @@ impl From<ConnectorPreset> for sfumato_core::connectors::ConnectorPreset {
             ConnectorPreset::Openrouter => Self::Openrouter,
             ConnectorPreset::Anthropic => Self::Anthropic,
             ConnectorPreset::Codex => Self::Codex,
+            ConnectorPreset::Elevenlabs => Self::Elevenlabs,
         }
     }
 }

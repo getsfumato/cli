@@ -159,7 +159,8 @@ fn every_curated_catalog_id_exists_in_the_upstream_registry() {
 fn staging_points_a_catalog_item_at_the_pinned_runtime() {
     // The registry pins its own GSAP release, so the CDN URL would both require
     // the network and run a second GSAP beside the one Sfumato vendors.
-    let item = r#"<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>"#;
+    let item =
+        r#"<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>"#;
 
     let staged = offline_catalog_item("data-chart", item).unwrap();
 
@@ -210,7 +211,9 @@ fn staging_refuses_a_catalog_item_with_an_unvendorable_reference() {
     // here; the alternative is a render that quietly reaches the network.
     let item = r#"<script src="https://example.com/lib.js"></script>"#;
 
-    let error = offline_catalog_item("data-chart", item).unwrap_err().to_string();
+    let error = offline_catalog_item("data-chart", item)
+        .unwrap_err()
+        .to_string();
 
     assert!(error.contains("https://example.com/lib.js"), "{error}");
     assert!(error.contains("data-chart"), "{error}");
@@ -269,7 +272,8 @@ fn staging_refuses_a_catalog_item_that_loads_its_own_data_at_render_time() {
     // sidecar file with per-word timings, which only a narration track can supply
     // and this engine is silent. Re-adding one must fail here, with a reason,
     // rather than surfacing as an unexplained renderer failure mid-render.
-    let item = r#"<script>fetch("./caption-data.json").then(function (r) { return r.json(); });</script>"#;
+    let item =
+        r#"<script>fetch("./caption-data.json").then(function (r) { return r.json(); });</script>"#;
 
     let error = offline_catalog_item("caption-weight-shift", item)
         .unwrap_err()
@@ -415,7 +419,9 @@ fn a_failed_check_reports_its_errors_rather_than_its_advice() {
         ));
         stdout.push_str("  ℹ pointer_events_none: harder to select in the Studio preview\n");
     }
-    stdout.push_str("  ✗ root_missing_composition_id: Root composition is missing `data-composition-id`.\n");
+    stdout.push_str(
+        "  ✗ root_missing_composition_id: Root composition is missing `data-composition-id`.\n",
+    );
     stdout.push_str("  ✗ missing_or_empty_sub_composition: references \"compositions/scene-2.html\", but the file has no content.\n");
     stdout.push_str("  2 error(s), 160 warning(s), 0 info(s)\n");
 
@@ -448,7 +454,10 @@ fn a_check_that_failed_without_itemising_keeps_its_tail() {
     let message = check_failure_message(&stdout, "");
 
     assert!(message.contains("browser could not start"), "{message}");
-    assert!(!message.contains("line 0"), "the head is dropped: {message}");
+    assert!(
+        !message.contains("line 0"),
+        "the head is dropped: {message}"
+    );
 }
 
 #[test]

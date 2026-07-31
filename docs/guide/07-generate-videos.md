@@ -20,9 +20,10 @@ sfumato generate video [INPUTS]... \
   [--fps <integer>] \
   [--quality draft|standard|high] \
   [--audio auto|on|off] \
+  [--voice <voice-id>] \
   [--allow-code-execution] \
-  [--tool image-gen] \
-  [--disable-tool image-gen] \
+  [--tool image-gen|audio-gen] \
+  [--disable-tool image-gen|audio-gen] \
   [--no-review] \
   [--visual-review] \
   [--dry-run] \
@@ -59,6 +60,7 @@ remain mandatory.
 | Focused local source repair | Reviewer when enabled, otherwise code author. |
 | Automated frame review | Reviewer role, only when its profile declares `image`. |
 | Remote video | `video` profile. |
+| Narration | `speech` profile, only when the `audio-gen` tool is enabled. |
 | Optional reference generation | `image` profile when `image-gen` is enabled. |
 
 For local engines, `--model video=...` is invalid. For the remote model engine,
@@ -73,7 +75,8 @@ For local engines, `--model video=...` is invalid. For the remote model engine,
 | `--aspect-ratio` | Positive `W:H`, default `16:9`. Local width is derived and rounded to an even pixel count. |
 | `--fps` | Local only, 1 through 120, default 30. |
 | `--quality` | Local only: `draft`, `standard`, or `high`; default `high`. |
-| `--audio` | Local engines require `off`; remote default is `auto`. |
+| `--audio` | Hyperframe narrates when a `speech` profile is configured (`auto`, the default); `on` fails if none is; `off` renders silent. Manim is always silent. Remote default is `auto`. |
+| `--voice` | Hyperframe only. Overrides the speech profile's voice for this film. |
 | `--out` | Publishes MP4 under `<out>/_sfumato/videos`. |
 | `--allow-code-execution` | Manim only; rejected for other engines. |
 
@@ -161,11 +164,11 @@ and spares the caller an encode that one of them discards.
 
 ### Production pipeline
 
-Hyperframe generation is a silent production pipeline: Sfumato derives a workflow,
-records `DESIGN.md`, `STORYBOARD.md`, and `SCRIPT.md` (on-screen copy only), authors
-scene direction, validates the source, and captures deterministic review snapshots
-before the final encode. Audio, TTS, music, SFX, and audio-timed captions are not
-part of this engine.
+Hyperframe generation derives a workflow, records `DESIGN.md`, `STORYBOARD.md`, and
+`SCRIPT.md` (on-screen copy and the spoken line), authors scene direction, validates
+the source, and captures deterministic review snapshots before the final encode.
+Music and SFX are not part of this engine; narration and captions are — see
+[Narration and captions](#narration-and-captions).
 
 Use `--workflow auto` (the default) to select a route from the brief, or select one
 of `explainer`, `motion-graphics`, `product-launch`, `talking-head`, `slideshow`, or
@@ -183,11 +186,58 @@ into the render workspace, pointing it at the pinned local GSAP and dropping rem
 font requests, and fails the render if any remote reference survives. Affected
 items fall back to the theme's fonts.
 
-Registry items that load their own content at render time are not curated. The two
-caption styles are the current example: they read words with per-word timings from
-a sidecar file, which only a narration track can supply, and this engine is silent.
-They return to the catalog once the engine renders audio; until then, selecting an
-item like that fails at staging with that reason rather than mid-render.
+Registry items that load their own content at render time are not curated: they
+fetch at render time, and a deterministic offline render cannot serve that request.
+Selecting one fails at staging with that reason rather than mid-render. Sfumato's
+own captions do not go through the registry — they are generated from the
+provider's word alignment, so they need no sidecar fetch.
+
+### Narration and captions
+
+A Hyperframe film speaks when the project has a `speech` model profile and the
+`audio-gen` tool is enabled. The planner then writes a `narration` line for every
+beat, and Sfumato — not the model — turns those lines into audio and captions:
+
+1. Each line is spoken in order, with the neighbouring lines sent as context so
+   the delivery reads as one narrator rather than a list of sentences.
+2. The provider returns audio plus a character-level alignment, which Sfumato
+   groups into words and then into captions.
+3. **The film is retimed around the voice.** A beat lasts at least as long as the
+   words carried over it plus the pause after them, so scene windows are stretched,
+   never shortened, starts are recomputed, and the film's total length grows if the
+   script needs it. The requested `--duration` is a floor, and any change is
+   reported as a warning.
+4. The master composition gains one `<audio>` element per passage as a direct child
+   of the composition root — the only place the renderer decodes media — plus a
+   generated `compositions/captions.html` overlay mounted above every scene.
+5. `narration.json` ships in the committed revision: the exact words, per-passage
+   durations, and every word timing the captions were built from.
+
+Captions are an overlay. They composite over the film in its lower eighth and never
+reserve a band that scene content is shifted up to avoid; the scene author is told
+to keep essential elements clear of it instead. Caption groups break on sentence
+punctuation, on a pause of 350 ms, and at five words, and each group is hard-killed
+at its end so two lines can never stack.
+
+The final `ffprobe` inspection asserts what was actually built: a narrated film must
+carry an audio stream, and a silent one must not.
+
+```bash
+sfumato connector setup elevenlabs
+sfumato connector login elevenlabs
+sfumato connector models elevenlabs        # models and voices, each row says which
+sfumato model add elevenlabs-speech --connector elevenlabs \
+  --id eleven_multilingual_v2 --capability speech \
+  --option speech_voice=<voice-id> --option speech_segment_gap_seconds=0.45
+sfumato model use speech elevenlabs-speech
+sfumato tool enable audio-gen
+
+sfumato generate video --engine hyperframe --duration 45 \
+  --instruction "Explain how fibre optics carry light"
+```
+
+Pass `--audio off` for a silent film, or `--voice <voice-id>` to override the
+profile's voice for one run.
 
 ### Catalog items are references, not components
 

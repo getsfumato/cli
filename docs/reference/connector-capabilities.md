@@ -12,6 +12,7 @@ connector.
 | `openrouter` | OpenAI-compatible | `GET /api/v1/models`, including modalities, context, pricing, and parameters | `GET /api/v1/key`, including usage and key limits |
 | `ollama` | OpenAI-compatible `/v1` | `GET /api/tags`, including size, digest, family, parameter size, and quantization | `GET /api/version` and `GET /api/ps` |
 | `codex_app_server` | Native JSON-RPC threads | `model/list` | `account/read` and `account/rateLimits/read` |
+| `elevenlabs` | Native speech synthesis with word timings | `GET /v1/models` plus `GET /v2/voices`, merged into one listing where each row says whether it selects a model or a voice | `GET /v1/user/subscription`, including tier and character budget |
 
 ```bash
 sfumato connector capabilities openrouter
@@ -32,3 +33,7 @@ credentials.
 - [Ollama model list](https://docs.ollama.com/api/tags)
 - [Ollama API reference](https://docs.ollama.com/api)
 - [Codex App Server](https://developers.openai.com/codex/app-server/)
+- [ElevenLabs text-to-speech with timestamps](https://elevenlabs.io/docs/api-reference/text-to-speech/convert-with-timestamps)
+- [ElevenLabs models](https://elevenlabs.io/docs/api-reference/models/list)
+- [ElevenLabs voices](https://elevenlabs.io/docs/api-reference/voices/search)
+- [ElevenLabs subscription](https://elevenlabs.io/docs/api-reference/user/subscription/get)

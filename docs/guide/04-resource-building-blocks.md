@@ -258,8 +258,8 @@ not page JavaScript plugins.
 
 ```bash
 sfumato tool list [--project <project>]
-sfumato tool enable image-gen|video-gen [--project <project>]
-sfumato tool disable image-gen|video-gen [--project <project>]
+sfumato tool enable image-gen|video-gen|audio-gen [--project <project>]
+sfumato tool disable image-gen|video-gen|audio-gen [--project <project>]
 ```
 
 `tool list` reports whether the project enables each tool and whether a required
@@ -267,11 +267,11 @@ model profile is configured.
 
 Compatibility matrix:
 
-| Resource | `image-gen` | `video-gen` |
-| --- | --- | --- |
-| Slides | Yes | No |
-| Pages | Yes | Yes, remote model only and at most once per page generation. |
-| Videos | Yes during planning/reference selection | No |
+| Resource | `image-gen` | `video-gen` | `audio-gen` |
+| --- | --- | --- | --- |
+| Slides | Yes | No | No |
+| Pages | Yes | Yes, remote model only and at most once per page generation. | Yes, as `sfumato_audio_gen`. |
+| Videos | Yes during planning/reference selection | No | Yes, but not as a tool: enabling it makes a Hyperframe film narrated, and Sfumato speaks the plan's per-scene lines itself. |
 
 Filesystem list/read tools are internal, read-only, mandatory, and restricted
 to the selected project/source roots. They do not appear in project tool config.

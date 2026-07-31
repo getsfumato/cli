@@ -9,6 +9,35 @@
 
 use sfumato_domain::VideoPlanDocument;
 
+use crate::resources::narration::CaptionGroup;
+
+/// The composition ID and file stem of the generated caption overlay.
+pub(super) const CAPTIONS_COMPOSITION_ID: &str = "captions";
+
+/// One narration file placed on the film's timeline.
+///
+/// Held separately from the plan because the timeline positions here are the
+/// spoken ones: a passage runs exactly as long as it was spoken, and the film
+/// was retimed around that rather than the other way round.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct NarrationClip {
+    /// Path relative to the source root, such as `assets/audio/narration-x.mp3`.
+    pub reference: String,
+    /// Start on the film's timeline, in seconds.
+    pub start_seconds: f32,
+    /// Spoken length, in seconds.
+    pub duration_seconds: f32,
+}
+
+/// The audio and captions layered over a film.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct NarrationLayer {
+    /// Spoken passages, in playback order.
+    pub clips: Vec<NarrationClip>,
+    /// Whether a caption overlay composition was generated beside them.
+    pub captions: bool,
+}
+
 /// The mount identifier for one scene's composition.
 ///
 /// Distinct from the scene's own composition ID because the host element and the
@@ -29,7 +58,12 @@ pub(super) fn scene_composition_path(scene_id: &str) -> String {
 /// carries `data-composition-id` alongside `data-composition-src`, and the file it
 /// loads carries its own composition root. Dropping either makes the renderer
 /// report a missing sub-composition.
-pub(super) fn master_index_html(plan: &VideoPlanDocument, width: u32, height: u32) -> String {
+pub(super) fn master_index_html(
+    plan: &VideoPlanDocument,
+    width: u32,
+    height: u32,
+    narration: &NarrationLayer,
+) -> String {
     let duration = plan.duration_seconds();
     let mut mounts = String::new();
     for (index, scene) in plan.scenes().iter().enumerate() {
@@ -40,6 +74,31 @@ pub(super) fn master_index_html(plan: &VideoPlanDocument, width: u32, height: u3
             start = format_seconds(scene.start_seconds),
             duration = format_seconds(scene.duration_seconds),
             track = index,
+        ));
+    }
+    // Captions ride above every scene, and the audio above them: track indices
+    // order what overlaps, and a caption drawn under a scene is invisible.
+    let scene_tracks = plan.scenes().len();
+    if narration.captions {
+        mounts.push_str(&format!(
+            "    <div id=\"mount-{id}\" class=\"clip\" data-composition-id=\"mount-{id}\" data-composition-src=\"compositions/{id}.html\" data-start=\"0\" data-duration=\"{duration}\" data-track-index=\"{track}\"></div>\n",
+            id = CAPTIONS_COMPOSITION_ID,
+            track = scene_tracks,
+        ));
+    }
+    // The renderer only registers and decodes media that is a direct child of
+    // the host composition root, so every narration file sits here rather than
+    // inside the scene it belongs to.
+    for (index, clip) in narration.clips.iter().enumerate() {
+        // No `data-duration`: the compiler probes an audio file's intrinsic
+        // length and writes the derived end itself, then rejects the element for
+        // carrying a duration alongside it. The clip's measured length still
+        // decides where the *next* one starts, which is what `clip` records.
+        mounts.push_str(&format!(
+            "    <audio id=\"narration-{index}\" class=\"clip\" src=\"{source}\" data-start=\"{start}\" data-track-index=\"{track}\" data-volume=\"1\"></audio>\n",
+            source = clip.reference,
+            start = format_seconds(clip.start_seconds),
+            track = scene_tracks + 1 + index,
         ));
     }
     format!(
@@ -55,6 +114,66 @@ fn format_seconds(value: f32) -> String {
     } else {
         format!("{value}")
     }
+}
+
+/// Builds the caption overlay from the words that were actually spoken.
+///
+/// Generated rather than authored for the same reason the master timeline is: a
+/// caption's only job is to sit under the voice, and a model asked to place
+/// hundreds of word timings by hand gets them subtly wrong in a way no
+/// validation catches. Every group is driven off the provider's own alignment,
+/// so the line on screen is the line being spoken.
+///
+/// The overlay is exactly that — an overlay. It reserves no band and shifts no
+/// scene content: it composites above the film, and a scene that wants to keep
+/// its lower third clear does so by composing for it.
+pub(super) fn captions_composition_html(
+    groups: &[CaptionGroup],
+    width: u32,
+    height: u32,
+) -> String {
+    let id = CAPTIONS_COMPOSITION_ID;
+    // Type and inset scale with the canvas so a 1080p film and a 480p proof read
+    // the same, and both stay clear of the frame edge.
+    let font_size = (height as f32 * 0.044).round().max(20.0);
+    let bottom = (height as f32 * 0.075).round().max(24.0);
+    let side = (width as f32 * 0.08).round().max(24.0);
+    let mut markup = String::new();
+    let mut timeline = String::new();
+    for (index, group) in groups.iter().enumerate() {
+        let duration = (group.end_seconds - group.start_seconds).max(0.12);
+        markup.push_str(&format!(
+            "      <div id=\"caption-{index}\" class=\"clip caption\" data-start=\"{start}\" data-duration=\"{duration}\" data-track-index=\"{index}\"><span class=\"caption-line\">{text}</span></div>\n",
+            start = format_seconds(group.start_seconds),
+            duration = format_seconds(duration),
+            text = escape_html(&group.text),
+        ));
+        // Fade in on the first syllable, fade out on the last, and a hard kill
+        // at the end: a group left at partial opacity stacks over the next one.
+        timeline.push_str(&format!(
+            "      tl.fromTo(\"#caption-{index}\", {{ opacity: 0, y: 12 }}, {{ opacity: 1, y: 0, duration: 0.14, ease: \"power2.out\" }}, {start});\n      tl.to(\"#caption-{index}\", {{ opacity: 0, duration: 0.12, ease: \"power2.in\" }}, {fade});\n      tl.set(\"#caption-{index}\", {{ opacity: 0 }}, {end});\n",
+            start = format_seconds(group.start_seconds),
+            fade = format_seconds((group.end_seconds - 0.12).max(group.start_seconds)),
+            end = format_seconds(group.end_seconds),
+        ));
+    }
+    let total = groups
+        .last()
+        .map(|group| group.end_seconds)
+        .unwrap_or(0.0)
+        .max(0.1);
+    format!(
+        "<template>\n  <div id=\"{id}\" data-composition-id=\"{id}\" data-width=\"{width}\" data-height=\"{height}\" data-start=\"0\">\n    <style>\n      #{id} {{ position: absolute; inset: 0; pointer-events: none; }}\n      #{id} .caption {{\n        position: absolute;\n        left: {side}px;\n        right: {side}px;\n        bottom: {bottom}px;\n        margin: 0 auto;\n        text-align: center;\n        font-family: Inter, sans-serif;\n        font-weight: 700;\n        font-size: {font_size}px;\n        line-height: 1.25;\n        color: #ffffff;\n        opacity: 0;\n        overflow: visible;\n      }}\n      #{id} .caption-line {{\n        display: inline-block;\n        padding: 0.24em 0.6em;\n        border-radius: 0.18em;\n        background: rgba(12, 14, 17, 0.66);\n        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);\n      }}\n    </style>\n{markup}    <script>\n      const tl = gsap.timeline({{ paused: true }});\n{timeline}      tl.set({{}}, {{}}, {total});\n      window.__timelines = window.__timelines || {{}};\n      window.__timelines[\"{id}\"] = tl;\n    </script>\n  </div>\n</template>\n",
+        total = format_seconds(total),
+    )
+}
+
+/// Escapes text destined for element content.
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// The project manifest the renderer reads.
@@ -81,10 +200,7 @@ pub(super) fn strip_markup_fence(value: &str) -> String {
 /// its own `data-composition-id` and dimensions. Without those the renderer
 /// reports the sub-composition as missing or empty and the film renders without
 /// that scene.
-pub(super) fn validate_scene_composition(
-    scene_id: &str,
-    markup: &str,
-) -> Result<(), String> {
+pub(super) fn validate_scene_composition(scene_id: &str, markup: &str) -> Result<(), String> {
     let lowercase = markup.to_ascii_lowercase();
     if !lowercase.contains("<template") {
         return Err(format!(

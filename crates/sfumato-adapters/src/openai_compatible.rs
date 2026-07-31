@@ -12,8 +12,8 @@ use sfumato_core::{
     providers::{
         AgentRunner, ImageAttachment, ImageGenerationProvider, ImageGenerationRequest,
         ImageGenerationResponse, ModelMessage, ProviderFactory, TextGenerationLimitError,
-        TextGenerationProvider, TextModel,
-        TextModelRequest, TextModelResponse, ToolCall, ToolDefinition,
+        TextGenerationProvider, TextModel, TextModelRequest, TextModelResponse, ToolCall,
+        ToolDefinition,
     },
     secrets::SecretResolver,
 };
@@ -157,6 +157,16 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
     ) -> SfumatoResult<Box<dyn sfumato_core::providers::VideoGenerationProvider>> {
         Err(SfumatoError::config(
             "Video generation requires a provider-native connector such as OpenRouter",
+        ))
+    }
+
+    fn speech(
+        &self,
+        _config: &EffectiveConfig,
+        _profile: &ModelProfile,
+    ) -> SfumatoResult<Box<dyn sfumato_core::providers::SpeechGenerationProvider>> {
+        Err(SfumatoError::config(
+            "Speech generation requires a provider-native connector such as ElevenLabs",
         ))
     }
 }
@@ -715,9 +725,7 @@ impl From<ModelMessage> for ChatMessage {
         match message {
             ModelMessage::System(content) => Self::text("system", content),
             ModelMessage::User(content) => Self::text("user", content),
-            ModelMessage::UserWithImages { content, images } => {
-                Self::with_images(content, images)
-            }
+            ModelMessage::UserWithImages { content, images } => Self::with_images(content, images),
             ModelMessage::Assistant {
                 content,
                 tool_calls,

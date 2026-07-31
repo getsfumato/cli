@@ -387,12 +387,12 @@ required = ["max_tool_rounds"]
 [[prompts]]
 id = "video.plan.system"
 path = "video/plan.system.md.j2"
-required = ["learning_style"]
+required = ["learning_style", "narration_available"]
 
 [[prompts]]
 id = "video.plan.user"
 path = "video/plan.user.md.j2"
-required = ["project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "engine", "duration_seconds", "resolution", "aspect_ratio", "title", "title_provided", "reusable_assets", "image_generation_available", "workflow", "urls", "catalog"]
+required = ["project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "engine", "duration_seconds", "resolution", "aspect_ratio", "title", "title_provided", "reusable_assets", "image_generation_available", "narration_available", "workflow", "urls", "catalog"]
 
 [[prompts]]
 id = "video.review.system"
@@ -412,7 +412,7 @@ required = []
 [[prompts]]
 id = "video.hyperframe-scene.user"
 path = "video/hyperframe-scene.user.md.j2"
-required = ["scene_id", "scene_position", "scene_count", "scene_snapshot", "scene_start_seconds", "scene_duration_seconds", "scene_catalog_items", "scene_artifacts", "previous_scene_exit", "width", "height", "fps", "theme_name", "theme_colors", "theme_fonts", "retry_present"]
+required = ["scene_id", "scene_position", "scene_count", "scene_snapshot", "scene_narration", "scene_start_seconds", "scene_duration_seconds", "scene_catalog_items", "scene_artifacts", "previous_scene_exit", "width", "height", "fps", "theme_name", "theme_colors", "theme_fonts", "retry_present"]
 
 [[prompts]]
 id = "video.manim.system"

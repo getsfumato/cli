@@ -255,6 +255,8 @@ pub enum GenerationStage {
     /// An image-capable model inspecting rendered frames.
     VideoVisualReview,
     VideoRendering,
+    /// Speaking the planned narration and timing it against the storyboard.
+    VideoNarration,
     DocumentDraft,
     DocumentValidationRepair,
     DocumentDiagramRepair,
@@ -285,6 +287,7 @@ impl GenerationStage {
             Self::VideoRepair => "repairing video source",
             Self::VideoVisualReview => "reviewing rendered frames",
             Self::VideoRendering => "rendering video",
+            Self::VideoNarration => "synthesizing narration",
             Self::DocumentDraft => "drafting document",
             Self::DocumentValidationRepair => "repairing document structure",
             Self::DocumentDiagramRepair => "repairing document diagrams",
@@ -640,6 +643,64 @@ pub struct VideoGenerationResponse {
     pub cost: Option<f64>,
 }
 
+/// Provider-neutral request for one spoken passage.
+#[derive(Clone, Debug, Default)]
+pub struct SpeechGenerationRequest {
+    /// Exactly the words to speak.
+    pub text: String,
+    /// Provider voice identifier; `None` uses the profile's configured voice.
+    pub voice: Option<String>,
+    /// Text spoken immediately before this passage, for prosodic continuity.
+    ///
+    /// Carried because a synthesiser given one sentence at a time restarts its
+    /// intonation on every scene, which is what makes stitched narration sound
+    /// like a list rather than a person.
+    pub previous_text: Option<String>,
+    /// Text spoken immediately after this passage, for the same reason.
+    pub next_text: Option<String>,
+}
+
+/// One spoken word located on the synthesized audio's own timeline.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpeechWordTiming {
+    /// The word as it was spoken, without surrounding whitespace.
+    pub text: String,
+    /// Seconds from the start of this passage's audio.
+    pub start_seconds: f32,
+    /// Seconds from the start of this passage's audio.
+    pub end_seconds: f32,
+}
+
+/// Audio bytes and word timings returned for one spoken passage.
+#[derive(Clone, Debug)]
+pub struct SpeechGenerationResponse {
+    /// Playable audio bytes.
+    pub bytes: Vec<u8>,
+    /// Response media type, normally `audio/mpeg`.
+    pub media_type: String,
+    /// Spoken length in seconds, as reported by the provider's own alignment.
+    ///
+    /// Taken from the provider rather than measured from the container because a
+    /// caption has to line up with the words, and only the provider knows where
+    /// they fall. A provider that reports no alignment reports no duration, and
+    /// the caller decides what to do about it.
+    pub duration_seconds: Option<f32>,
+    /// Word-level timings, empty when the provider returned no alignment.
+    pub words: Vec<SpeechWordTiming>,
+}
+
+/// Port for one synchronous provider-native speech synthesis.
+#[async_trait]
+pub trait SpeechGenerationProvider: Send + Sync {
+    /// Speaks one passage and returns its audio with word timings.
+    async fn generate_speech(
+        &self,
+        request: SpeechGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> SfumatoResult<SpeechGenerationResponse>;
+}
+
 /// Model metadata discovered from a connector's authenticated catalog.
 #[derive(Clone, Debug, Serialize)]
 pub struct ConnectorModelSummary {
@@ -681,6 +742,10 @@ pub enum ConnectorCapability {
     RuntimeStatus,
     /// Generate videos through a provider-native asynchronous API.
     VideoGeneration,
+    /// Synthesize speech through a provider-native API.
+    SpeechGeneration,
+    /// Discover the voices this account may speak with.
+    VoiceCatalog,
 }
 
 impl ConnectorCapability {
@@ -694,6 +759,8 @@ impl ConnectorCapability {
             Self::ModelManagement => "model_management",
             Self::RuntimeStatus => "runtime_status",
             Self::VideoGeneration => "video_generation",
+            Self::SpeechGeneration => "speech_generation",
+            Self::VoiceCatalog => "voice_catalog",
         }
     }
 }
@@ -793,4 +860,11 @@ pub trait ProviderFactory: Send + Sync {
         config: &EffectiveConfig,
         profile: &ModelProfile,
     ) -> SfumatoResult<Box<dyn VideoGenerationProvider>>;
+
+    /// Builds a provider-native speech synthesizer for a resolved profile.
+    fn speech(
+        &self,
+        config: &EffectiveConfig,
+        profile: &ModelProfile,
+    ) -> SfumatoResult<Box<dyn SpeechGenerationProvider>>;
 }

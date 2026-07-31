@@ -15,8 +15,8 @@ use sfumato_core::{
     providers::{
         ConnectorStatus, ConnectorStatusField, ImageAttachment, ImageGenerationProvider,
         ImageGenerationRequest, ImageGenerationResponse, TextGenerationEvent,
-        TextGenerationProvider,
-        TextGenerationRequest, TextGenerationResponse, ToolDefinition, ToolExecutionRequest,
+        TextGenerationProvider, TextGenerationRequest, TextGenerationResponse, ToolDefinition,
+        ToolExecutionRequest,
     },
 };
 use tokio::{
@@ -249,7 +249,13 @@ impl ImageGenerationProvider for CodexAppServerImageProvider {
         operation.checkpoint(stage)?;
         let mut process = CodexAppServerProcess::spawn(&self.config.executable, operation).await?;
         let result = process
-            .generate_image(&self.profile, &self.project_root, &request, operation, stage)
+            .generate_image(
+                &self.profile,
+                &self.project_root,
+                &request,
+                operation,
+                stage,
+            )
             .await;
         let _ = process.child.start_kill();
         result
@@ -270,11 +276,7 @@ fn image_turn_prompt(prompt: &str) -> String {
 }
 
 /// Explains a turn that ended without an image, with what to do instead.
-fn missing_image_error(
-    model: &str,
-    answer: &str,
-    stage: OperationStage,
-) -> SfumatoError {
+fn missing_image_error(model: &str, answer: &str, stage: OperationStage) -> SfumatoError {
     let quoted = if answer.trim().is_empty() {
         "it returned no message at all".to_string()
     } else {

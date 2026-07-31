@@ -89,6 +89,7 @@ pub struct ModelOptions {
     pub text: TextModelOptions,
     pub image: ImageModelOptions,
     pub video: VideoModelOptions,
+    pub speech: SpeechModelOptions,
 }
 
 /// Options used by text and code generation.
@@ -128,6 +129,39 @@ pub struct VideoModelOptions {
     pub poll_interval_seconds: Option<u64>,
     /// Maximum provider wait time.
     pub timeout_seconds: Option<u64>,
+}
+
+/// Options used by speech-synthesis models.
+///
+/// Every field is optional so a profile can name only a voice and let the
+/// provider decide the rest. Voice and model live here rather than in the
+/// profile's `model` field because a speech profile has two identifiers: the
+/// synthesis model and the voice it speaks with, and only one of them fits the
+/// shared `model` slot.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct SpeechModelOptions {
+    /// Provider voice identifier used when a request names none.
+    pub voice: Option<String>,
+    /// Container and sample rate such as `mp3_44100_128`.
+    pub output_format: Option<String>,
+    /// ISO 639-1 language hint for text normalization.
+    pub language: Option<String>,
+    /// Voice consistency, 0 to 1.
+    pub stability: Option<f32>,
+    /// Similarity to the reference voice, 0 to 1.
+    pub similarity_boost: Option<f32>,
+    /// Expressiveness, 0 to 1.
+    pub style: Option<f32>,
+    /// Speaking rate multiplier, normally near 1.
+    pub speed: Option<f32>,
+    /// Whether the provider should boost speaker likeness.
+    pub speaker_boost: Option<bool>,
+    /// Silence appended after each synthesized segment, in seconds.
+    ///
+    /// A film reads as rushed when the next beat cuts in on the last syllable, so
+    /// this is timeline direction rather than a synthesis parameter; it is kept
+    /// with the voice because it is the same decision a narrator makes.
+    pub segment_gap_seconds: Option<f32>,
 }
 
 /// Native audio policy for remote video models.
@@ -184,14 +218,20 @@ pub enum GenerationToolKind {
     ImageGen,
     /// Generate a video and return a local artifact path.
     VideoGen,
+    /// Speak text aloud and return a local audio artifact with word timings.
+    AudioGen,
 }
 
 impl GenerationToolKind {
+    /// Every tool, in presentation order.
+    pub const ALL: [Self; 3] = [Self::ImageGen, Self::VideoGen, Self::AudioGen];
+
     /// Stable CLI and configuration identifier.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ImageGen => "image-gen",
             Self::VideoGen => "video-gen",
+            Self::AudioGen => "audio-gen",
         }
     }
 
@@ -200,6 +240,7 @@ impl GenerationToolKind {
         match self {
             Self::ImageGen => Capability::Image,
             Self::VideoGen => Capability::Video,
+            Self::AudioGen => Capability::Speech,
         }
     }
 }
@@ -211,7 +252,10 @@ impl FromStr for GenerationToolKind {
         match value.to_ascii_lowercase().as_str() {
             "image-gen" | "image_gen" => Ok(Self::ImageGen),
             "video-gen" | "video_gen" => Ok(Self::VideoGen),
-            _ => bail!("Unknown generation tool '{value}'. Use image-gen or video-gen."),
+            "audio-gen" | "audio_gen" => Ok(Self::AudioGen),
+            _ => {
+                bail!("Unknown generation tool '{value}'. Use image-gen, video-gen, or audio-gen.")
+            }
         }
     }
 }
@@ -272,6 +316,22 @@ impl ModelOptions {
             poll_interval_seconds,
             timeout_seconds,
         );
+        macro_rules! replace_speech_some {
+            ($($field:ident),+ $(,)?) => {
+                $(if changes.speech.$field.is_some() { self.speech.$field = changes.speech.$field; })+
+            };
+        }
+        replace_speech_some!(
+            voice,
+            output_format,
+            language,
+            stability,
+            similarity_boost,
+            style,
+            speed,
+            speaker_boost,
+            segment_gap_seconds,
+        );
     }
 
     pub fn cli_pairs(&self) -> Vec<String> {
@@ -300,6 +360,15 @@ impl ModelOptions {
         push_option!(video, seed);
         push_option!(video, poll_interval_seconds);
         push_option!(video, timeout_seconds);
+        push_option!(speech, voice);
+        push_option!(speech, output_format);
+        push_option!(speech, language);
+        push_option!(speech, stability);
+        push_option!(speech, similarity_boost);
+        push_option!(speech, style);
+        push_option!(speech, speed);
+        push_option!(speech, speaker_boost);
+        push_option!(speech, segment_gap_seconds);
         pairs
     }
 }
@@ -386,6 +455,22 @@ pub struct AnthropicConnectorConfig {
     pub headers: BTreeMap<String, String>,
 }
 
+/// Native ElevenLabs speech connector.
+///
+/// Not composed from [`OpenAiCompatibleConnectorConfig`] for the same reason
+/// Anthropic is not: it authenticates with `xi-api-key` rather than bearer auth
+/// and speaks its own wire format, so typing it as an OpenAI-compatible
+/// transport would let a refactor route it through the wrong provider factory.
+#[derive(Clone, Debug, Serialize)]
+pub struct ElevenLabsConnectorConfig {
+    /// API root, normally `https://api.elevenlabs.io`.
+    pub base_url: String,
+    /// Indirect reference to the `xi-api-key` credential.
+    pub credential: Option<SecretRef>,
+    /// Extra request headers.
+    pub headers: BTreeMap<String, String>,
+}
+
 /// Configuration for one external model transport.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -400,6 +485,8 @@ pub enum ConnectorConfig {
     LmStudio(LmStudioConnectorConfig),
     /// Anthropic speaking the native Messages API.
     Anthropic(AnthropicConnectorConfig),
+    /// ElevenLabs speaking its native speech-synthesis API.
+    ElevenLabs(ElevenLabsConnectorConfig),
     /// Local Codex App Server using Codex-owned ChatGPT authentication.
     CodexAppServer(CodexAppServerConnectorConfig),
 }
@@ -434,6 +521,7 @@ impl ConnectorConfig {
             Self::Ollama(_) => "ollama",
             Self::LmStudio(_) => "lmstudio",
             Self::Anthropic(_) => "anthropic",
+            Self::ElevenLabs(_) => "elevenlabs",
             Self::CodexAppServer(_) => "codex_app_server",
         }
     }
@@ -446,6 +534,7 @@ impl ConnectorConfig {
             Self::Ollama(config) => config.native_base_url.clone(),
             Self::LmStudio(config) => config.native_base_url.clone(),
             Self::Anthropic(config) => config.base_url.clone(),
+            Self::ElevenLabs(config) => config.base_url.clone(),
             Self::CodexAppServer(config) => config.executable.display().to_string(),
         }
     }
@@ -459,6 +548,8 @@ impl ConnectorConfig {
             Self::LmStudio(config) => Some(&config.transport),
             // The Messages API is not OpenAI-compatible.
             Self::Anthropic(_) => None,
+            // Neither is the speech API.
+            Self::ElevenLabs(_) => None,
             Self::CodexAppServer(_) => None,
         }
     }
@@ -471,6 +562,7 @@ impl ConnectorConfig {
             Self::Ollama(config) => Some(&mut config.transport),
             Self::LmStudio(config) => Some(&mut config.transport),
             Self::Anthropic(_) => None,
+            Self::ElevenLabs(_) => None,
             Self::CodexAppServer(_) => None,
         }
     }
@@ -489,6 +581,7 @@ impl ConnectorConfig {
             Self::Ollama(config) => ConnectorAuth::Managed(config.transport.credential.as_ref()),
             Self::LmStudio(config) => ConnectorAuth::Managed(config.transport.credential.as_ref()),
             Self::Anthropic(config) => ConnectorAuth::Managed(config.credential.as_ref()),
+            Self::ElevenLabs(config) => ConnectorAuth::Managed(config.credential.as_ref()),
             Self::CodexAppServer(_) => ConnectorAuth::External {
                 owner: "Codex CLI",
                 login_command: "codex login",
@@ -509,6 +602,7 @@ impl ConnectorConfig {
             Self::Ollama(config) => config.transport.credential = reference,
             Self::LmStudio(config) => config.transport.credential = reference,
             Self::Anthropic(config) => config.credential = reference,
+            Self::ElevenLabs(config) => config.credential = reference,
             Self::CodexAppServer(_) => {
                 bail!("Codex App Server connectors manage their own authentication")
             }
@@ -669,6 +763,9 @@ impl GlobalConfig {
                 }
                 ConnectorConfig::Anthropic(connector) if connector.base_url.trim().is_empty() => {
                     bail!("Anthropic connector base URLs cannot be empty");
+                }
+                ConnectorConfig::ElevenLabs(connector) if connector.base_url.trim().is_empty() => {
+                    bail!("ElevenLabs connector base URLs cannot be empty");
                 }
                 ConnectorConfig::CodexAppServer(connector)
                     if connector.executable.as_os_str().is_empty() =>
@@ -910,8 +1007,19 @@ impl EffectiveConfig {
             .get(&tool)
             .copied()
             .unwrap_or_else(|| {
-                tool == GenerationToolKind::ImageGen
-                    && self.model_defaults.contains_key(&Capability::Image)
+                // A tool whose capability has no configured default cannot run, so
+                // the implicit answer is whether the project can actually back it.
+                // Video generation stays opt-in because it spends a remote render
+                // on a page that rarely asks for one.
+                match tool {
+                    GenerationToolKind::ImageGen => {
+                        self.model_defaults.contains_key(&Capability::Image)
+                    }
+                    GenerationToolKind::AudioGen => {
+                        self.model_defaults.contains_key(&Capability::Speech)
+                    }
+                    GenerationToolKind::VideoGen => false,
+                }
             })
     }
 }

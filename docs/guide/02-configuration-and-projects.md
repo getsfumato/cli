@@ -96,6 +96,7 @@ plugins = ["motion"]
 [generation_tools]
 image_gen = true
 video_gen = false
+audio_gen = true
 
 [security]
 allow_manim = false

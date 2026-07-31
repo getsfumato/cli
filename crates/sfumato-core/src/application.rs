@@ -43,9 +43,7 @@ use crate::{
         RendererManager, RendererStatus, SlideRenderer, VideoRenderer,
     },
     repositories::{GlobalConfigRepository, ProjectRepository, ThemeRepository},
-    resources::documents::{
-        GenerateDocumentOptions, GenerateDocumentResult, generate_document,
-    },
+    resources::documents::{GenerateDocumentOptions, GenerateDocumentResult, generate_document},
     resources::pages::{GeneratePageOptions, GeneratePageResult, generate_page},
     resources::slides::{
         EditSlidesOptions, EditSlidesRequest, EditSlidesResult, GenerateSlidesOptions,
@@ -648,7 +646,9 @@ impl SfumatoApplication {
             project,
             ..ConfigOverrides::default()
         })?;
-        Ok([GenerationToolKind::ImageGen, GenerationToolKind::VideoGen]
+        // Iterated from the enum so a new tool reaches `sfumato tool list`, the
+        // TUI, and automation at once.
+        Ok(GenerationToolKind::ALL
             .into_iter()
             .map(|tool| GenerationToolStatus {
                 tool,

@@ -52,6 +52,7 @@ fn profile() -> ModelProfile {
                 output_format: Some("png".to_string()),
             },
             video: Default::default(),
+            speech: Default::default(),
         },
     }
 }
@@ -218,7 +219,9 @@ fn a_message_with_images_carries_each_frame_behind_its_own_label() {
     let json = serde_json::to_value(&message).unwrap();
 
     assert_eq!(json["role"], "user");
-    let parts = json["content"].as_array().expect("images need the array form");
+    let parts = json["content"]
+        .as_array()
+        .expect("images need the array form");
     // Prompt, then label and image for each frame: a model that cannot name the
     // frame it is describing produces findings nothing can act on.
     assert_eq!(parts.len(), 5);

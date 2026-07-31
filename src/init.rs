@@ -68,7 +68,9 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
     }
     config.user.name = Some(name);
     config.user.learning_style = learning_style;
-    let preset = Select::new("Default text connector", ConnectorPreset::ALL.to_vec()).prompt()?;
+    // Only presets that can draft: a speech-only connector chosen here would
+    // leave the configuration without a text default.
+    let preset = Select::new("Default text connector", ConnectorPreset::text_capable()).prompt()?;
     let connector = preset.default_connector_name().to_string();
     // `default_config` ships only a subset of the presets, and
     // `GlobalConfig::validate` rejects a profile naming an absent connector, so
@@ -76,15 +78,15 @@ fn ask_user_preferences() -> Result<GlobalConfig> {
     config
         .connectors
         .insert(connector.clone(), preset.into_config(&connector, None)?);
-    let profile_name = preset.default_text_profile_name();
+    let profile_name = preset.default_profile_name();
     let connector_name = connector.clone();
-    let model = prompt("Default text model", preset.default_text_model())?;
+    let model = prompt("Default text model", preset.default_model())?;
     config.models.insert(
         profile_name.to_string(),
         ModelProfile {
             connector,
             model,
-            capabilities: vec![Capability::Text, Capability::Code],
+            capabilities: preset.default_capabilities().to_vec(),
             options: ModelOptions {
                 // Preset-derived rather than hardcoded: Anthropic rejects
                 // sampling parameters and shares `max_tokens` with thinking, so

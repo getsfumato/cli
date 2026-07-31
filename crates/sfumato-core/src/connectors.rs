@@ -7,9 +7,9 @@ use sfumato_domain::SecretRef;
 
 use crate::{
     config::{
-        AnthropicConnectorConfig, CodexAppServerConnectorConfig, ConnectorAuth, ConnectorConfig,
-        GlobalConfig, LmStudioConnectorConfig, OllamaConnectorConfig,
-        OpenAiCompatibleConnectorConfig, OpenRouterConnectorConfig,
+        AnthropicConnectorConfig, Capability, CodexAppServerConnectorConfig, ConnectorAuth,
+        ConnectorConfig, ElevenLabsConnectorConfig, GlobalConfig, LmStudioConnectorConfig,
+        OllamaConnectorConfig, OpenAiCompatibleConnectorConfig, OpenRouterConnectorConfig,
     },
     errors::{ResultContext as Context, SfumatoResult as Result},
     repositories::GlobalConfigRepository,
@@ -24,6 +24,7 @@ pub enum ConnectorPreset {
     Openrouter,
     Anthropic,
     Codex,
+    Elevenlabs,
 }
 
 impl ConnectorPreset {
@@ -31,13 +32,40 @@ impl ConnectorPreset {
     ///
     /// Frontends iterate this instead of hardcoding a subset, so a new preset
     /// reaches the CLI, the interactive installer, and the TUI at once.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Ollama,
         Self::Lmstudio,
         Self::Openrouter,
         Self::Anthropic,
         Self::Codex,
+        Self::Elevenlabs,
     ];
+
+    /// Presets that can back a first text profile.
+    ///
+    /// First-run setup asks for the connector that will draft, so a preset that
+    /// only speaks — ElevenLabs — must not be offered there: choosing it would
+    /// write a configuration with no text default, and every generate command
+    /// would then fail on a choice the wizard invited.
+    pub fn text_capable() -> Vec<Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|preset| preset.seeds_text_profile())
+            .collect()
+    }
+
+    /// Whether this preset's first profile generates text.
+    pub const fn seeds_text_profile(self) -> bool {
+        !matches!(self, Self::Elevenlabs)
+    }
+
+    /// Capabilities the preset's first model profile declares.
+    pub const fn default_capabilities(self) -> &'static [Capability] {
+        match self {
+            Self::Elevenlabs => &[Capability::Speech],
+            _ => &[Capability::Text, Capability::Code],
+        }
+    }
 
     /// Stable preset identifier used by presentation and automation.
     pub const fn as_str(self) -> &'static str {
@@ -47,6 +75,7 @@ impl ConnectorPreset {
             Self::Openrouter => "openrouter",
             Self::Anthropic => "anthropic",
             Self::Codex => "codex",
+            Self::Elevenlabs => "elevenlabs",
         }
     }
 
@@ -58,6 +87,7 @@ impl ConnectorPreset {
             Self::Openrouter => "openrouter",
             Self::Anthropic => "anthropic",
             Self::Codex => "codex_app_server",
+            Self::Elevenlabs => "elevenlabs",
         }
     }
 
@@ -66,8 +96,8 @@ impl ConnectorPreset {
         self.as_str()
     }
 
-    /// Provider model identifier suggested for a first text profile.
-    pub const fn default_text_model(self) -> &'static str {
+    /// Provider model identifier suggested for this preset's first profile.
+    pub const fn default_model(self) -> &'static str {
         match self {
             Self::Ollama => "llama3.2",
             Self::Lmstudio => "qwen2.5-7b-instruct",
@@ -75,17 +105,19 @@ impl ConnectorPreset {
             Self::Anthropic => "claude-opus-5",
             // Codex resolves `default` against its own authenticated catalog.
             Self::Codex => "default",
+            Self::Elevenlabs => "eleven_multilingual_v2",
         }
     }
 
-    /// Model-profile name suggested when this preset backs the first text profile.
-    pub const fn default_text_profile_name(self) -> &'static str {
+    /// Model-profile name suggested for this preset's first profile.
+    pub const fn default_profile_name(self) -> &'static str {
         match self {
             Self::Ollama => "local-text",
             Self::Lmstudio => "lmstudio-text",
             Self::Openrouter => "cloud-text",
             Self::Anthropic => "anthropic-text",
             Self::Codex => "codex-text",
+            Self::Elevenlabs => "elevenlabs-speech",
         }
     }
 
@@ -96,7 +128,7 @@ impl ConnectorPreset {
     pub const fn default_text_temperature(self) -> Option<f32> {
         match self {
             Self::Ollama | Self::Lmstudio | Self::Openrouter | Self::Codex => Some(0.4),
-            Self::Anthropic => None,
+            Self::Anthropic | Self::Elevenlabs => None,
         }
     }
 
@@ -108,7 +140,7 @@ impl ConnectorPreset {
     pub const fn default_text_max_tokens(self) -> Option<u32> {
         match self {
             Self::Ollama | Self::Lmstudio | Self::Openrouter | Self::Codex => Some(4000),
-            Self::Anthropic => None,
+            Self::Anthropic | Self::Elevenlabs => None,
         }
     }
 
@@ -116,7 +148,7 @@ impl ConnectorPreset {
     /// stored through `sfumato connector login` before it can generate.
     pub const fn requires_stored_login(self) -> bool {
         match self {
-            Self::Openrouter | Self::Anthropic => true,
+            Self::Openrouter | Self::Anthropic | Self::Elevenlabs => true,
             Self::Ollama | Self::Lmstudio | Self::Codex => false,
         }
     }
@@ -124,7 +156,11 @@ impl ConnectorPreset {
     /// Whether this preset accepts an environment-variable credential reference.
     pub const fn accepts_api_key_env(self) -> bool {
         match self {
-            Self::Ollama | Self::Lmstudio | Self::Openrouter | Self::Anthropic => true,
+            Self::Ollama
+            | Self::Lmstudio
+            | Self::Openrouter
+            | Self::Anthropic
+            | Self::Elevenlabs => true,
             Self::Codex => false,
         }
     }
@@ -137,6 +173,7 @@ impl ConnectorPreset {
             Self::Openrouter => "OpenAI-compatible HTTP plus a native video API",
             Self::Anthropic => "Native Anthropic Messages API",
             Self::Codex => "Codex App Server JSON-RPC over stdio",
+            Self::Elevenlabs => "Native ElevenLabs speech API",
         }
     }
 
@@ -148,6 +185,7 @@ impl ConnectorPreset {
             Self::Openrouter => "OS keyring, or an environment variable",
             Self::Anthropic => "OS keyring, or an environment variable",
             Self::Codex => "Owned by `codex login`",
+            Self::Elevenlabs => "OS keyring, or an environment variable",
         }
     }
 
@@ -197,6 +235,15 @@ impl ConnectorPreset {
             }),
             Self::Anthropic => ConnectorConfig::Anthropic(AnthropicConnectorConfig {
                 base_url: "https://api.anthropic.com/v1".to_string(),
+                credential: Some(match api_key_env {
+                    Some(variable) => environment_credential(variable)?,
+                    None => SecretRef::stored(&format!("connector/{name}"))
+                        .context("Invalid stored connector credential reference")?,
+                }),
+                headers: BTreeMap::new(),
+            }),
+            Self::Elevenlabs => ConnectorConfig::ElevenLabs(ElevenLabsConnectorConfig {
+                base_url: "https://api.elevenlabs.io".to_string(),
                 credential: Some(match api_key_env {
                     Some(variable) => environment_credential(variable)?,
                     None => SecretRef::stored(&format!("connector/{name}"))
@@ -306,6 +353,13 @@ impl ConnectorService {
             ConnectorConfig::Ollama(connector) => connector_details(&connector.transport),
             ConnectorConfig::LmStudio(connector) => connector_details(&connector.transport),
             ConnectorConfig::Anthropic(connector) => {
+                connector_details(&OpenAiCompatibleConnectorConfig {
+                    base_url: connector.base_url.clone(),
+                    credential: connector.credential.clone(),
+                    headers: connector.headers.clone(),
+                })
+            }
+            ConnectorConfig::ElevenLabs(connector) => {
                 connector_details(&OpenAiCompatibleConnectorConfig {
                     base_url: connector.base_url.clone(),
                     credential: connector.credential.clone(),

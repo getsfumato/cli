@@ -29,14 +29,11 @@ use crate::{
     filesystem::WorkspaceFileSystem,
     generation::{
         DocumentFormatIssue, DocumentGenerationOutput, DocumentPageSetup, DocumentPageSize,
-        DocumentReviewSummary, GenerationRequest, GenerationToolSummary,
-        ReviewStatus,
+        DocumentReviewSummary, GenerationRequest, GenerationToolSummary, ReviewStatus,
     },
     operation::{OperationContext, OperationEventKind},
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
-    prompts::{
-        PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables,
-    },
+    prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
         GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
         TextGenerationProvider, TextGenerationRequest,
@@ -216,7 +213,9 @@ pub(crate) async fn generate_document(
         .as_ref()
         .map(|value| value.content.clone())
         .unwrap_or_default();
-    let project_instructions_path = project_instructions.as_ref().map(|value| value.path.clone());
+    let project_instructions_path = project_instructions
+        .as_ref()
+        .map(|value| value.path.clone());
     let documents = source_reader.collect(&request.sources)?;
     operation.emit(
         OperationStage::ReadSources,
@@ -267,6 +266,9 @@ pub(crate) async fn generate_document(
         sources: request.sources.clone(),
         image: image_tool,
         video: None,
+        // Neither a deck nor a printable document has a timeline to hang audio
+        // on, so speech is not offered here.
+        audio: None,
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let tool_summaries = summarize_tools(&tool_set.definitions);
@@ -366,7 +368,11 @@ pub(crate) async fn generate_document(
         });
     }
 
-    emit_stage(&event_sink, GenerationStage::DocumentDraft, Some(draft_profile_name));
+    emit_stage(
+        &event_sink,
+        GenerationStage::DocumentDraft,
+        Some(draft_profile_name),
+    );
     operation.emit(
         OperationStage::Draft,
         OperationEventKind::Started,

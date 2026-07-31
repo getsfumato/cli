@@ -205,6 +205,11 @@ pub(super) enum GenerateFieldId {
     Plugins,
     ImageTool,
     VideoTool,
+    AudioTool,
+    /// Narration policy for Hyperframe, kept apart from the direct model's own
+    /// audio switch so switching engines cannot carry one label onto the other.
+    Narration,
+    Voice,
     Engine,
     Duration,
     Resolution,
@@ -501,6 +506,7 @@ impl GenerateForm {
         for (id, tool) in [
             (GenerateFieldId::ImageTool, GenerationToolArg::ImageGen),
             (GenerateFieldId::VideoTool, GenerationToolArg::VideoGen),
+            (GenerateFieldId::AudioTool, GenerationToolArg::AudioGen),
         ] {
             match self.select_index(id) {
                 Some(1) => enabled.push(tool),
@@ -612,6 +618,7 @@ impl GenerateForm {
             .transpose()?;
         let audio = self
             .select_index(GenerateFieldId::Audio)
+            .or_else(|| self.select_index(GenerateFieldId::Narration))
             .map(|index| match index {
                 1 => VideoAudioArg::On,
                 2 => VideoAudioArg::Off,
@@ -640,6 +647,7 @@ impl GenerateForm {
             fps,
             quality: optional(self.text(GenerateFieldId::Quality)),
             audio,
+            voice: optional(self.text(GenerateFieldId::Voice)),
             allow_code_execution: self.toggle(GenerateFieldId::AllowCodeExecution),
             tools,
             disabled_tools,
@@ -784,6 +792,18 @@ fn build_generation_fields(
                     GenerateFieldId::Quality,
                     text_generate_value("Quality", "high", "high"),
                 ),
+                (
+                    GenerateFieldId::Narration,
+                    FormField::Select {
+                        label: "Narration",
+                        options: vec!["Auto".into(), "On".into(), "Off".into()],
+                        selected: 0,
+                    },
+                ),
+                (
+                    GenerateFieldId::Voice,
+                    text_generate_field("Voice", "speech profile default"),
+                ),
             ]),
             VideoEngineArg::Manim => pairs.extend([
                 (GenerateFieldId::Fps, text_generate_value("FPS", "30", "30")),
@@ -817,6 +837,9 @@ fn build_generation_fields(
     }
     if resource == GenerateResource::Page {
         pairs.push((GenerateFieldId::VideoTool, tool_select("Video generation")));
+    }
+    if matches!(resource, GenerateResource::Page | GenerateResource::Video) {
+        pairs.push((GenerateFieldId::AudioTool, tool_select("Narration")));
     }
     pairs.extend([
         (
@@ -1030,8 +1053,8 @@ impl OperationForm {
                 // Overwritten rather than merged: these two fields are the chosen
                 // preset's defaults, and a stale Ollama profile name or model id
                 // would be written into the config as-is.
-                self.set_text("Profile", preset.default_text_profile_name());
-                self.set_text("Model ID", preset.default_text_model());
+                self.set_text("Profile", preset.default_profile_name());
+                self.set_text("Model ID", preset.default_model());
             }
             _ => {}
         }

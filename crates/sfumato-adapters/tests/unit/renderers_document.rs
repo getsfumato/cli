@@ -69,11 +69,17 @@ fn reads_the_page_count_the_cli_reported() {
         reported_pages("\u{2714} Rendering 6 pages took 41.1 milliseconds."),
         Some(6)
     );
-    assert_eq!(reported_pages("- Rendering: Page 1\nRendering 12 pages"), Some(12));
+    assert_eq!(
+        reported_pages("- Rendering: Page 1\nRendering 12 pages"),
+        Some(12)
+    );
 }
 
 #[test]
 fn output_without_a_page_report_is_not_guessed_at() {
-    assert_eq!(reported_pages("\u{2714} Loaded\n- Generating\n\u{2714} Saved"), None);
+    assert_eq!(
+        reported_pages("\u{2714} Loaded\n- Generating\n\u{2714} Saved"),
+        None
+    );
     assert_eq!(reported_pages("Rendering many pages"), None);
 }

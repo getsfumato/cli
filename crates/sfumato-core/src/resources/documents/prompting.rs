@@ -186,7 +186,12 @@ pub(super) async fn inspect_document(
     )?;
     let candidate = parse_document(&rendered, Some(document.title()))?;
     let mut allowed = diagram_artifacts;
-    allowed.extend(context.workspace.list_files(&root.join("images"), &[]).unwrap_or_default());
+    allowed.extend(
+        context
+            .workspace
+            .list_files(&root.join("images"), &[])
+            .unwrap_or_default(),
+    );
     let assembled = context.assembler.assemble(DocumentAssemblyRequest {
         document: &candidate,
         theme: context.theme,

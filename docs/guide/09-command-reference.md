@@ -191,7 +191,7 @@ usage/limits, or Codex account and rate-limit fields where available.
 ### `sfumato connector setup`
 
 ```text
-sfumato connector setup <ollama|openrouter|codex> \
+sfumato connector setup <ollama|lmstudio|openrouter|anthropic|codex|elevenlabs> \
   [--name <NAME>] \
   [--api-key-env <VARIABLE>]
 ```
@@ -546,8 +546,8 @@ Removes a utility from project defaults or clears it when it is the selected UI.
 
 ## `tool`
 
-Tool values are `image-gen` and `video-gen`. These are model-facing generation
-tools, not browser plugins.
+Tool values are `image-gen`, `video-gen`, and `audio-gen`. These are
+model-facing generation tools, not browser plugins.
 
 ### `sfumato tool list`
 
@@ -555,13 +555,13 @@ tools, not browser plugins.
 sfumato tool list [--project <PROJECT>]
 ```
 
-Reports project default state and whether the required image/video model can be
-resolved.
+Reports project default state and whether the required image, video, or speech
+model can be resolved.
 
 ### `sfumato tool enable`
 
 ```text
-sfumato tool enable <image-gen|video-gen> [--project <PROJECT>]
+sfumato tool enable <image-gen|video-gen|audio-gen> [--project <PROJECT>]
 ```
 
 Persists the tool as enabled for the explicit or active project. Generation
@@ -570,7 +570,7 @@ still checks resource compatibility and model availability.
 ### `sfumato tool disable`
 
 ```text
-sfumato tool disable <image-gen|video-gen> [--project <PROJECT>]
+sfumato tool disable <image-gen|video-gen|audio-gen> [--project <PROJECT>]
 ```
 
 Persists the tool as disabled for the explicit or active project.
@@ -725,8 +725,8 @@ sfumato generate page [INPUTS]... \
   [--plugin <UTILITY_ID>]... \
   [--disable-plugin <UTILITY_ID>]... \
   [--no-review] \
-  [--tool <image-gen|video-gen>]... \
-  [--disable-tool <image-gen|video-gen>]... \
+  [--tool <image-gen|video-gen|audio-gen>]... \
+  [--disable-tool <image-gen|video-gen|audio-gen>]... \
   [--dry-run] \
   [--json]
 ```
@@ -743,7 +743,7 @@ sfumato generate page [INPUTS]... \
 | `--disable-plugin` | Remove a project utility for this request; repeatable. |
 | `--model`, `--review-model` | Capability and reviewer overrides. |
 | `--no-review` | Skip semantic and browser-repair model stages. Static validation and assembly still apply. |
-| `--tool`, `--disable-tool` | Override image/video generation tools. Page video generation is remote-model-backed and limited to one tool call. |
+| `--tool`, `--disable-tool` | Override image, video, and audio generation tools. Page video generation is remote-model-backed and limited to one tool call; `audio-gen` gives the drafter a speech tool that returns an audio file and its word timings. |
 | `--dry-run`, `--json` | Preflight or machine-readable output. |
 
 The hidden `--shadcn` compatibility flag maps to `--ui shadcn` and is
@@ -771,9 +771,10 @@ sfumato generate video [INPUTS]... \
   [--fps <INTEGER>] \
   [--quality <draft|standard|high>] \
   [--audio <auto|on|off>] \
+  [--voice <VOICE_ID>] \
   [--allow-code-execution] \
-  [--tool <image-gen|video-gen>]... \
-  [--disable-tool <image-gen|video-gen>]... \
+  [--tool <image-gen|audio-gen>]... \
+  [--disable-tool <image-gen|audio-gen>]... \
   [--dry-run] \
   [--json]
 ```
@@ -787,11 +788,12 @@ sfumato generate video [INPUTS]... \
 | `--aspect-ratio` | Defaults to `16:9`; validated against engine/provider support. |
 | `--fps` | Local engines only; defaults to `30`, valid range `1..=120`. |
 | `--quality` | Local engines only; defaults to `high`. |
-| `--audio` | Local engines currently require `off`; remote defaults to `auto`. |
+| `--audio` | Hyperframe narrates when a `speech` default exists (`auto`); `on` requires one and fails without it; `off` renders silent. Manim is always silent. Remote defaults to `auto`. |
+| `--voice` | Hyperframe only. Overrides the speech profile's voice for this film. |
 | `--allow-code-execution` | Valid only for Manim and authorizes generated Python for this request. Project `security.allow_manim` is the persistent alternative. |
 | `--model` | Text drafter plus `code` for local authoring or `video` for remote generation. |
 | `--review-model`, `--no-review` | Controls semantic plan review. Invalid local source is still eligible for one focused repair so the renderer contract can be satisfied. |
-| `--tool`, `--disable-tool` | Video planning supports `image-gen`; standalone video never injects `video-gen`. |
+| `--tool`, `--disable-tool` | Video planning supports `image-gen` and `audio-gen`; standalone video never injects `video-gen`. `audio-gen` turns narration on or off for a Hyperframe film. |
 | `--dry-run`, `--json` | Preflight or machine-readable output. |
 
 Engine-incompatible flags fail before paid provider calls or code execution.

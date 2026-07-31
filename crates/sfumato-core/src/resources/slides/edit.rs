@@ -11,14 +11,12 @@ use sfumato_domain::RevisionId;
 use slug::slugify;
 
 use super::{
-    LayoutInspectionContext, SlidePromptContext, compact_review_snapshot,
+    LayoutInspectionContext, MermaidRenderRequest, SlidePromptContext, compact_review_snapshot,
     constrain_generated_images, copy_theme_css, emit_context_compaction, emit_layout_result,
     emit_review_retry, emit_stage, ensure_inside, extract_generated_title, format_tokens,
-    MermaidRenderRequest, generation_limit, inspect_candidate_layout, markdown_fences,
-    mermaid_image_markdown,
+    generation_limit, inspect_candidate_layout, markdown_fences, mermaid_image_markdown,
     normalize_marp_math_delimiters, render_mermaid_diagrams, render_prompt_request, request_chars,
-    resource_artifact_file,
-    validate_normalized_deck,
+    resource_artifact_file, validate_normalized_deck,
 };
 use crate::sfumato_bail as bail;
 use crate::{
@@ -234,18 +232,17 @@ pub(crate) async fn edit_slides(
         BTreeMap::from([("issues".to_string(), layout_issues.len().to_string())]),
     );
 
-    let (rendered_markdown, diagram_artifacts) =
-        render_mermaid_diagrams(MermaidRenderRequest {
-            markdown: &candidate,
-            diagrams_dir: &diagrams_dir,
-            theme: &theme,
-            renderer: options.diagram_renderer.as_ref(),
-            workspace: options.workspace.as_ref(),
-            operation: &options.operation,
-            stage: OperationStage::Render,
-            image_markdown: mermaid_image_markdown,
-        })
-        .await?;
+    let (rendered_markdown, diagram_artifacts) = render_mermaid_diagrams(MermaidRenderRequest {
+        markdown: &candidate,
+        diagrams_dir: &diagrams_dir,
+        theme: &theme,
+        renderer: options.diagram_renderer.as_ref(),
+        workspace: options.workspace.as_ref(),
+        operation: &options.operation,
+        stage: OperationStage::Render,
+        image_markdown: mermaid_image_markdown,
+    })
+    .await?;
     copy_theme_css(&theme, &theme_css_path, options.workspace.as_ref())?;
     emit_stage(&options.event_sink, GenerationStage::Rendering, None);
     options.operation.emit(

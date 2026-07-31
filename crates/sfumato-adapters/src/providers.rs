@@ -6,14 +6,15 @@ use async_trait::async_trait;
 use sfumato_core::{
     config::{
         AnthropicConnectorConfig, Capability, ConnectorConfig, EffectiveConfig,
-        LmStudioConnectorConfig, ModelProfile, OllamaConnectorConfig, OpenRouterConnectorConfig,
+        ElevenLabsConnectorConfig, LmStudioConnectorConfig, ModelProfile, OllamaConnectorConfig,
+        OpenRouterConnectorConfig,
     },
     errors::{SfumatoError, SfumatoResult},
     operation::OperationContext,
     providers::{
         AgentRunner, ConnectorCapabilities, ConnectorCapability, ConnectorIntrospection,
         ConnectorModelSummary, ConnectorStatus, ImageGenerationProvider, ProviderFactory,
-        TextGenerationProvider, VideoGenerationProvider,
+        SpeechGenerationProvider, TextGenerationProvider, VideoGenerationProvider,
     },
     secrets::SecretResolver,
 };
@@ -21,8 +22,11 @@ use sfumato_core::{
 use crate::{
     anthropic::AnthropicConnector,
     codex_app_server::{CodexAppServerImageProvider, CodexAppServerProvider},
-    lmstudio::LmStudioConnector, ollama::OllamaConnector,
-    openai_compatible::OpenAiCompatibleProviderFactory, openrouter::OpenRouterConnector,
+    elevenlabs::ElevenLabsConnector,
+    lmstudio::LmStudioConnector,
+    ollama::OllamaConnector,
+    openai_compatible::OpenAiCompatibleProviderFactory,
+    openrouter::OpenRouterConnector,
 };
 
 /// Dispatches resolved model profiles to their configured transport adapter.
@@ -75,6 +79,9 @@ impl ProviderFactory for AdapterProviderFactory {
                     .text_model(profile.clone());
                 Ok(Box::new(AgentRunner::new(Arc::new(model))) as Box<dyn TextGenerationProvider>)
             }
+            ConnectorConfig::ElevenLabs(_) => Err(SfumatoError::config(
+                "ElevenLabs only synthesizes speech; configure a text profile on another connector",
+            )),
             ConnectorConfig::CodexAppServer(connector) => {
                 Ok(Box::new(CodexAppServerProvider::new(
                     connector.clone(),
@@ -97,6 +104,9 @@ impl ProviderFactory for AdapterProviderFactory {
             | ConnectorConfig::LmStudio(_) => self.openai_compatible.image(config, profile),
             ConnectorConfig::Anthropic(_) => Err(SfumatoError::config(
                 "Anthropic exposes no image-generation endpoint; configure an OpenRouter or OpenAI-compatible image profile",
+            )),
+            ConnectorConfig::ElevenLabs(_) => Err(SfumatoError::config(
+                "ElevenLabs only synthesizes speech; configure an image profile on another connector",
             )),
             // Indirect: an agent turn that has to choose to invoke its own image
             // tool, rather than an endpoint that returns bytes. It runs on Codex's
@@ -129,6 +139,27 @@ impl ProviderFactory for AdapterProviderFactory {
             )),
             _ => Err(SfumatoError::config(
                 "Video generation currently requires an OpenRouter connector",
+            )),
+        }
+    }
+
+    fn speech(
+        &self,
+        config: &EffectiveConfig,
+        profile: &ModelProfile,
+    ) -> SfumatoResult<Box<dyn SpeechGenerationProvider>> {
+        if !profile.capabilities.contains(&Capability::Speech) {
+            return Err(SfumatoError::config(
+                "Selected model profile does not support speech generation",
+            ));
+        }
+        match Self::connector(config, profile)? {
+            ConnectorConfig::ElevenLabs(connector) => Ok(Box::new(
+                ElevenLabsConnector::new(connector.clone(), self.secrets.clone())?
+                    .speech_provider(profile.clone()),
+            )),
+            _ => Err(SfumatoError::config(
+                "Speech generation currently requires an ElevenLabs connector",
             )),
         }
     }
@@ -168,6 +199,17 @@ impl ConnectorIntrospection for AdapterProviderFactory {
             // `Account` and `Usage` are deliberately absent: spend and identity
             // live behind the Admin API, which a Messages key cannot reach.
             NativeConnector::Anthropic(_) => ("anthropic", vec![ConnectorCapability::ModelCatalog]),
+            // `Usage` rather than `Account`: a speech key reads its own
+            // subscription tier and character budget, not an identity.
+            NativeConnector::ElevenLabs(_) => (
+                "elevenlabs",
+                vec![
+                    ConnectorCapability::ModelCatalog,
+                    ConnectorCapability::VoiceCatalog,
+                    ConnectorCapability::SpeechGeneration,
+                    ConnectorCapability::Usage,
+                ],
+            ),
             NativeConnector::Codex => (
                 "codex_app_server",
                 vec![
@@ -208,6 +250,14 @@ impl ConnectorIntrospection for AdapterProviderFactory {
                 AnthropicConnector::new(config, self.secrets.clone())?
                     .list_models(operation)
                     .await
+            }
+            // Models and voices in one listing: a speech profile needs both, and
+            // each row names which option it fills in.
+            NativeConnector::ElevenLabs(config) => {
+                let connector = ElevenLabsConnector::new(config, self.secrets.clone())?;
+                let mut catalog = connector.list_models(operation).await?;
+                catalog.extend(connector.list_voices(operation).await?);
+                Ok(catalog)
             }
             NativeConnector::Codex => {
                 let ConnectorConfig::CodexAppServer(config) = connector else {
@@ -262,6 +312,11 @@ impl ConnectorIntrospection for AdapterProviderFactory {
                     .status(connector_name, operation)
                     .await
             }
+            NativeConnector::ElevenLabs(config) => {
+                ElevenLabsConnector::new(config, self.secrets.clone())?
+                    .status(connector_name, operation)
+                    .await
+            }
             NativeConnector::Codex => {
                 let ConnectorConfig::CodexAppServer(config) = connector else {
                     unreachable!()
@@ -277,6 +332,7 @@ impl ConnectorIntrospection for AdapterProviderFactory {
 
 enum NativeConnector {
     OpenRouter(OpenRouterConnectorConfig),
+    ElevenLabs(ElevenLabsConnectorConfig),
     Ollama(OllamaConnectorConfig),
     LmStudio(LmStudioConnectorConfig),
     Anthropic(AnthropicConnectorConfig),
@@ -290,6 +346,7 @@ fn native_connector(connector: &ConnectorConfig) -> NativeConnector {
         ConnectorConfig::Ollama(config) => NativeConnector::Ollama(config.clone()),
         ConnectorConfig::LmStudio(config) => NativeConnector::LmStudio(config.clone()),
         ConnectorConfig::Anthropic(config) => NativeConnector::Anthropic(config.clone()),
+        ConnectorConfig::ElevenLabs(config) => NativeConnector::ElevenLabs(config.clone()),
         ConnectorConfig::CodexAppServer(_) => NativeConnector::Codex,
         ConnectorConfig::OpenAiCompatible(config) if config.base_url.contains("openrouter.ai") => {
             NativeConnector::OpenRouter(OpenRouterConnectorConfig {

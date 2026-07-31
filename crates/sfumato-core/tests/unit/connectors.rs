@@ -196,8 +196,8 @@ fn preset_metadata_covers_every_variant() {
         assert!(!preset.as_str().is_empty());
         assert!(!preset.kind().is_empty());
         assert!(!preset.default_connector_name().is_empty());
-        assert!(!preset.default_text_model().is_empty());
-        assert!(!preset.default_text_profile_name().is_empty());
+        assert!(!preset.default_model().is_empty());
+        assert!(!preset.default_profile_name().is_empty());
         assert!(!preset.transport_summary().is_empty());
         assert!(!preset.auth_summary().is_empty());
 
