@@ -13,7 +13,9 @@ use sfumato_core::{
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::{OperationContext, OperationEventKind},
     providers::{
-        ConnectorStatus, ConnectorStatusField, TextGenerationEvent, TextGenerationProvider,
+        ConnectorStatus, ConnectorStatusField, ImageAttachment, ImageGenerationProvider,
+        ImageGenerationRequest, ImageGenerationResponse, TextGenerationEvent,
+        TextGenerationProvider,
         TextGenerationRequest, TextGenerationResponse, ToolDefinition, ToolExecutionRequest,
     },
 };
@@ -203,19 +205,103 @@ impl TextGenerationProvider for CodexAppServerProvider {
         stage: OperationStage,
     ) -> SfumatoResult<TextGenerationResponse> {
         operation.checkpoint(stage)?;
-        if !request.images.is_empty() {
-            // Refused rather than dropped: the App Server protocol carries no
-            // image input, and answering an "is this frame empty?" question from
-            // the prompt text alone would report a verdict nothing looked at.
-            return Err(SfumatoError::config(format_args!(
-                "Model profile '{}' runs on a Codex App Server connector, which accepts text only; \
-                 select an image-capable profile for this step",
-                self.profile.model
-            ))
-            .at_stage(stage));
-        }
         self.generate(&request, operation, stage).await
     }
+}
+
+/// Image generation backed by the Codex-native image tool.
+///
+/// Indirect by nature, and that is the whole caveat: the protocol exposes no
+/// "generate this image" call. An agent turn is started, the model decides to
+/// invoke its own image tool, and the generated PNG arrives as a saved file path.
+/// A model that answers in prose instead has produced no image, which this reports
+/// as a tool failure rather than as an empty success. The payoff is that it runs on
+/// Codex's own authentication instead of a metered image endpoint.
+pub struct CodexAppServerImageProvider {
+    config: CodexAppServerConnectorConfig,
+    profile: ModelProfile,
+    project_root: PathBuf,
+}
+
+impl CodexAppServerImageProvider {
+    /// Creates a provider. The App Server starts on each request.
+    pub fn new(
+        config: CodexAppServerConnectorConfig,
+        profile: ModelProfile,
+        project_root: PathBuf,
+    ) -> Self {
+        Self {
+            config,
+            profile,
+            project_root,
+        }
+    }
+}
+
+#[async_trait]
+impl ImageGenerationProvider for CodexAppServerImageProvider {
+    async fn generate_image(
+        &self,
+        request: ImageGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> SfumatoResult<ImageGenerationResponse> {
+        operation.checkpoint(stage)?;
+        let mut process = CodexAppServerProcess::spawn(&self.config.executable, operation).await?;
+        let result = process
+            .generate_image(&self.profile, &self.project_root, &request, operation, stage)
+            .await;
+        let _ = process.child.start_kill();
+        result
+    }
+}
+
+/// The instruction that asks for one image and nothing else.
+///
+/// Explicit about the single deliverable because the turn is a conversation: a
+/// model left to its own judgement narrates what it would draw.
+fn image_turn_prompt(prompt: &str) -> String {
+    format!(
+        "Generate exactly one image using your image generation tool, then stop.\n\n\
+         Image to generate:\n{prompt}\n\n\
+         Do not describe the image, do not ask a question, and do not propose \
+         alternatives. Invoke the tool."
+    )
+}
+
+/// Explains a turn that ended without an image, with what to do instead.
+fn missing_image_error(
+    model: &str,
+    answer: &str,
+    stage: OperationStage,
+) -> SfumatoError {
+    let quoted = if answer.trim().is_empty() {
+        "it returned no message at all".to_string()
+    } else {
+        format!("it answered: \"{}\"", excerpt(answer.trim(), 300))
+    };
+    SfumatoError::provider(
+        ErrorClass::InvalidOutput,
+        format!(
+            "Codex model '{model}' did not generate an image; {quoted}. \
+             Codex generates images only when the model chooses to invoke its own \
+             image tool during a turn, so a refusal or a written description \
+             produces no file. Either retry, or configure an image profile on a \
+             connector with a direct image endpoint, for example:\n\n\
+             [models.gpt-image]\nconnector = \"openrouter\"\n\
+             model = \"openai/gpt-image-2\"\ncapabilities = [\"image\"]"
+        ),
+    )
+    .at_stage(stage)
+}
+
+/// Shortens a model answer for an error message without splitting a character.
+fn excerpt(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let kept: String = value.chars().take(max_chars).collect();
+    format!("{kept}…")
 }
 
 struct CodexAppServerProcess {
@@ -375,7 +461,7 @@ impl CodexAppServerProcess {
                 "turn/start",
                 json!({
                     "threadId": thread_id,
-                    "input": [{ "type": "text", "text": request.user_prompt }],
+                    "input": turn_input(&request.user_prompt, &request.images, model, stage)?,
                     "model": model.model,
                     "cwd": project_root,
                     "approvalPolicy": "never",
@@ -393,6 +479,116 @@ impl CodexAppServerProcess {
 
         self.drive_turn(&thread_id, &turn_id, request, operation, stage)
             .await
+    }
+
+    /// Runs one turn whose only purpose is to produce an image file.
+    async fn generate_image(
+        &mut self,
+        profile: &ModelProfile,
+        project_root: &Path,
+        request: &ImageGenerationRequest,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> SfumatoResult<ImageGenerationResponse> {
+        let models = self.list_models(operation, stage).await?;
+        let model = resolve_model(&models, &profile.model, stage)?.clone();
+        let project_root = project_root.display().to_string();
+        let thread = self
+            .request(
+                "thread/start",
+                json!({ "cwd": project_root }),
+                operation,
+                stage,
+            )
+            .await?;
+        let thread_id = thread
+            .pointer("/thread/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| protocol_error(stage, "thread/start response omitted thread.id"))?
+            .to_string();
+        let turn = self
+            .request(
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{ "type": "text", "text": image_turn_prompt(&request.prompt) }],
+                    "model": model.model,
+                    "cwd": project_root,
+                    "approvalPolicy": "never",
+                    // The image tool writes its own artifact, so the turn needs to
+                    // be allowed to put a file on disk.
+                    "sandboxPolicy": { "type": "workspaceWrite" },
+                }),
+                operation,
+                stage,
+            )
+            .await?;
+        let turn_id = turn
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| protocol_error(stage, "turn/start response omitted turn.id"))?
+            .to_string();
+
+        let mut saved_path = None;
+        let mut answer = String::new();
+        loop {
+            let message = self.read_message(operation, stage).await?;
+            match message.get("method").and_then(Value::as_str) {
+                Some("item/completed") => {
+                    if let Some(path) = generated_image_path(&message) {
+                        saved_path = Some(PathBuf::from(path));
+                    }
+                    if let Some(text) = completed_agent_text(&message) {
+                        answer = text.to_string();
+                    }
+                }
+                Some("turn/completed") => {
+                    let params = message.get("params").cloned().unwrap_or(Value::Null);
+                    if params.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str())
+                        || params.pointer("/turn/id").and_then(Value::as_str)
+                            != Some(turn_id.as_str())
+                    {
+                        continue;
+                    }
+                    let status = params
+                        .pointer("/turn/status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("failed");
+                    if status != "completed" {
+                        return Err(turn_error(&params, status, stage));
+                    }
+                    let path = saved_path
+                        .ok_or_else(|| missing_image_error(&model.model, &answer, stage))?;
+                    let bytes = std::fs::read(&path).map_err(|error| {
+                        SfumatoError::provider(
+                            ErrorClass::InvalidOutput,
+                            format!(
+                                "Codex reported a generated image at {} that could not be read: {error}",
+                                path.display()
+                            ),
+                        )
+                        .at_stage(stage)
+                    })?;
+                    return Ok(ImageGenerationResponse {
+                        bytes,
+                        // The image tool writes PNG artifacts.
+                        media_type: "image/png".to_string(),
+                    });
+                }
+                // A request from the server, which this turn exposes no tools for.
+                Some(method) if message.get("id").is_some() => {
+                    self.respond_error(
+                        message.get("id").cloned().unwrap_or(Value::Null),
+                        -32601,
+                        &format!("Sfumato does not support App Server request '{method}'"),
+                        operation,
+                        stage,
+                    )
+                    .await?;
+                }
+                _ => {}
+            }
+        }
     }
 
     async fn drive_turn(
@@ -729,6 +925,45 @@ fn dynamic_tools(tools: &[ToolDefinition]) -> Vec<Value> {
         .collect()
 }
 
+/// Builds one turn's input items, attaching any images the request carries.
+///
+/// The protocol takes a local path and reads the file itself, so snapshots travel
+/// as `localImage` with no encoding. Each label precedes its own image because the
+/// protocol carries no caption field, and a bare run of frames leaves the model
+/// unable to say which one is wrong.
+fn turn_input(
+    prompt: &str,
+    images: &[ImageAttachment],
+    model: &CodexModel,
+    stage: OperationStage,
+) -> SfumatoResult<Value> {
+    let mut input = vec![json!({ "type": "text", "text": prompt })];
+    if images.is_empty() {
+        return Ok(Value::Array(input));
+    }
+    // Refused on the model's own declaration rather than on the connector kind.
+    // An older catalog omits the field entirely, which the protocol says to read
+    // as accepting both, so an absent list is not a refusal.
+    if !model.input_modalities.is_empty()
+        && !model
+            .input_modalities
+            .iter()
+            .any(|modality| modality.eq_ignore_ascii_case("image"))
+    {
+        return Err(SfumatoError::config(format_args!(
+            "Codex model '{}' accepts {} only; select an image-capable model for this step",
+            model.model,
+            model.input_modalities.join(", ")
+        ))
+        .at_stage(stage));
+    }
+    for image in images {
+        input.push(json!({ "type": "text", "text": image.label }));
+        input.push(json!({ "type": "localImage", "path": image.path }));
+    }
+    Ok(Value::Array(input))
+}
+
 fn resolve_model<'a>(
     models: &'a [CodexModel],
     requested: &str,
@@ -759,6 +994,18 @@ fn completed_agent_text(message: &Value) -> Option<&str> {
     let item = message.pointer("/params/item")?;
     (item.get("type")?.as_str()? == "agentMessage")
         .then(|| item.get("text").and_then(Value::as_str))
+        .flatten()
+}
+
+/// The file the Codex image tool wrote, when this item reports one.
+///
+/// Measured against the protocol: a completed `imageGeneration` item carries the
+/// artifact's absolute path. A completed item without one means the tool ran and
+/// produced nothing usable, which is the same outcome as never running.
+fn generated_image_path(message: &Value) -> Option<&str> {
+    let item = message.pointer("/params/item")?;
+    (item.get("type")?.as_str()? == "imageGeneration")
+        .then(|| item.get("savedPath").and_then(Value::as_str))
         .flatten()
 }
 

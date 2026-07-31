@@ -133,8 +133,12 @@ coverage.
 The review is advisory. Its findings appear in the warnings and in `visual_report`,
 and `visual_review_mode` reports `automated`. A text-only reviewer leaves the mode at
 `evidence_only`: the frames and the deterministic verdict still ship, and Sfumato
-does not claim an inspection that never happened. A connector that cannot accept
-images refuses the request rather than answering from the prompt alone.
+does not claim an inspection that never happened. A model that declares it cannot
+read images refuses the request rather than answering from the prompt alone.
+
+Frames travel as file paths, not bytes. The Codex App Server takes a local path and
+opens the file itself, while the HTTP connectors inline base64, so a path serves both
+and spares the caller an encode that one of them discards.
 
 ### Production pipeline
 

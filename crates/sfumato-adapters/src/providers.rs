@@ -19,7 +19,8 @@ use sfumato_core::{
 };
 
 use crate::{
-    anthropic::AnthropicConnector, codex_app_server::CodexAppServerProvider,
+    anthropic::AnthropicConnector,
+    codex_app_server::{CodexAppServerImageProvider, CodexAppServerProvider},
     lmstudio::LmStudioConnector, ollama::OllamaConnector,
     openai_compatible::OpenAiCompatibleProviderFactory, openrouter::OpenRouterConnector,
 };
@@ -97,9 +98,17 @@ impl ProviderFactory for AdapterProviderFactory {
             ConnectorConfig::Anthropic(_) => Err(SfumatoError::config(
                 "Anthropic exposes no image-generation endpoint; configure an OpenRouter or OpenAI-compatible image profile",
             )),
-            ConnectorConfig::CodexAppServer(_) => Err(SfumatoError::config(
-                "Codex App Server connectors support text generation only",
-            )),
+            // Indirect: an agent turn that has to choose to invoke its own image
+            // tool, rather than an endpoint that returns bytes. It runs on Codex's
+            // authentication instead of a metered image endpoint, and a turn that
+            // answers in prose is reported as a tool failure.
+            ConnectorConfig::CodexAppServer(connector) => {
+                Ok(Box::new(CodexAppServerImageProvider::new(
+                    connector.clone(),
+                    profile.clone(),
+                    config.project_root.clone(),
+                )))
+            }
         }
     }
 

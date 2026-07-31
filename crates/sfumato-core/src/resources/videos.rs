@@ -1163,7 +1163,6 @@ pub(crate) async fn generate_video(
                     measurements: &measurements,
                     reviewer: provider_factory.text(&config, visual_profile)?.as_ref(),
                     prompt_catalog: prompt_catalog.as_ref(),
-                    workspace: workspace.as_ref(),
                     context: &mut context,
                     prompts: &mut prompts,
                     event_sink: &event_sink,
@@ -1994,7 +1993,6 @@ struct VisualReviewRequest<'a> {
     measurements: &'a [VideoFrameMeasurement],
     reviewer: &'a dyn crate::providers::TextGenerationProvider,
     prompt_catalog: &'a dyn PromptCatalog,
-    workspace: &'a dyn crate::filesystem::WorkspaceFileSystem,
     context: &'a mut VideoPromptContext,
     prompts: &'a mut Vec<PromptProvenance>,
     event_sink: &'a Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
@@ -2015,7 +2013,6 @@ async fn review_frames_visually(
         measurements,
         reviewer,
         prompt_catalog,
-        workspace,
         context,
         prompts,
         event_sink,
@@ -2032,7 +2029,7 @@ async fn review_frames_visually(
                     .unwrap_or_default()
             ),
             media_type: "image/png".to_string(),
-            data: workspace.read_bytes(path)?,
+            path: path.clone(),
         });
     }
     context.frame_measurements = measurements

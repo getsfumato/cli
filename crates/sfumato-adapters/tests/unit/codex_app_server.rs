@@ -4,7 +4,7 @@ use sfumato_core::{
     providers::{ToolDefinition, ToolFunctionDefinition},
 };
 
-use super::{CodexModel, completed_agent_text, dynamic_tools, resolve_model, turn_error};
+use super::{CodexModel, completed_agent_text, dynamic_tools, resolve_model, turn_error, turn_input};
 
 fn model(id: &str, is_default: bool) -> CodexModel {
     CodexModel {
@@ -89,45 +89,150 @@ fn classifies_context_window_turn_failures() {
     assert_eq!(error.stage, Some(OperationStage::Draft));
 }
 
-#[tokio::test]
-async fn refuses_a_request_carrying_images_instead_of_answering_without_them() {
-    // The App Server protocol has no image input. Dropping the attachments would
-    // let a "does this frame look empty?" review return a verdict from the prompt
-    // text alone, which reads as an inspection but is a guess.
-    use sfumato_core::{
-        config::{CodexAppServerConnectorConfig, Capability, ModelOptions, ModelProfile},
-        operation::OperationContext,
-        providers::{ImageAttachment, TextGenerationProvider, TextGenerationRequest},
-    };
-
-    let provider = super::CodexAppServerProvider::new(
-        CodexAppServerConnectorConfig {
-            executable: "codex".into(),
-        },
-        ModelProfile {
-            connector: "codex".to_string(),
-            model: "gpt-5.6-sol".to_string(),
-            capabilities: vec![Capability::Text],
-            options: ModelOptions::default(),
-        },
-        std::path::PathBuf::from("/tmp"),
-    );
-    let mut request = TextGenerationRequest::new("system".to_string(), "user".to_string());
-    request.images = vec![ImageAttachment {
-        label: "Frame at 0.00s".to_string(),
+fn image(path: &std::path::Path) -> sfumato_core::providers::ImageAttachment {
+    sfumato_core::providers::ImageAttachment {
+        label: "Frame at 4.00s, scene 2".to_string(),
         media_type: "image/png".to_string(),
-        data: vec![0x89],
-    }];
+        path: path.to_path_buf(),
+    }
+}
 
-    let error = provider
-        .generate_text(request, &OperationContext::detached(), OperationStage::Review)
-        .await
-        .expect_err("a text-only connector must refuse images");
+#[test]
+fn attaches_images_as_local_paths_the_app_server_reads_itself() {
+    // The protocol takes a path and opens the file on its side, so a snapshot needs
+    // no encoding at all — unlike the two HTTP connectors, which inline base64.
+    let frame = std::path::Path::new("/tmp/frame-01.png");
+    let mut model = model("gpt-5.6-sol", true);
+    model.input_modalities = vec!["text".to_string(), "image".to_string()];
+
+    let input = turn_input("review these", &[image(frame)], &model, OperationStage::Review).unwrap();
+
+    let items = input.as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0], json!({"type": "text", "text": "review these"}));
+    // The label precedes its image: the protocol has no caption field, so this is
+    // the only way a finding can name the frame it came from.
+    assert_eq!(
+        items[1],
+        json!({"type": "text", "text": "Frame at 4.00s, scene 2"})
+    );
+    assert_eq!(items[2], json!({"type": "localImage", "path": "/tmp/frame-01.png"}));
+}
+
+#[test]
+fn refuses_images_only_when_the_model_says_it_cannot_read_them() {
+    // Judged on the model's own declaration, not on the connector kind: this
+    // connector does carry image input, and refusing every request for it left the
+    // visual review unreachable on the one model that was configured.
+    let frame = std::path::Path::new("/tmp/frame-01.png");
+    let mut text_only = model("gpt-5.6-sol", true);
+    text_only.input_modalities = vec!["text".to_string()];
+
+    let error = turn_input("review these", &[image(frame)], &text_only, OperationStage::Review)
+        .expect_err("a text-only model must refuse rather than answer blind");
 
     assert_eq!(error.class, ErrorClass::Permanent);
-    assert!(error.to_string().contains("text only"), "{error}");
+    assert!(error.to_string().contains("accepts text only"), "{error}");
     assert!(
         error.to_string().contains("image-capable"),
         "the message has to say what to do instead: {error}"
+    );
+}
+
+#[test]
+fn an_older_catalog_without_declared_modalities_still_accepts_images() {
+    // The protocol says to read a missing list as accepting both, so an absent
+    // declaration is not a refusal.
+    let frame = std::path::Path::new("/tmp/frame-01.png");
+    let mut unknown = model("gpt-5.6-sol", true);
+    unknown.input_modalities.clear();
+
+    let input =
+        turn_input("review these", &[image(frame)], &unknown, OperationStage::Review).unwrap();
+
+    assert_eq!(input.as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn a_text_only_turn_carries_exactly_one_input_item() {
+    let model = model("gpt-5.6-sol", true);
+
+    let input = turn_input("draft a plan", &[], &model, OperationStage::Draft).unwrap();
+
+    assert_eq!(input, json!([{"type": "text", "text": "draft a plan"}]));
+}
+
+#[test]
+fn a_completed_image_item_reports_the_file_the_tool_wrote() {
+    let message = json!({
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "type": "imageGeneration",
+                "id": "image-run-1",
+                "status": "completed",
+                "revisedPrompt": null,
+                "result": "ok",
+                "savedPath": "/tmp/generated_images/session/image-run-1.png",
+            }
+        }
+    });
+
+    assert_eq!(
+        super::generated_image_path(&message),
+        Some("/tmp/generated_images/session/image-run-1.png")
+    );
+}
+
+#[test]
+fn an_image_item_without_a_saved_file_reports_nothing() {
+    // The tool ran and produced nothing usable, which is the same outcome for the
+    // caller as never running: there is no file to read.
+    let message = json!({
+        "method": "item/completed",
+        "params": {
+            "item": { "type": "imageGeneration", "id": "run", "status": "failed", "result": "" }
+        }
+    });
+
+    assert!(super::generated_image_path(&message).is_none());
+
+    // An unrelated item must not be mistaken for one.
+    let text = json!({
+        "method": "item/completed",
+        "params": { "item": { "type": "agentMessage", "text": "here you go" } }
+    });
+    assert!(super::generated_image_path(&text).is_none());
+}
+
+#[test]
+fn a_turn_that_answered_in_prose_is_reported_as_a_failed_tool_with_a_worked_example() {
+    // Generation here is indirect: the model has to choose to invoke its own image
+    // tool. A written description is a failure, not an empty success, and the error
+    // has to show the direct alternative rather than just say no.
+    let error = super::missing_image_error(
+        "gpt-5.6-sol",
+        "I can describe the illustration instead: a cutaway of an optical fibre…",
+        OperationStage::Draft,
+    );
+
+    assert_eq!(error.class, ErrorClass::InvalidOutput);
+    let message = error.to_string();
+    assert!(message.contains("did not generate an image"), "{message}");
+    // The model's own words, so the cause is visible without re-running anything.
+    assert!(message.contains("I can describe the illustration"), "{message}");
+    assert!(message.contains("chooses to invoke its own"), "{message}");
+    // A copy-pasteable profile for a connector that does return bytes.
+    assert!(message.contains("[models.gpt-image]"), "{message}");
+    assert!(message.contains("openai/gpt-image-2"), "{message}");
+}
+
+#[test]
+fn a_silent_turn_says_so_rather_than_quoting_an_empty_answer() {
+    let error = super::missing_image_error("gpt-5.6-sol", "   ", OperationStage::Draft);
+
+    assert!(
+        error.to_string().contains("no message at all"),
+        "{error}"
     );
 }

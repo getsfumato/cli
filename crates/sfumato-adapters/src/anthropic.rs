@@ -512,17 +512,24 @@ fn translate_messages(
                 for image in images {
                     // The label goes in front of its own image: Claude has no
                     // caption field, so this is the only way it can name which
-                    // frame it is talking about.
+                    // frame it is talking about. An unreadable file keeps its
+                    // label, so the model is told a frame is missing rather than
+                    // judging a film it never fully saw.
                     blocks.push(RequestBlock::Text {
                         text: image.label.clone(),
                     });
-                    blocks.push(RequestBlock::Image {
-                        source: ImageSource {
-                            kind: "base64",
-                            media_type: image.media_type.clone(),
-                            data: STANDARD.encode(&image.data),
-                        },
-                    });
+                    match std::fs::read(&image.path) {
+                        Ok(bytes) => blocks.push(RequestBlock::Image {
+                            source: ImageSource {
+                                kind: "base64",
+                                media_type: image.media_type.clone(),
+                                data: STANDARD.encode(&bytes),
+                            },
+                        }),
+                        Err(error) => blocks.push(RequestBlock::Text {
+                            text: format!("could not be read: {error}"),
+                        }),
+                    }
                 }
                 push_blocks(&mut translated, "user", blocks);
             }

@@ -194,18 +194,23 @@ fn a_text_only_message_still_serialises_as_a_bare_string() {
 
 #[test]
 fn a_message_with_images_carries_each_frame_behind_its_own_label() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("frame-00.png");
+    let second = directory.path().join("frame-01.png");
+    std::fs::write(&first, [0x89, 0x50]).unwrap();
+    std::fs::write(&second, [0xff]).unwrap();
     let message = ChatMessage::from(ModelMessage::UserWithImages {
         content: "review these".to_string(),
         images: vec![
             ImageAttachment {
                 label: "Frame at 0.00s, scene 1".to_string(),
                 media_type: "image/png".to_string(),
-                data: vec![0x89, 0x50],
+                path: first,
             },
             ImageAttachment {
                 label: "Frame at 4.00s, scene 2".to_string(),
                 media_type: "image/png".to_string(),
-                data: vec![0xff],
+                path: second,
             },
         ],
     });

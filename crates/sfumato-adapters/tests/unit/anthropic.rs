@@ -832,13 +832,16 @@ async fn cancellation_stops_catalog_pagination() {
 fn attaches_images_as_inline_base64_blocks_behind_their_labels() {
     // Claude has no caption field, so the label has to be its own text block in
     // front of the image it describes.
+    let directory = tempfile::tempdir().unwrap();
+    let frame = directory.path().join("frame-03.png");
+    std::fs::write(&frame, [0x89, 0x50]).unwrap();
     let request = TextModelRequest {
         messages: vec![ModelMessage::UserWithImages {
             content: "review these".into(),
             images: vec![sfumato_core::providers::ImageAttachment {
                 label: "Frame at 13.00s, scene 3".into(),
                 media_type: "image/png".into(),
-                data: vec![0x89, 0x50],
+                path: frame,
             }],
         }],
         tools: Vec::new(),

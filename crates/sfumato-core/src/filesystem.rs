@@ -29,11 +29,6 @@ pub trait WorkspaceFileSystem: Send + Sync {
     fn canonicalize(&self, path: &Path) -> SfumatoResult<PathBuf>;
     /// Reads a UTF-8 text file.
     fn read_text(&self, path: &Path) -> SfumatoResult<String>;
-    /// Reads a file as raw bytes.
-    ///
-    /// Needed for binary evidence the core has to hand a provider, such as the
-    /// PNG snapshots an image-capable reviewer inspects.
-    fn read_bytes(&self, path: &Path) -> SfumatoResult<Vec<u8>>;
     /// Creates a directory and its parents.
     fn create_dir_all(&self, path: &Path) -> SfumatoResult<()>;
     /// Writes a complete file, creating its parent directory when needed.

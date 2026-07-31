@@ -104,9 +104,10 @@ impl From<TextGenerationLimitError> for SfumatoError {
 
 /// One image handed to a text model alongside its prompt.
 ///
-/// Carries bytes rather than a path: the core reads files through its workspace
-/// port and the encoding a connector needs — a data URI, a base64 block — is an
-/// infrastructure detail that belongs in the adapter.
+/// Names the file rather than carrying its bytes. Connectors disagree about what
+/// they want: `chat/completions` and Anthropic need base64 inline, while the Codex
+/// App Server takes a local path and reads the file itself. A path serves both and
+/// spares the reader an encode that one of them throws away.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageAttachment {
     /// What the image shows, so a model can tell one attachment from another.
@@ -116,8 +117,8 @@ pub struct ImageAttachment {
     pub label: String,
     /// IANA media type, such as `image/png`.
     pub media_type: String,
-    /// Raw encoded image bytes.
-    pub data: Vec<u8>,
+    /// Absolute path of the image on disk.
+    pub path: PathBuf,
 }
 
 #[derive(Clone)]

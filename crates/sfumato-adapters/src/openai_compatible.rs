@@ -668,18 +668,25 @@ impl ChatMessage {
     /// Builds a user turn whose text is followed by labelled images.
     ///
     /// Each label precedes its own image so the model can name what it is looking
-    /// at; a bare run of frames gives it no way to report which one is wrong.
+    /// at; a bare run of frames gives it no way to report which one is wrong. An
+    /// image that cannot be read is dropped with its label kept, so the model is
+    /// told a frame is missing instead of silently judging a shorter film.
     fn with_images(content: String, images: Vec<ImageAttachment>) -> Self {
         let mut parts = vec![ContentPart::Text { text: content }];
         for image in images {
-            parts.push(ContentPart::Text {
-                text: image.label.clone(),
-            });
-            parts.push(ContentPart::ImageUrl {
-                image_url: ImageUrl {
-                    url: data_uri(&image),
-                },
-            });
+            match data_uri(&image) {
+                Ok(url) => {
+                    parts.push(ContentPart::Text {
+                        text: image.label.clone(),
+                    });
+                    parts.push(ContentPart::ImageUrl {
+                        image_url: ImageUrl { url },
+                    });
+                }
+                Err(error) => parts.push(ContentPart::Text {
+                    text: format!("{} could not be read: {error}", image.label),
+                }),
+            }
         }
         Self {
             role: "user".to_string(),
@@ -693,12 +700,14 @@ impl ChatMessage {
 }
 
 /// Encodes one attachment as the `data:` URI the API accepts inline.
-fn data_uri(image: &ImageAttachment) -> String {
-    format!(
+fn data_uri(image: &ImageAttachment) -> Result<String> {
+    let bytes = std::fs::read(&image.path)
+        .with_context(|| format!("Could not read {}", image.path.display()))?;
+    Ok(format!(
         "data:{};base64,{}",
         image.media_type,
-        STANDARD.encode(&image.data)
-    )
+        STANDARD.encode(&bytes)
+    ))
 }
 
 impl From<ModelMessage> for ChatMessage {
