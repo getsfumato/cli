@@ -1006,13 +1006,18 @@ pub(crate) async fn generate_video(
                 // past the model's output limit. Re-authoring the one scene that
                 // failed is both smaller and the path already known to work.
                 if let Some(first_scene) = named_scene {
-                    // Bounded, and one scene per round: the renderer reports every
-                    // fault it finds, so a film with defects in two scenes used to
-                    // fail outright after a single repair fixed only the first.
-                    const MAX_SCENE_REPAIRS: usize = 4;
+                    // One scene per round, with a budget sized to how much is wrong.
+                    // A film that started with nine faults was cut off at three
+                    // remaining by a fixed budget of four, while a film with one
+                    // fault never needed four. Progress is what actually decides
+                    // when to stop: a round that fixes nothing is not going to be
+                    // rescued by another.
+                    let mut faults = reported_faults(&error.to_string());
+                    let budget = repair_rounds(faults);
                     let mut scene_id = first_scene;
                     let mut failure = error.to_string();
                     let mut round = 0;
+                    let mut stalled = 0;
                     loop {
                         round += 1;
                         source = reauthor_scene(ReauthorSceneRequest {
@@ -1050,7 +1055,14 @@ pub(crate) async fn generate_video(
                             // to fix. Anything else, or a film that will not settle,
                             // is reported rather than retried forever.
                             Err(next) => {
-                                let next_scene = (round < MAX_SCENE_REPAIRS)
+                                let remaining = reported_faults(&next.to_string());
+                                // Two rounds without a single fault cleared: the
+                                // author is circling rather than converging, and
+                                // every further round costs a model call plus a
+                                // full renderer check.
+                                stalled = if remaining < faults { 0 } else { stalled + 1 };
+                                faults = remaining;
+                                let next_scene = another_repair_round(round, budget, stalled)
                                     .then(|| failing_scene(&source, &next))
                                     .flatten();
                                 let Some(next_scene) = next_scene else {
@@ -2063,6 +2075,49 @@ async fn review_frames_visually(
             ))
         })?;
     Ok((report, reviewed))
+}
+
+/// How many faults a renderer failure reports.
+///
+/// The renderer closes its report with a count and marks each fault with a cross,
+/// so both spellings are read and the count wins when present. A failure that
+/// itemises nothing at all is still one thing to fix.
+fn reported_faults(message: &str) -> usize {
+    if let Some(counted) = message.split(" error(s)").next().filter(|_| message.contains(" error(s)"))
+        && let Some(digits) = counted
+            .rsplit(|value: char| !value.is_ascii_digit())
+            .next()
+            .filter(|value| !value.is_empty())
+        && let Ok(count) = digits.parse::<usize>()
+        && count > 0
+    {
+        return count;
+    }
+    let crosses = message.matches('\u{2717}').count();
+    crosses.max(1)
+}
+
+/// How many focused repair rounds a failure of this size is worth.
+///
+/// Proportional because the two ends behave differently: a scene with one clipped
+/// label settles in a round or two, while a film reported with nine faults needs
+/// roughly a round per scene at fault plus a second pass on the stubborn one. The
+/// ceiling is what stops a pathological film from spending an afternoon, since each
+/// round is a model call and a full renderer check.
+fn repair_rounds(faults: usize) -> usize {
+    faults.clamp(3, 8)
+}
+
+/// Rounds allowed to clear nothing before the film is reported instead.
+///
+/// One is too strict: a round that fixes the named scene can surface a fault the
+/// renderer could not see behind it, which leaves the count level without meaning
+/// the author is lost.
+const MAX_STALLED_REPAIRS: usize = 2;
+
+/// Whether another focused repair round is worth spending.
+fn another_repair_round(round: usize, budget: usize, stalled: usize) -> bool {
+    round < budget && stalled < MAX_STALLED_REPAIRS
 }
 
 /// The catalog pieces one scene selected, with the source the author adapts.

@@ -412,7 +412,7 @@ required = []
 [[prompts]]
 id = "video.hyperframe-scene.user"
 path = "video/hyperframe-scene.user.md.j2"
-required = ["scene_id", "scene_position", "scene_count", "scene_snapshot", "scene_start_seconds", "scene_duration_seconds", "scene_catalog_items", "scene_artifacts", "previous_scene_exit", "width", "height", "fps", "theme_name", "theme_colors", "theme_fonts"]
+required = ["scene_id", "scene_position", "scene_count", "scene_snapshot", "scene_start_seconds", "scene_duration_seconds", "scene_catalog_items", "scene_artifacts", "previous_scene_exit", "width", "height", "fps", "theme_name", "theme_colors", "theme_fonts", "retry_present"]
 
 [[prompts]]
 id = "video.manim.system"

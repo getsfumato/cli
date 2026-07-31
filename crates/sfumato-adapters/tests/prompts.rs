@@ -507,7 +507,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "1986e1a7e5bc2ac93251589bf25565da77bc787cdebd65c321e695fd0c572d30"
+        "3597b77522693852a4ef94d5701fe613fd80f8da21bf7e5499677425cb6f6aa2"
     );
 }
 
@@ -702,6 +702,22 @@ fn the_scene_author_is_told_the_legibility_faults_that_fail_a_render() {
 
     // A track holds one clip at a time; a real film failed with two clips on track 3.
     assert!(rendered.text.contains("A track holds one clip at a time"));
+    // Each of the three overflow remedies is tied to a fault measured on a real
+    // film: a fixed-height box broken by one capital letter, a hand-picked width
+    // clipping a formula by 80px, and a word-by-word reveal left on top of the
+    // unsplit phrase.
+    for remedy in [
+        "Never fix the height of a box that holds text",
+        "line-height` of at least 1.15",
+        "Never pick a text box's width by eye",
+        "delete the unsplit copy",
+    ] {
+        assert!(
+            rendered.text.contains(remedy),
+            "missing the {remedy} rule: {}",
+            rendered.text
+        );
+    }
     for fault in ["4.5:1", "opaque element over text", "share space", "inside its own box"] {
         assert!(
             rendered.text.contains(fault),
@@ -730,4 +746,49 @@ fn the_video_reviewer_is_told_which_root_its_paths_address() {
 
     assert!(rendered.text.contains("never `/document/scenes/0/content`"));
     assert!(rendered.text.contains("the `/revision` test, which addresses the snapshot"));
+}
+
+#[test]
+fn the_scene_author_is_shown_the_faults_and_its_own_previous_attempt() {
+    // The repair collected the renderer's measurements, put them in the context and
+    // rendered a template that referenced neither. Every repair was a blind re-roll:
+    // the author never learned what failed, and could not make a minimal edit
+    // because it could not see what it had written.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let mut variables = representative_variables();
+    variables.0.insert("retry_present".into(), json!(true));
+    variables.0.insert(
+        "retry_error".into(),
+        json!("clipped_text #scene-3-ratio overflowed right 80px"),
+    );
+    variables
+        .0
+        .insert("retry_invalid_response".into(), json!("<template>…</template>"));
+
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoHyperframeSceneUser,
+            variables,
+        })
+        .unwrap();
+
+    // The measurement itself, which is the number the author needs to recover.
+    assert!(rendered.text.contains("overflowed right 80px"), "{}", rendered.text);
+    assert!(rendered.text.contains("<template>…</template>"));
+    // Minimal edit, because a redesign spends the attempt and adds new faults.
+    assert!(rendered.text.contains("Fix **every** fault listed, and change nothing else"));
+    assert!(rendered.text.contains("margin beyond it"));
+}
+
+#[test]
+fn a_first_attempt_carries_no_corrective_block() {
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoHyperframeSceneUser,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    assert!(!rendered.text.contains("Corrective retry"));
 }

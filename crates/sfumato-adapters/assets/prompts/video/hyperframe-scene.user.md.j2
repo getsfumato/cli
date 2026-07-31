@@ -34,3 +34,5 @@ Images selected for this beat, which already exist on disk. Embed each with `<im
 Theme {{ theme_name }} colors: {{ theme_colors }}
 Theme fonts: {{ theme_fonts }}
 Use semantic CSS variables and keep every element inside the canvas.
+
+{% if retry_present %}{% include "shared/scene-repair-retry.md.j2" %}{% endif %}

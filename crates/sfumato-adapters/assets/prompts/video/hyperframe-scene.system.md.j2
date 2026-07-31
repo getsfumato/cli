@@ -30,6 +30,9 @@ The renderer fails a scene outright on four legibility faults, so treat all of t
 - **Contrast.** Every text run needs at least 4.5:1 against what is actually behind it at that moment, including any gradient, overlay or tint you put underneath. Muted greys on a light ground are the usual failure; pick the text colour against the real backdrop rather than against the canvas.
 - **Occlusion.** Never paint an opaque element over text. Declare grounds, panels and fills before the text they sit behind, and give an element that has to cover something a transparent fill instead.
 - **Overlap.** No two text blocks may share space at any instant, including mid-transition, so check where a moving label passes rather than only where it starts and stops.
-- **Overflow.** Text must stay inside its own box. Long formulas and labels are what break this, so size the container for the longest string it will hold.
+- **Overflow.** Text must stay inside its own box, and this is the fault authored scenes fail on most, in three different ways. Each has its own remedy:
+  - *Never fix the height of a box that holds text.* Large type overflows its box upward because a glyph is taller than the line it sits on, so a single capital letter can break a fixed-height box that no amount of extra width would fix. Let height follow content and set an explicit `line-height` of at least 1.15 on display sizes.
+  - *Never pick a text box's width by eye.* You cannot see your own text, so a width you imagine will be wrong. Let the box size to its content with padding, and where a width must be fixed, budget it for the longest string it will ever hold. Formulas and equations are the longest thing in a scene and need the most room.
+  - *If you split a phrase for a word-by-word reveal, delete the unsplit copy.* Leaving the whole phrase behind the per-word pieces puts two copies of the same text in the same place, which reads as unreadable overlap.
 
 Use no remote URLs, network calls, modules, narration, unseeded randomness, or filesystem paths outside `assets/`, `vendor/`, and `compositions/`. Paths resolve from the project root, so never write `./` or `../`.

@@ -113,6 +113,25 @@ survives is reported in the warnings and in `review.frame_defects`.
 This was not hypothetical: a real 45-second film had all four of its scene
 boundaries land on empty frames, one of them completely blank.
 
+### Focused repair
+
+A renderer failure that names a scene re-authors that one scene rather than patching
+the whole film, and the author is shown the renderer's own measurements — the exact
+pixel amount a text run overflowed, the contrast ratio it missed — alongside its
+previous version of that scene, with an instruction to make the smallest edit that
+clears every reported fault.
+
+That last part was missing and is worth stating plainly, because it made every repair
+a blind re-roll: the measurements were collected, logged, and placed in the prompt
+context, but the scene template referenced none of them. The author re-authored from
+scratch without learning what failed or seeing what it had written.
+
+The number of rounds follows how much the renderer reported, between three and eight.
+A fixed budget of four cut off a film that started with nine faults while still
+improving, and was more than a film with one fault ever needed. Two consecutive
+rounds that clear nothing stop the loop early: each round costs a model call and a
+full renderer check, so circling is the expensive failure mode.
+
 ### Renderer-safe fonts
 
 The renderer resolves every family in a stack, fallbacks included, and fails the

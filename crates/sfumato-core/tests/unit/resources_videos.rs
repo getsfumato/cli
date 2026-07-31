@@ -744,3 +744,56 @@ fn a_failure_that_names_only_an_element_still_finds_its_scene() {
 
     assert_eq!(failing_scene(&source, &error).as_deref(), Some("scene-2"));
 }
+
+#[test]
+fn the_repair_budget_follows_how_much_the_renderer_reported() {
+    // Measured on real films: one reported nine faults and a fixed budget of four
+    // cut it off with three left, while another reported one and never needed four.
+    let nine = "✗ clipped_text #scene-3-ratio overflowed right 80px\n9 error(s), 1 warning(s)";
+    assert_eq!(reported_faults(nine), 9);
+    assert_eq!(repair_rounds(reported_faults(nine)), 8, "capped, not unbounded");
+
+    let one = "✗ text_box_overflow #scene-2-ghost overflowed top 9px\n1 error(s), 51 warning(s)";
+    assert_eq!(reported_faults(one), 1);
+    assert_eq!(
+        repair_rounds(reported_faults(one)),
+        3,
+        "a single fault still gets room for a second look"
+    );
+
+    let four = "4 error(s), 3 warning(s)";
+    assert_eq!(repair_rounds(reported_faults(four)), 4);
+}
+
+#[test]
+fn a_failure_that_itemises_nothing_is_still_worth_repairing() {
+    // Not every failure comes from the linter: a crash or a refusal reports no count
+    // and no crosses, and treating that as zero faults would skip repair entirely.
+    assert_eq!(reported_faults("Chrome could not start"), 1);
+    assert_eq!(repair_rounds(reported_faults("Chrome could not start")), 3);
+
+    // A clean count must not be read as work to do.
+    assert_eq!(reported_faults("✗ font_family_without_font_face\n0 error(s)"), 1);
+}
+
+#[test]
+fn crosses_are_counted_when_the_renderer_prints_no_summary() {
+    let message = "✗ clipped_text #a overflowed right 7px\n✗ content_overlap #b inside #c";
+
+    assert_eq!(reported_faults(message), 2);
+}
+
+#[test]
+fn repair_stops_once_two_rounds_in_a_row_clear_nothing() {
+    // Each round is a model call plus a full renderer check, so circling is the
+    // expensive failure mode. One level round is tolerated, because fixing the
+    // named scene can expose a fault that was hidden behind it.
+    assert!(another_repair_round(1, 8, 0));
+    assert!(
+        another_repair_round(1, 8, 1),
+        "one round without progress may be a newly exposed fault"
+    );
+    assert!(!another_repair_round(1, 8, 2), "two in a row is circling");
+    // The budget still binds on its own.
+    assert!(!another_repair_round(8, 8, 0));
+}
