@@ -12,6 +12,7 @@ use serde::Deserialize;
 use sfumato_core::{
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::OperationContext,
+    generation::VideoFrameMeasurement,
     renderers::{
         RendererManager, RendererStatus, VideoCatalog, VideoCatalogItem, VideoCatalogKind,
         VideoEngine, VideoInspection, VideoRenderRequest, VideoRenderer,
@@ -315,6 +316,20 @@ impl ManagedVideoRenderers {
     }
 
     /// Where `hyperframes add` writes one item, mirroring the CLI's own layout.
+    /// Reads one installed catalog item so the author can adapt its technique.
+    fn read_catalog_item(&self, engine: VideoEngine, id: &str) -> Result<String> {
+        if engine != VideoEngine::Hyperframe {
+            bail!("Only the Hyperframe engine has a managed catalog");
+        }
+        let catalog = Self::parse_catalog()?;
+        let item = catalog
+            .find(id)
+            .with_context(|| format!("Catalog item '{id}' is not curated"))?;
+        let path = self.hyperframe_catalog_item(item);
+        fs::read_to_string(&path)
+            .with_context(|| format!("Could not read catalog item '{id}' at {}", path.display()))
+    }
+
     fn hyperframe_catalog_item(&self, item: &VideoCatalogItem) -> PathBuf {
         let root = self.hyperframe_catalog_root();
         match item.kind {
@@ -733,6 +748,30 @@ impl VideoRenderer for ManagedVideoRenderers {
         )
     }
 
+    async fn measure_snapshots(
+        &self,
+        snapshots: &[(f32, PathBuf)],
+        operation: &OperationContext,
+    ) -> SfumatoResult<Vec<VideoFrameMeasurement>> {
+        let result = (|| {
+            let mut measurements = Vec::with_capacity(snapshots.len());
+            for (at_seconds, path) in snapshots {
+                operation.checkpoint(OperationStage::InspectLayout)?;
+                let decoded = image::open(path)
+                    .with_context(|| format!("Could not read snapshot {}", path.display()))?
+                    .to_rgba8();
+                let (ink_ratio, distinct_colours) = measure_frame(&decoded);
+                measurements.push(VideoFrameMeasurement {
+                    at_seconds: *at_seconds,
+                    ink_ratio,
+                    distinct_colours,
+                });
+            }
+            Ok(measurements)
+        })();
+        managed_result(result, OperationStage::InspectLayout)
+    }
+
     fn catalog(&self, engine: VideoEngine) -> SfumatoResult<Option<VideoCatalog>> {
         match engine {
             // Only Hyperframe has a registry to install from; Manim composes
@@ -742,6 +781,10 @@ impl VideoRenderer for ManagedVideoRenderers {
             }
             VideoEngine::Manim | VideoEngine::Model => Ok(None),
         }
+    }
+
+    fn catalog_item_source(&self, engine: VideoEngine, id: &str) -> SfumatoResult<String> {
+        managed_result(self.read_catalog_item(engine, id), OperationStage::Resolve)
     }
 }
 
@@ -771,13 +814,19 @@ impl ManagedVideoRenderers {
             .env("HYPERFRAMES_NO_UPDATE_CHECK", "1")
             .env("HYPERFRAMES_NO_TELEMETRY", "1")
             .current_dir(&request.source_root);
-        checked(
-            &mut command,
-            operation,
-            OperationStage::Render,
-            "Hyperframe check",
-        )
-        .await
+        let output = run_command(&mut command, operation, OperationStage::Render)
+            .await
+            .context("Could not run Hyperframe check")?;
+        if !output.status.success() {
+            bail!(
+                "Hyperframe check failed:\n{}",
+                check_failure_message(
+                    &String::from_utf8_lossy(&output.stdout),
+                    &String::from_utf8_lossy(&output.stderr),
+                )
+            );
+        }
+        Ok(())
     }
 
     async fn snapshot_hyperframe(
@@ -911,6 +960,126 @@ impl ManagedVideoRenderers {
     }
 }
 
+/// Colour buckets per channel when counting distinct colours.
+///
+/// Coarse on purpose: a gradient is one visual element, not thousands of colours,
+/// and quantising keeps antialiasing from reading as content.
+const COLOUR_BUCKETS: u32 = 6;
+
+/// How far a pixel must sit from the dominant colour to count as ink.
+///
+/// Antialiased edges and subtle theme gradients differ from the background by a
+/// hair; only a real mark clears this.
+const INK_DISTANCE: u32 = 24;
+
+/// Measures one captured frame.
+///
+/// The dominant colour stands in for the background, so the measurement works for
+/// any theme without being told what the background is.
+pub(crate) fn measure_frame(image: &image::RgbaImage) -> (f32, u32) {
+    let bucket = |value: u8| u8::try_from(u32::from(value) * COLOUR_BUCKETS / 256).unwrap_or(0);
+    let mut histogram: BTreeMap<(u8, u8, u8), u32> = BTreeMap::new();
+    for pixel in image.pixels() {
+        *histogram
+            .entry((bucket(pixel[0]), bucket(pixel[1]), bucket(pixel[2])))
+            .or_default() += 1;
+    }
+    let distinct = u32::try_from(histogram.len()).unwrap_or(u32::MAX);
+    let Some((dominant, _)) = histogram.iter().max_by_key(|(_, count)| **count) else {
+        return (0.0, 0);
+    };
+    let dominant = *dominant;
+
+    // The reference is the mean of the pixels in the dominant bucket, not the
+    // bucket's index scaled back up: a bucket spans 42 levels, so reconstructing
+    // from the index lands far enough from the real background that every pixel
+    // reads as ink.
+    let mut sums = (0_u64, 0_u64, 0_u64);
+    let mut count = 0_u64;
+    for pixel in image.pixels() {
+        if (bucket(pixel[0]), bucket(pixel[1]), bucket(pixel[2])) == dominant {
+            sums.0 += u64::from(pixel[0]);
+            sums.1 += u64::from(pixel[1]);
+            sums.2 += u64::from(pixel[2]);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return (0.0, distinct);
+    }
+    let reference = (
+        u32::try_from(sums.0 / count).unwrap_or(0),
+        u32::try_from(sums.1 / count).unwrap_or(0),
+        u32::try_from(sums.2 / count).unwrap_or(0),
+    );
+
+    let mut ink = 0_u64;
+    for pixel in image.pixels() {
+        let distance = u32::from(pixel[0]).abs_diff(reference.0)
+            + u32::from(pixel[1]).abs_diff(reference.1)
+            + u32::from(pixel[2]).abs_diff(reference.2);
+        if distance > INK_DISTANCE {
+            ink += 1;
+        }
+    }
+    let total = u64::from(image.width()) * u64::from(image.height());
+    let ratio = if total == 0 {
+        0.0
+    } else {
+        ink as f32 / total as f32
+    };
+    (ratio, distinct)
+}
+
+/// Keeps only the lines a caller can act on when the renderer's check fails.
+///
+/// The check prints a full lint report: hundreds of lines of warnings and notes
+/// about every staged catalog item, with the actual errors last. Messages are
+/// capped in length before they reach a user, so dumping the whole report
+/// reliably truncated away the errors and left advice about files the film does
+/// not even use.
+pub(crate) fn check_failure_message(stdout: &str, stderr: &str) -> String {
+    const MAX_LINES: usize = 24;
+    let lines = stdout.lines().chain(stderr.lines()).collect::<Vec<_>>();
+    let mut kept = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        // The renderer marks errors with a cross and closes each phase with a
+        // count; everything else is advice about how a file could be nicer.
+        let is_error = trimmed.starts_with('\u{2717}') || trimmed.starts_with("✗");
+        let is_summary = trimmed.contains("error(s)") && !trimmed.starts_with("0 error(s)");
+        if is_error || is_summary {
+            kept.push(trimmed.to_string());
+        }
+        // The offending path sits on its own line under the marker. Keeping it is
+        // what lets a repair target the one scene at fault instead of re-authoring
+        // the whole film, so it is worth a line of the budget.
+        if is_error
+            && let Some(location) = lines.get(index + 1)
+            && let location = location.trim()
+            && location.contains(".html")
+        {
+            kept.push(location.to_string());
+        }
+        if kept.len() >= MAX_LINES {
+            kept.push("... further errors omitted".to_string());
+            break;
+        }
+    }
+    if kept.is_empty() {
+        // No cross-marked line: the check failed for a reason it did not itemise,
+        // so the tail is more useful than the head that a cap would keep.
+        let tail = stdout
+            .lines()
+            .chain(stderr.lines())
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        let start = tail.len().saturating_sub(MAX_LINES);
+        return tail[start..].join("\n");
+    }
+    kept.join("\n")
+}
+
 async fn inspect_video(path: &Path, operation: &OperationContext) -> Result<VideoInspection> {
     if !path.is_file() {
         bail!("Rendered video does not exist at {}", path.display());
@@ -1003,11 +1172,16 @@ async fn checked_output(
         .await
         .with_context(|| format!("Could not run {label}"))?;
     if !output.status.success() {
+        // Filtered the same way a failed check is: these renderers print pages of
+        // lint advice before the errors, and the raw head is what the message cap
+        // keeps, so the reason was routinely invisible.
         bail!(
-            "{label} failed with {}\nstdout:\n{}\nstderr:\n{}",
+            "{label} failed with {}:\n{}",
             output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            check_failure_message(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+            )
         );
     }
     Ok(output)

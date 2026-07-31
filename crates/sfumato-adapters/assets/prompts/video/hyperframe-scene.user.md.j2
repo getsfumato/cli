@@ -1,0 +1,36 @@
+Author scene {{ scene_position }} of {{ scene_count }}: `{{ scene_id }}`.
+
+Canvas: {{ width }}x{{ height }} at {{ fps }} FPS.
+This scene runs {{ scene_duration_seconds }} seconds. Its timeline must finish at exactly that length, and its own positions start at 0 even though the film places it at {{ scene_start_seconds }}s.
+
+Scene plan:
+{{ scene_snapshot }}
+
+{% if previous_scene_exit %}
+The previous scene exits like this: {{ previous_scene_exit }}
+Enter carrying that direction and speed, so the boundary reads as one continuous move rather than two animations meeting. **Every element must already be visible at the scene's first frame**: animate from a state that is on screen, never from nothing. Sfumato measures this scene's first frame and rejects the film when it is empty.
+{% else %}
+This is the film's first scene, so it may open on an entrance from nothing.
+{% endif %}
+
+{% if scene_catalog_items %}
+Reference implementations chosen for this beat. Each is a showcase document, not a component: its words, numbers and scene labels are a demonstration of the technique on unrelated content. **Never mount one and never copy its copy.** Read how it is built — the structure, the timing, the easing, the shader — and rebuild that technique inside your own scene with this film's content, at your own IDs and dimensions.
+{% for item in scene_catalog_items %}
+#### Reference: `{{ item.id }}`
+
+```html
+{{ item.source }}
+```
+{% endfor %}
+{% endif %}
+
+{% if scene_artifacts %}
+Images selected for this beat, which already exist on disk. Embed each with `<img src="...">` and animate the `<img>` like any other clip. An image you leave out is deleted before the render:
+{% for artifact in scene_artifacts %}
+- `{{ artifact }}`
+{% endfor %}
+{% endif %}
+
+Theme {{ theme_name }} colors: {{ theme_colors }}
+Theme fonts: {{ theme_fonts }}
+Use semantic CSS variables and keep every element inside the canvas.

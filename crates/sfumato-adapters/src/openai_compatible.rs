@@ -10,8 +10,9 @@ use sfumato_core::{
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::OperationContext,
     providers::{
-        AgentRunner, ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
-        ModelMessage, ProviderFactory, TextGenerationLimitError, TextGenerationProvider, TextModel,
+        AgentRunner, ImageAttachment, ImageGenerationProvider, ImageGenerationRequest,
+        ImageGenerationResponse, ModelMessage, ProviderFactory, TextGenerationLimitError,
+        TextGenerationProvider, TextModel,
         TextModelRequest, TextModelResponse, ToolCall, ToolDefinition,
     },
     secrets::SecretResolver,
@@ -241,8 +242,9 @@ impl TextModel for OpenAiCompatibleTextProvider {
                 .context("Connector response did not include any choices")?;
             let finish_reason = choice.finish_reason;
             let assistant = choice.message;
+            let assistant_text = assistant.content.as_ref().and_then(MessageContent::text);
             if assistant.tool_calls.is_empty() {
-                let content = assistant.content.as_deref().unwrap_or_default().trim();
+                let content = assistant_text.as_deref().unwrap_or_default().trim();
                 if content.is_empty() {
                     return Err(empty_content_error(
                         &self.profile,
@@ -257,7 +259,7 @@ impl TextModel for OpenAiCompatibleTextProvider {
                 )?;
             }
             Ok(TextModelResponse {
-                content: assistant.content,
+                content: assistant_text,
                 tool_calls: assistant.tool_calls,
             })
         }
@@ -575,11 +577,72 @@ pub struct ChatCompletionsRequest {
     pub stream: bool,
 }
 
+/// What one chat message carries.
+///
+/// `chat/completions` accepts either a bare string or an array of typed parts on
+/// the same `content` field, and only the array form can carry an image. Untagged
+/// so a plain-text message serialises exactly as it did before this existed —
+/// several connectors reject the array form for system and tool roles.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    /// A single block of text.
+    Text(String),
+    /// Interleaved text and images.
+    Parts(Vec<ContentPart>),
+}
+
+impl MessageContent {
+    /// The assistant text this content carries, if any.
+    ///
+    /// Models answer in text even when asked about images, but a connector is
+    /// free to reply in the array form, so both shapes have to read back.
+    fn text(&self) -> Option<String> {
+        match self {
+            Self::Text(value) => Some(value.clone()),
+            Self::Parts(parts) => {
+                let joined = parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        ContentPart::ImageUrl { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (!joined.is_empty()).then_some(joined)
+            }
+        }
+    }
+}
+
+/// One typed part of a multi-part chat message.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    /// Literal text.
+    Text {
+        /// The text itself.
+        text: String,
+    },
+    /// An image referenced by URL, including a `data:` URI.
+    ImageUrl {
+        /// The wrapper object the API requires around the URL.
+        image_url: ImageUrl,
+    },
+}
+
+/// The URL wrapper `chat/completions` requires around an image reference.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ImageUrl {
+    /// An `https:` or `data:` URL.
+    pub url: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChatMessage {
     pub role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -594,7 +657,33 @@ impl ChatMessage {
     fn text(role: &str, content: String) -> Self {
         Self {
             role: role.to_string(),
-            content: Some(content),
+            content: Some(MessageContent::Text(content)),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            reasoning: None,
+            reasoning_details: None,
+        }
+    }
+
+    /// Builds a user turn whose text is followed by labelled images.
+    ///
+    /// Each label precedes its own image so the model can name what it is looking
+    /// at; a bare run of frames gives it no way to report which one is wrong.
+    fn with_images(content: String, images: Vec<ImageAttachment>) -> Self {
+        let mut parts = vec![ContentPart::Text { text: content }];
+        for image in images {
+            parts.push(ContentPart::Text {
+                text: image.label.clone(),
+            });
+            parts.push(ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: data_uri(&image),
+                },
+            });
+        }
+        Self {
+            role: "user".to_string(),
+            content: Some(MessageContent::Parts(parts)),
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning: None,
@@ -603,17 +692,29 @@ impl ChatMessage {
     }
 }
 
+/// Encodes one attachment as the `data:` URI the API accepts inline.
+fn data_uri(image: &ImageAttachment) -> String {
+    format!(
+        "data:{};base64,{}",
+        image.media_type,
+        STANDARD.encode(&image.data)
+    )
+}
+
 impl From<ModelMessage> for ChatMessage {
     fn from(message: ModelMessage) -> Self {
         match message {
             ModelMessage::System(content) => Self::text("system", content),
             ModelMessage::User(content) => Self::text("user", content),
+            ModelMessage::UserWithImages { content, images } => {
+                Self::with_images(content, images)
+            }
             ModelMessage::Assistant {
                 content,
                 tool_calls,
             } => Self {
                 role: "assistant".to_string(),
-                content,
+                content: content.map(MessageContent::Text),
                 tool_calls,
                 tool_call_id: None,
                 reasoning: None,
@@ -628,7 +729,7 @@ impl From<ModelMessage> for ChatMessage {
                 failed: _,
             } => Self {
                 role: "tool".to_string(),
-                content: Some(content),
+                content: Some(MessageContent::Text(content)),
                 tool_calls: Vec::new(),
                 tool_call_id,
                 reasoning: None,

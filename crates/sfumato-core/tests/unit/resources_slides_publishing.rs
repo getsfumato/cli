@@ -66,6 +66,9 @@ impl WorkspaceFileSystem for PublicationWorkspace {
     fn read_text(&self, _: &Path) -> crate::errors::SfumatoResult<String> {
         unreachable!()
     }
+    fn read_bytes(&self, _: &Path) -> crate::errors::SfumatoResult<Vec<u8>> {
+        unreachable!()
+    }
     fn create_dir_all(&self, _: &Path) -> crate::errors::SfumatoResult<()> {
         Ok(())
     }

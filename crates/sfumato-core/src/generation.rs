@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Capability;
 use crate::project_assets::ProjectAssetReference;
@@ -207,6 +207,9 @@ pub struct VideoReviewSummary {
     pub visual_review: ReviewStatus,
     /// Final MP4 inspection status.
     pub media_inspection: ReviewStatus,
+    /// Visual defects that survived repair.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_defects: Vec<VideoFrameDefect>,
 }
 
 /// How snapshot evidence was reviewed for a Hyperframe production.
@@ -223,6 +226,50 @@ pub enum VideoVisualReviewMode {
     EvidenceOnly,
 }
 
+/// What one snapshot of a rendered video contains.
+///
+/// Measured in the adapter and judged in the core, the same split the slide layout
+/// inspector uses: decoding a PNG is infrastructure, deciding that a frame is too
+/// empty to ship is policy.
+#[derive(Clone, Debug, Serialize)]
+pub struct VideoFrameMeasurement {
+    /// Timeline position the frame was captured at, in seconds.
+    pub at_seconds: f32,
+    /// Share of pixels that differ from the frame's own dominant colour.
+    ///
+    /// A frame showing only its background reads as zero here whatever that
+    /// background happens to be, so it needs no knowledge of the theme.
+    pub ink_ratio: f32,
+    /// Distinct quantised colours present.
+    ///
+    /// Separates a genuinely empty frame from a flat but deliberate one, such as a
+    /// single word on a solid ground.
+    pub distinct_colours: u32,
+}
+
+/// One way a rendered video looks wrong.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoFrameDefectKind {
+    /// The frame carries no visible content at all.
+    BlankFrame,
+    /// A scene begins on an empty frame, so the cut lands on nothing.
+    EmptySceneStart,
+}
+
+/// One measured visual defect in a rendered video.
+#[derive(Clone, Debug, Serialize)]
+pub struct VideoFrameDefect {
+    /// Timeline position of the offending frame, in seconds.
+    pub at_seconds: f32,
+    /// Scene the position belongs to, one-based, when it maps to one.
+    pub scene: Option<usize>,
+    /// What is wrong.
+    pub kind: VideoFrameDefectKind,
+    /// The measurement that produced the verdict.
+    pub measurement: VideoFrameMeasurement,
+}
+
 /// Managed, immutable Hyperframe review session returned by a paused run.
 #[derive(Clone, Debug, Serialize)]
 pub struct VideoReviewSession {
@@ -235,11 +282,16 @@ pub struct VideoReviewSession {
 }
 
 /// Structured result of an automated visual review when one was available.
-#[derive(Clone, Debug, Serialize)]
+///
+/// Deserialised straight from the reviewer's answer, so the shape of the contract
+/// lives in one place instead of being restated by a parser.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VideoVisualReport {
     /// Whether the result permits rendering.
     pub approved: bool,
     /// Snapshot-level findings. Empty means no automated findings were produced.
+    #[serde(default)]
     pub findings: Vec<String>,
 }
 
@@ -256,6 +308,7 @@ impl VideoReviewSummary {
             source_repair: ReviewStatus::NotNeeded,
             visual_review: ReviewStatus::Skipped,
             media_inspection: ReviewStatus::Pending,
+            frame_defects: Vec::new(),
         }
     }
 }

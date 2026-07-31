@@ -1771,6 +1771,16 @@ fn render_generation_event(event: TextGenerationEvent) {
                 red(&compact_preview(&error, 180))
             );
         }
+        TextGenerationEvent::SourceRepairStarted { reason, scene } => {
+            let target = scene
+                .map(|scene| format!(" {}", bold(&scene)))
+                .unwrap_or_else(|| " whole source".to_string());
+            eprintln!(
+                "{} repairing{target}: {}",
+                styled_label("repair", ANSI_YELLOW),
+                dim(&reason)
+            );
+        }
         TextGenerationEvent::ResponseCompleted => {
             eprintln!(
                 "{} {}",

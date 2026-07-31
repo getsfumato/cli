@@ -107,14 +107,18 @@ pub enum PromptId {
     VideoReviewSystem,
     /// User prompt for semantic video-plan review.
     VideoReviewUser,
-    /// System prompt for authoring a Hyperframe project.
-    VideoHyperframeSystem,
-    /// User prompt for authoring a Hyperframe project.
-    VideoHyperframeUser,
+    /// System prompt for authoring one Hyperframe scene composition.
+    VideoHyperframeSceneSystem,
+    /// User prompt for authoring one Hyperframe scene composition.
+    VideoHyperframeSceneUser,
     /// System prompt for authoring a Manim scene.
     VideoManimSystem,
     /// User prompt for authoring a Manim scene.
     VideoManimUser,
+    /// System prompt for inspecting rendered snapshots with an image model.
+    VideoVisualReviewSystem,
+    /// User prompt for inspecting rendered snapshots with an image model.
+    VideoVisualReviewUser,
     /// System prompt for focused local renderer source repair.
     VideoSourceRepairSystem,
     /// User prompt for focused local renderer source repair.
@@ -202,10 +206,12 @@ impl PromptId {
             Self::VideoPlanUser,
             Self::VideoReviewSystem,
             Self::VideoReviewUser,
-            Self::VideoHyperframeSystem,
-            Self::VideoHyperframeUser,
+            Self::VideoHyperframeSceneSystem,
+            Self::VideoHyperframeSceneUser,
             Self::VideoManimSystem,
             Self::VideoManimUser,
+            Self::VideoVisualReviewSystem,
+            Self::VideoVisualReviewUser,
             Self::VideoSourceRepairSystem,
             Self::VideoSourceRepairUser,
             Self::VideoToolExhaustedUser,
@@ -275,10 +281,12 @@ impl PromptId {
             Self::VideoPlanUser => "video.plan.user",
             Self::VideoReviewSystem => "video.review.system",
             Self::VideoReviewUser => "video.review.user",
-            Self::VideoHyperframeSystem => "video.hyperframe.system",
-            Self::VideoHyperframeUser => "video.hyperframe.user",
+            Self::VideoHyperframeSceneSystem => "video.hyperframe-scene.system",
+            Self::VideoHyperframeSceneUser => "video.hyperframe-scene.user",
             Self::VideoManimSystem => "video.manim.system",
             Self::VideoManimUser => "video.manim.user",
+            Self::VideoVisualReviewSystem => "video.visual-review.system",
+            Self::VideoVisualReviewUser => "video.visual-review.user",
             Self::VideoSourceRepairSystem => "video.source-repair.system",
             Self::VideoSourceRepairUser => "video.source-repair.user",
             Self::VideoToolExhaustedUser => "video.tool-exhausted.user",

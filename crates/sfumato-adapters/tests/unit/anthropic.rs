@@ -827,3 +827,30 @@ async fn cancellation_stops_catalog_pagination() {
 
     assert_eq!(error.class, ErrorClass::Cancelled);
 }
+
+#[test]
+fn attaches_images_as_inline_base64_blocks_behind_their_labels() {
+    // Claude has no caption field, so the label has to be its own text block in
+    // front of the image it describes.
+    let request = TextModelRequest {
+        messages: vec![ModelMessage::UserWithImages {
+            content: "review these".into(),
+            images: vec![sfumato_core::providers::ImageAttachment {
+                label: "Frame at 13.00s, scene 3".into(),
+                media_type: "image/png".into(),
+                data: vec![0x89, 0x50],
+            }],
+        }],
+        tools: Vec::new(),
+    };
+
+    let body = body(&model(TextModelOptions::default()), &request);
+
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks[1]["text"], "Frame at 13.00s, scene 3");
+    assert_eq!(blocks[2]["type"], "image");
+    assert_eq!(blocks[2]["source"]["type"], "base64");
+    assert_eq!(blocks[2]["source"]["media_type"], "image/png");
+    assert_eq!(blocks[2]["source"]["data"], "iVA=");
+}

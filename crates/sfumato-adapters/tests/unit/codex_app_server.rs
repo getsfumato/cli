@@ -88,3 +88,46 @@ fn classifies_context_window_turn_failures() {
     assert_eq!(error.class, ErrorClass::ContextLimit);
     assert_eq!(error.stage, Some(OperationStage::Draft));
 }
+
+#[tokio::test]
+async fn refuses_a_request_carrying_images_instead_of_answering_without_them() {
+    // The App Server protocol has no image input. Dropping the attachments would
+    // let a "does this frame look empty?" review return a verdict from the prompt
+    // text alone, which reads as an inspection but is a guess.
+    use sfumato_core::{
+        config::{CodexAppServerConnectorConfig, Capability, ModelOptions, ModelProfile},
+        operation::OperationContext,
+        providers::{ImageAttachment, TextGenerationProvider, TextGenerationRequest},
+    };
+
+    let provider = super::CodexAppServerProvider::new(
+        CodexAppServerConnectorConfig {
+            executable: "codex".into(),
+        },
+        ModelProfile {
+            connector: "codex".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            capabilities: vec![Capability::Text],
+            options: ModelOptions::default(),
+        },
+        std::path::PathBuf::from("/tmp"),
+    );
+    let mut request = TextGenerationRequest::new("system".to_string(), "user".to_string());
+    request.images = vec![ImageAttachment {
+        label: "Frame at 0.00s".to_string(),
+        media_type: "image/png".to_string(),
+        data: vec![0x89],
+    }];
+
+    let error = provider
+        .generate_text(request, &OperationContext::detached(), OperationStage::Review)
+        .await
+        .expect_err("a text-only connector must refuse images");
+
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert!(error.to_string().contains("text only"), "{error}");
+    assert!(
+        error.to_string().contains("image-capable"),
+        "the message has to say what to do instead: {error}"
+    );
+}

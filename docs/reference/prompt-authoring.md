@@ -53,7 +53,7 @@ macOS or `$XDG_CONFIG_HOME` on Linux.
 | Page browser repair | `page.browser-repair.system` | `page.browser-repair.user` |
 | Video plan | `video.plan.system` | `video.plan.user` |
 | Video plan review | `video.review.system` | `video.review.user` |
-| Hyperframes authoring | `video.hyperframe.system` | `video.hyperframe.user` |
+| Hyperframes scene authoring | `video.hyperframe-scene.system` | `video.hyperframe-scene.user` |
 | Manim authoring | `video.manim.system` | `video.manim.user` |
 | Video source repair | `video.source-repair.system` | `video.source-repair.user` |
 

@@ -1,1 +1,3 @@
 Review a structured educational video plan. Return only an RFC 6902 JSON Patch array. Test `/revision` before changes. Never change schema_version, revision, engine, or duration_seconds.
+
+The snapshot wraps the plan in a `document` field, but every path you write addresses the plan itself: `/scenes/0/content`, never `/document/scenes/0/content`. The only exception is the `/revision` test, which addresses the snapshot. A path that starts with `/document` is rejected and the whole review is discarded.

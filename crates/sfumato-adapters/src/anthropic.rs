@@ -21,6 +21,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{
     Client, RequestBuilder, StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
@@ -504,6 +505,27 @@ fn translate_messages(
                 "user",
                 vec![RequestBlock::Text { text: text.clone() }],
             ),
+            ModelMessage::UserWithImages { content, images } => {
+                let mut blocks = vec![RequestBlock::Text {
+                    text: content.clone(),
+                }];
+                for image in images {
+                    // The label goes in front of its own image: Claude has no
+                    // caption field, so this is the only way it can name which
+                    // frame it is talking about.
+                    blocks.push(RequestBlock::Text {
+                        text: image.label.clone(),
+                    });
+                    blocks.push(RequestBlock::Image {
+                        source: ImageSource {
+                            kind: "base64",
+                            media_type: image.media_type.clone(),
+                            data: STANDARD.encode(&image.data),
+                        },
+                    });
+                }
+                push_blocks(&mut translated, "user", blocks);
+            }
             ModelMessage::Assistant {
                 content,
                 tool_calls,
@@ -891,9 +913,24 @@ pub(crate) enum RequestBlock {
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
+    Image {
+        source: ImageSource,
+    },
     /// Provider-native block replayed unchanged, such as a thinking block.
     #[serde(untagged)]
     Verbatim(Value),
+}
+
+/// How an image block carries its bytes.
+///
+/// Only the inline form is used: Sfumato reads snapshots off the local
+/// filesystem, so there is no URL to hand Anthropic instead.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ImageSource {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub media_type: String,
+    pub data: String,
 }
 
 #[derive(Clone, Debug, Serialize)]

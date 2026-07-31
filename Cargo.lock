@@ -3876,6 +3876,7 @@ dependencies = [
  "dirs",
  "fs2",
  "html5ever",
+ "image",
  "include_dir",
  "keyring",
  "lightningcss",

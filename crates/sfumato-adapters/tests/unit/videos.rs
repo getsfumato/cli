@@ -332,3 +332,173 @@ fn an_unknown_renderer_names_the_ones_that_exist() {
     assert!(error.contains("manim"), "{error}");
     assert!(error.contains("pagedjs"), "{error}");
 }
+
+#[test]
+fn a_flat_frame_measures_as_empty_and_a_drawn_one_does_not() {
+    let mut flat = image::RgbaImage::new(64, 64);
+    for pixel in flat.pixels_mut() {
+        *pixel = image::Rgba([250, 246, 220, 255]);
+    }
+    let (flat_ink, flat_colours) = measure_frame(&flat);
+
+    let mut drawn = flat.clone();
+    for x in 8..56 {
+        for y in 20..44 {
+            drawn.put_pixel(x, y, image::Rgba([20, 90, 120, 255]));
+        }
+    }
+    let (drawn_ink, drawn_colours) = measure_frame(&drawn);
+
+    assert_eq!(flat_ink, 0.0, "a single-colour frame carries no ink");
+    assert_eq!(flat_colours, 1);
+    assert!(drawn_ink > 0.1, "a drawn shape reads as ink: {drawn_ink}");
+    assert!(drawn_colours >= 2);
+}
+
+#[test]
+fn antialiasing_alone_does_not_read_as_content() {
+    // A frame whose only variation is a hair away from the background is empty,
+    // and treating it as content would make the blank-frame gate useless.
+    let mut nearly_flat = image::RgbaImage::new(32, 32);
+    for (index, pixel) in nearly_flat.pixels_mut().enumerate() {
+        let nudge = u8::try_from(index % 4).unwrap_or(0);
+        *pixel = image::Rgba([250 - nudge, 246, 220, 255]);
+    }
+
+    let (ink, _) = measure_frame(&nearly_flat);
+
+    assert_eq!(ink, 0.0, "a near-uniform frame carries no ink: {ink}");
+}
+
+#[test]
+#[ignore = "measures the snapshots of a real generated video when one is present"]
+fn measures_the_real_video_snapshots() {
+    // The regression case that started this work: two frames of a real 45s video
+    // were completely empty, and both fell on a scene start.
+    let root = dirs::home_dir().unwrap().join(
+        ".sfumato/Projects/Facultad/resources/videos/el-interior-de-la-fibra-optica/revisions",
+    );
+    let Ok(revisions) = std::fs::read_dir(&root) else {
+        return;
+    };
+    for revision in revisions.filter_map(Result::ok) {
+        let snapshots = revision.path().join("snapshots");
+        let Ok(frames) = std::fs::read_dir(&snapshots) else {
+            continue;
+        };
+        let mut names: Vec<_> = frames
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|value| value == "png"))
+            .collect();
+        names.sort();
+        for path in names {
+            let decoded = image::open(&path).unwrap().to_rgba8();
+            let (ink, colours) = measure_frame(&decoded);
+            println!(
+                "{:<22} ink={ink:.4} colours={colours}",
+                path.file_name().unwrap().to_string_lossy()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_failed_check_reports_its_errors_rather_than_its_advice() {
+    // Reproduces the report shape that made a real failure undebuggable: pages of
+    // lint advice about staged catalog items, with the errors last, against a
+    // message length cap that kept only the head.
+    let mut stdout = String::from("◆ Checking source\nLint\n");
+    for index in 0..80 {
+        stdout.push_str(&format!(
+            "  ⚠ composition_self_attribute_selector: selector {index} will leak to siblings\n"
+        ));
+        stdout.push_str("  ℹ pointer_events_none: harder to select in the Studio preview\n");
+    }
+    stdout.push_str("  ✗ root_missing_composition_id: Root composition is missing `data-composition-id`.\n");
+    stdout.push_str("  ✗ missing_or_empty_sub_composition: references \"compositions/scene-2.html\", but the file has no content.\n");
+    stdout.push_str("  2 error(s), 160 warning(s), 0 info(s)\n");
+
+    let message = check_failure_message(&stdout, "");
+
+    assert!(message.contains("root_missing_composition_id"), "{message}");
+    assert!(message.contains("compositions/scene-2.html"), "{message}");
+    assert!(message.contains("2 error(s)"));
+    assert!(
+        !message.contains("pointer_events_none"),
+        "advice about unrelated files is dropped: {message}"
+    );
+    assert!(
+        message.len() < 1_000,
+        "the message stays inside the length a user actually sees: {} chars",
+        message.len()
+    );
+}
+
+#[test]
+fn a_check_that_failed_without_itemising_keeps_its_tail() {
+    // Some failures print no cross-marked line at all. The end of the output is
+    // where the reason lives, so the head is the wrong thing to keep.
+    let stdout = (0..50)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n◇ Check failed: browser could not start\n";
+
+    let message = check_failure_message(&stdout, "");
+
+    assert!(message.contains("browser could not start"), "{message}");
+    assert!(!message.contains("line 0"), "the head is dropped: {message}");
+}
+
+#[test]
+fn a_failed_check_keeps_the_path_the_error_points_at() {
+    // The renderer prints the offending file on its own line under the marker.
+    // A real run lost that line to the error filter, so the repair could not tell
+    // which scene was at fault and fell back to re-authoring the entire film —
+    // which then blew past the connector's output limit.
+    let stdout = concat!(
+        "◆ Checking source\n",
+        "Lint\n",
+        "  ✗ font_family_without_font_face: Font family used without @font-face declaration: fira code.\n",
+        "    /tmp/job/source/compositions/scene-3.html .m t=0s\n",
+        "    Fix: Add an @font-face rule or use a bundled family.\n",
+        "  1 error(s), 51 warning(s), 38 info(s)\n",
+    );
+
+    let message = check_failure_message(stdout, "");
+
+    assert!(message.contains("fira code"), "{message}");
+    assert!(
+        message.contains("compositions/scene-3.html"),
+        "the repair needs the path to target one scene: {message}"
+    );
+    assert!(
+        !message.contains("Fix:"),
+        "the renderer's advice is still dropped: {message}"
+    );
+}
+
+#[test]
+fn a_failed_render_reports_its_errors_rather_than_its_advice() {
+    // The render path printed its raw output, and the renderer leads with pages of
+    // lint advice about staged catalog items. Against the message length cap that
+    // meant a real failure showed only warnings and never said what went wrong.
+    let mut stdout = String::from("◆ Rendering source\n");
+    for index in 0..60 {
+        stdout.push_str(&format!(
+            "  ⚠ [compositions/cross-warp-morph.html] composition_self_attribute_selector: selector {index}\n"
+        ));
+    }
+    stdout.push_str("  ✗ text_occluded #node-yes inside #scene-2-formula \"Yes\" — Text is hidden beneath an opaque element.\n");
+    stdout.push_str("  1 error(s), 60 warning(s), 0 info(s)\n");
+
+    let message = check_failure_message(&stdout, "");
+
+    assert!(message.contains("text_occluded"), "{message}");
+    assert!(message.contains("#scene-2-formula"), "{message}");
+    assert!(
+        !message.contains("composition_self_attribute_selector"),
+        "the advice is dropped: {message}"
+    );
+}

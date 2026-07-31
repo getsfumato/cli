@@ -402,17 +402,17 @@ required = []
 [[prompts]]
 id = "video.review.user"
 path = "video/review.user.md.j2"
-required = ["instruction", "source_bundle", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "plan_snapshot", "engine", "catalog"]
+required = ["instruction", "source_bundle", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "plan_snapshot", "engine", "catalog", "retry_present"]
 
 [[prompts]]
-id = "video.hyperframe.system"
-path = "video/hyperframe.system.md.j2"
+id = "video.hyperframe-scene.system"
+path = "video/hyperframe-scene.system.md.j2"
 required = []
 
 [[prompts]]
-id = "video.hyperframe.user"
-path = "video/hyperframe.user.md.j2"
-required = ["plan_snapshot", "theme_name", "theme_colors", "theme_fonts", "resolution", "fps"]
+id = "video.hyperframe-scene.user"
+path = "video/hyperframe-scene.user.md.j2"
+required = ["scene_id", "scene_position", "scene_count", "scene_snapshot", "scene_start_seconds", "scene_duration_seconds", "scene_catalog_items", "scene_artifacts", "previous_scene_exit", "width", "height", "fps", "theme_name", "theme_colors", "theme_fonts"]
 
 [[prompts]]
 id = "video.manim.system"
@@ -423,6 +423,16 @@ required = []
 id = "video.manim.user"
 path = "video/manim.user.md.j2"
 required = ["plan_snapshot", "theme_name", "theme_colors", "theme_fonts", "resolution", "fps"]
+
+[[prompts]]
+id = "video.visual-review.system"
+path = "video/visual-review.system.md.j2"
+required = []
+
+[[prompts]]
+id = "video.visual-review.user"
+path = "video/visual-review.user.md.j2"
+required = ["title", "duration_seconds", "width", "height", "plan_snapshot"]
 
 [[prompts]]
 id = "video.source-repair.system"

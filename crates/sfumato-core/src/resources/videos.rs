@@ -24,8 +24,9 @@ use crate::{
     },
     filesystem::WorkspaceFileSystem,
     generation::{
-        GenerationRequest, GenerationToolSummary, ReviewStatus, VideoGenerationOutput,
-        VideoReviewSession, VideoReviewSummary, VideoVisualReviewMode,
+        GenerationRequest, GenerationToolSummary, ReviewStatus, VideoFrameDefect,
+        VideoFrameDefectKind, VideoFrameMeasurement, VideoGenerationOutput, VideoReviewSession,
+        VideoReviewSummary, VideoVisualReport, VideoVisualReviewMode,
     },
     operation::OperationContext,
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
@@ -41,6 +42,13 @@ use crate::{
     sources::{SourceDocument, SourceReader},
     themes::ThemePackage,
     tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
+};
+
+mod assembly;
+
+use assembly::{
+    master_index_html, master_meta_json, scene_composition_path, strip_markup_fence,
+    validate_scene_composition,
 };
 
 use super::{
@@ -163,6 +171,44 @@ struct VideoPromptContext {
     workflow: String,
     urls: Vec<String>,
     catalog: String,
+    retry_present: bool,
+    retry_error: String,
+    retry_invalid_response: String,
+    scene_id: String,
+    scene_position: usize,
+    scene_count: usize,
+    scene_snapshot: String,
+    scene_start_seconds: f32,
+    scene_duration_seconds: f32,
+    scene_catalog_items: Vec<SceneCatalogReference>,
+    scene_artifacts: Vec<String>,
+    /// How the previous beat leaves the frame.
+    ///
+    /// The seam rule is only actionable if the author knows what it is entering
+    /// from, so the plan's exit for the preceding scene travels with the request.
+    previous_scene_exit: String,
+    /// What the deterministic frame measurements found, for the visual reviewer.
+    ///
+    /// Handed over so the model spends its attention on what pixels counting
+    /// cannot see — legibility, overlap, composition — instead of re-deriving
+    /// coverage numbers it would only guess at.
+    frame_measurements: String,
+}
+
+/// One managed catalog piece offered to a scene author as a worked example.
+///
+/// Carries the item's own source rather than a path to mount. Measured against the
+/// registry: these files are showcase documents whose copy is a demonstration, so
+/// mounting one put "Should I learn to code?" into a film about fibre optics, and
+/// the author — forbidden to edit a mounted block — covered it with its own ground
+/// until the renderer rejected the scene for hidden text. The technique is the part
+/// worth having, so the technique is what travels.
+#[derive(Clone, Debug, Serialize)]
+struct SceneCatalogReference {
+    /// Registry identifier.
+    id: String,
+    /// The item's authored markup.
+    source: String,
 }
 
 struct VideoContextInput<'a> {
@@ -385,6 +431,7 @@ pub async fn approve_video_review(
                 source_repair: ReviewStatus::NotNeeded,
                 visual_review: ReviewStatus::Completed,
                 media_inspection: ReviewStatus::Completed,
+                frame_defects: Vec::new(),
             },
             visual_review_mode: VideoVisualReviewMode::HumanApprovalRequired,
             review_session: None,
@@ -447,6 +494,14 @@ fn catalog_violations(
 /// reported is recognisable and never repeated after a reviewer patch.
 fn catalog_warning(violation: &VideoCatalogViolation) -> String {
     format!("Video plan catalog: {violation}")
+}
+
+/// Truncates text destined for a prompt.
+fn excerpt(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+    value.chars().take(max_chars).collect()
 }
 
 fn hash_text(value: &str) -> String {
@@ -566,9 +621,18 @@ pub(crate) async fn generate_video(
     let reviewer = review
         .then(|| config.resolve_model_role(ModelRole::Reviewer))
         .transpose()?;
+    // Looking at frames needs a reviewer that can receive them. A text-only
+    // profile leaves the snapshots as evidence for a human, which is what
+    // `EvidenceOnly` reports rather than pretending an inspection happened.
+    let visual_reviewer = reviewer.filter(|(_, profile)| {
+        video.engine == VideoEngine::Hyperframe && profile.capabilities.contains(&Capability::Image)
+    });
     let mut models = BTreeMap::from([("text".into(), draft_name.to_string())]);
     if let Some((name, _)) = reviewer {
         models.insert("reviewer".into(), name.to_string());
+    }
+    if let Some((name, _)) = visual_reviewer {
+        models.insert("visual_reviewer".into(), name.to_string());
     }
     if let Some((name, _)) = image_selection {
         models.insert("image".into(), name.to_string());
@@ -680,27 +744,49 @@ pub(crate) async fn generate_video(
         );
         context.plan_snapshot =
             serde_json::to_string_pretty(&plan.snapshot().map_err(review_error)?)?;
-        let mut review_request = render_request(
-            prompt_catalog.as_ref(),
-            PromptId::VideoReviewSystem,
-            PromptId::VideoReviewUser,
-            &context,
-        )?;
-        review_request.tools = review_tools;
-        review_request.tool_executor = Some(tool_set.executor.clone());
-        review_request.event_sink = event_sink.clone();
-        prompts.extend(review_request.prompt_provenance.clone());
         let reviewer_provider = provider_factory.text(&config, reviewer_profile)?;
-        let mut candidate = plan.clone();
-        match reviewer_provider
-            .generate_text(review_request, &operation, OperationStage::Review)
-            .await
-            .and_then(|response| {
-                crate::review::parse_json_patch(&response.text).map_err(review_error)
-            })
-            .and_then(|patch| candidate.apply_patch(&patch).map_err(review_error))
-        {
-            Ok(_) => {
+        // One corrective retry, the same allowance slides gets. A reviewer that
+        // answers with prose instead of a patch used to cost the entire review,
+        // and that is the most common way a good review is thrown away.
+        let mut attempt = 0;
+        let outcome = loop {
+            attempt += 1;
+            let mut review_request = render_request(
+                prompt_catalog.as_ref(),
+                PromptId::VideoReviewSystem,
+                PromptId::VideoReviewUser,
+                &context,
+            )?;
+            review_request.tools = review_tools.clone();
+            review_request.tool_executor = Some(tool_set.executor.clone());
+            review_request.event_sink = event_sink.clone();
+            prompts.extend(review_request.prompt_provenance.clone());
+            let mut candidate = plan.clone();
+            let response = reviewer_provider
+                .generate_text(review_request, &operation, OperationStage::Review)
+                .await;
+            let attempted = match response {
+                Ok(response) => crate::review::parse_json_patch(&response.text)
+                    .map_err(review_error)
+                    .and_then(|patch| candidate.apply_patch(&patch).map_err(review_error))
+                    .map(|_| candidate)
+                    .map_err(|error| (error, response.text)),
+                // A transport failure is not something a corrective prompt fixes.
+                Err(error) => break Err(error),
+            };
+            match attempted {
+                Ok(candidate) => break Ok(candidate),
+                Err((error, invalid)) if attempt == 1 => {
+                    context.retry_present = true;
+                    context.retry_error = format!("{error:#}");
+                    context.retry_invalid_response = excerpt(&invalid, 4_000);
+                }
+                Err((error, _)) => break Err(error),
+            }
+        };
+        context.retry_present = false;
+        match outcome {
+            Ok(candidate) => {
                 // The reviewer patches the plan freely, so re-check its
                 // selections: a patch can introduce an ID the catalog lacks.
                 // Only an unusable selection costs the patch, and by the same
@@ -733,20 +819,21 @@ pub(crate) async fn generate_video(
             Err(error) => {
                 review_summary.semantic_review = ReviewStatus::Failed;
                 warnings.push(format!(
-                    "Video semantic review failed; using validated plan: {error}"
+                    "Video semantic review failed after one corrective retry; using validated plan: {error}"
                 ));
             }
         }
     }
     let plan_text = plan.render().map_err(review_error)?;
-    let (project_asset_paths, used_project_assets) =
-        prepared_assets.materialize_referenced(&plan_text, workspace.as_ref())?;
-    let used_generated_assets = retain_referenced_generated_assets(
-        generated_assets,
-        &plan_text,
-        "assets/images",
-        workspace.as_ref(),
-    )?;
+    // Which assets survive is decided by the document that actually references
+    // them, and for a local engine that document is the authored source, not the
+    // plan. Gating on the plan deleted every generated image the planner did not
+    // happen to name in its JSON, before the author could ever embed one.
+    // Set by whichever engine arm runs; both assign before anything reads it.
+    let used_project_assets;
+    // Declared out here so the committed output can report the verdict that the
+    // render branch produced.
+    let mut visual_report = None;
     let title = plan.title().to_string();
     let slug = slugify(&title);
     if slug.is_empty() {
@@ -783,8 +870,17 @@ pub(crate) async fn generate_video(
             );
             let (_, profile) = engine_profile.expect("model profile resolved");
             let provider = provider_factory.video(&config, profile)?;
-            let mut references = project_asset_paths;
-            references.extend(used_generated_assets);
+            // A direct model receives the plan's prompt, so the plan is the
+            // document that decides which references travel with it.
+            let (mut references, used) =
+                prepared_assets.materialize_referenced(&plan_text, workspace.as_ref())?;
+            used_project_assets = used;
+            references.extend(retain_referenced_generated_assets(
+                generated_assets,
+                &plan_text,
+                "assets/images",
+                workspace.as_ref(),
+            )?);
             let generated = provider
                 .generate_video(
                     VideoGenerationRequest {
@@ -822,24 +918,50 @@ pub(crate) async fn generate_video(
             let (_, profile) = engine_profile.expect("code profile resolved");
             context.plan_snapshot =
                 serde_json::to_string_pretty(&plan.snapshot().map_err(review_error)?)?;
-            let ids = if video.engine == VideoEngine::Hyperframe {
-                (
-                    PromptId::VideoHyperframeSystem,
-                    PromptId::VideoHyperframeUser,
-                )
-            } else {
-                (PromptId::VideoManimSystem, PromptId::VideoManimUser)
-            };
-            let mut author_request =
-                render_request(prompt_catalog.as_ref(), ids.0, ids.1, &context)?;
-            author_request.event_sink = event_sink.clone();
-            prompts.extend(author_request.prompt_provenance.clone());
             let author = provider_factory.text(&config, profile)?;
-            let response = author
-                .generate_text(author_request, &operation, OperationStage::Draft)
-                .await?;
-            let mut source = parse_source(&response.text, video.engine)?;
+            let mut source = if video.engine == VideoEngine::Hyperframe {
+                // One scene per request. A single response used to carry the whole
+                // film, which capped the practical duration and spent the model's
+                // attention on restating the master timeline's contract instead of
+                // on the beat it was writing.
+                let (width, height) =
+                    resolution_dimensions(&video.resolution, &video.aspect_ratio)?;
+                author_hyperframe_scenes(AuthorScenesRequest {
+                    plan: &plan,
+                    catalog: managed_catalog.as_ref(),
+                    renderer: video_renderer.as_ref(),
+                    engine: video.engine,
+                    slug: &slug,
+                    width,
+                    height,
+                    author: author.as_ref(),
+                    prompt_catalog: prompt_catalog.as_ref(),
+                    context: &mut context,
+                    prompts: &mut prompts,
+                    event_sink: &event_sink,
+                    operation: &operation,
+                })
+                .await?
+            } else {
+                let mut author_request = render_request(
+                    prompt_catalog.as_ref(),
+                    PromptId::VideoManimSystem,
+                    PromptId::VideoManimUser,
+                    &context,
+                )?;
+                author_request.event_sink = event_sink.clone();
+                prompts.extend(author_request.prompt_provenance.clone());
+                let response = author
+                    .generate_text(author_request, &operation, OperationStage::Draft)
+                    .await?;
+                parse_source(&response.text, video.engine)?
+            };
             let local_request = local_render_request(&source_root, &video_path, &video)?;
+            // Every project asset goes to disk before validation, because the
+            // renderer's own check fails on a referenced file that is not there
+            // and the authored source is what decides which ones are referenced.
+            // The unused copies are removed once the source has settled.
+            prepared_assets.materialize_all(workspace.as_ref())?;
             if let Err(error) = validate_write_source(
                 &source,
                 &source_root,
@@ -855,6 +977,21 @@ pub(crate) async fn generate_video(
                     return Err(error);
                 }
                 review_summary.source_repair = ReviewStatus::Pending;
+                // The reason for the repair is worth keeping: without it a caller
+                // sees a repair happened but never learns what was wrong, which is
+                // exactly the position this project was in while being debugged.
+                warnings.push(format!("Video source needed repair: {error}"));
+                let named_scene = if video.engine == VideoEngine::Hyperframe {
+                    failing_scene(&source, &error)
+                } else {
+                    None
+                };
+                if let Some(sink) = &event_sink {
+                    sink(TextGenerationEvent::SourceRepairStarted {
+                        reason: error.to_string(),
+                        scene: named_scene.clone(),
+                    });
+                }
                 let (reviewer_name, reviewer_profile) = reviewer
                     .or(engine_profile)
                     .expect("local video engine has an author profile");
@@ -863,6 +1000,76 @@ pub(crate) async fn generate_video(
                     GenerationStage::VideoRepair,
                     Some(reviewer_name),
                 );
+                // A whole-film patch is not viable once scenes are authored
+                // separately: the snapshot carries every scene, and a patch that
+                // replaces a file has to restate it in full, so the response runs
+                // past the model's output limit. Re-authoring the one scene that
+                // failed is both smaller and the path already known to work.
+                if let Some(first_scene) = named_scene {
+                    // Bounded, and one scene per round: the renderer reports every
+                    // fault it finds, so a film with defects in two scenes used to
+                    // fail outright after a single repair fixed only the first.
+                    const MAX_SCENE_REPAIRS: usize = 4;
+                    let mut scene_id = first_scene;
+                    let mut failure = error.to_string();
+                    let mut round = 0;
+                    loop {
+                        round += 1;
+                        source = reauthor_scene(ReauthorSceneRequest {
+                            source,
+                            catalog: managed_catalog.as_ref(),
+                            renderer: video_renderer.as_ref(),
+                            engine: video.engine,
+                            scene_id: &scene_id,
+                            plan: &plan,
+                            failure: &failure,
+                            author: provider_factory.text(&config, profile)?.as_ref(),
+                            prompt_catalog: prompt_catalog.as_ref(),
+                            context: &mut context,
+                            prompts: &mut prompts,
+                            event_sink: &event_sink,
+                            operation: &operation,
+                        })
+                        .await?;
+                        match validate_write_source(
+                            &source,
+                            &source_root,
+                            workspace.as_ref(),
+                            video_renderer.as_ref(),
+                            video.engine,
+                            &local_request,
+                            &operation,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                review_summary.source_repair = ReviewStatus::Completed;
+                                break;
+                            }
+                            // A named scene means there is still something focused
+                            // to fix. Anything else, or a film that will not settle,
+                            // is reported rather than retried forever.
+                            Err(next) => {
+                                let next_scene = (round < MAX_SCENE_REPAIRS)
+                                    .then(|| failing_scene(&source, &next))
+                                    .flatten();
+                                let Some(next_scene) = next_scene else {
+                                    return Err(next);
+                                };
+                                warnings
+                                    .push(format!("Video source needed repair: {next}"));
+                                if let Some(sink) = &event_sink {
+                                    sink(TextGenerationEvent::SourceRepairStarted {
+                                        reason: next.to_string(),
+                                        scene: Some(next_scene.clone()),
+                                    });
+                                }
+                                scene_id = next_scene;
+                                failure = next.to_string();
+                            }
+                        }
+                    }
+                } else {
                 context.source_snapshot =
                     serde_json::to_string_pretty(&source.snapshot().map_err(review_error)?)?;
                 context.validation_error = error.to_string();
@@ -893,7 +1100,29 @@ pub(crate) async fn generate_video(
                 )
                 .await?;
                 review_summary.source_repair = ReviewStatus::Completed;
+                }
             }
+            // The source has settled: keep exactly the assets it references.
+            let source_text = source_reference_text(&source);
+            let (paths, used) =
+                prepared_assets.materialize_referenced(&source_text, workspace.as_ref())?;
+            for unused in prepared_assets
+                .allowed_paths()
+                .into_iter()
+                .filter(|path| !paths.contains(path))
+            {
+                workspace.remove_file(&unused)?;
+            }
+            used_project_assets = used;
+            // The retained list is not needed further: the revision manifest
+            // discovers its files by walking the staging root. This call is here
+            // for its effect, which is deleting the images nothing references.
+            retain_referenced_generated_assets(
+                generated_assets,
+                &source_text,
+                "assets/images",
+                workspace.as_ref(),
+            )?;
             let snapshots = video_renderer
                 .snapshot(
                     video.engine,
@@ -904,14 +1133,187 @@ pub(crate) async fn generate_video(
                 )
                 .await?;
             workspace.write(
-                &staging_root.join("source.json"),
-                source.render().map_err(review_error)?.as_bytes(),
-            )?;
-            workspace.write(
                 &staging_root.join("contact-sheet.md"),
                 contact_sheet(&plan, &snapshots).as_bytes(),
             )?;
-            review_summary.visual_review = ReviewStatus::Completed;
+
+            // Snapshots were already being captured and written for a human to
+            // look at; measuring them is what lets the workflow act on the same
+            // evidence. A scene that opens on nothing is the defect this catches,
+            // and it is the one real videos kept shipping with.
+            let timed = snapshot_times(&plan)
+                .into_iter()
+                .zip(snapshots.iter().cloned())
+                .collect::<Vec<_>>();
+            let measurements = video_renderer.measure_snapshots(&timed, &operation).await?;
+            let defects = classify_frames(&plan, &measurements);
+
+            // What counting pixels cannot see: legibility, overlap, composition.
+            // Only run when a reviewer can actually look — a text-only connector
+            // would answer from the prompt alone, which is worse than not asking.
+            if let Some((visual_name, visual_profile)) = visual_reviewer {
+                emit_stage(
+                    &event_sink,
+                    GenerationStage::VideoVisualReview,
+                    Some(visual_name),
+                );
+                let outcome = review_frames_visually(VisualReviewRequest {
+                    plan: &plan,
+                    timed: &timed,
+                    measurements: &measurements,
+                    reviewer: provider_factory.text(&config, visual_profile)?.as_ref(),
+                    prompt_catalog: prompt_catalog.as_ref(),
+                    workspace: workspace.as_ref(),
+                    context: &mut context,
+                    prompts: &mut prompts,
+                    event_sink: &event_sink,
+                    operation: &operation,
+                })
+                .await;
+                match outcome {
+                    Ok((report, reviewed)) => {
+                        if reviewed < timed.len() {
+                            warnings.push(format!(
+                                "Visual review looked at the first {reviewed} of {} frames",
+                                timed.len()
+                            ));
+                        }
+                        for finding in &report.findings {
+                            warnings.push(format!("Visual review: {finding}"));
+                        }
+                        visual_report = Some(report);
+                        review_summary.visual_review = ReviewStatus::Completed;
+                    }
+                    Err(error) => {
+                        // Advisory by design: the frames and the deterministic
+                        // verdict still ship, so a reviewer that fails is a lost
+                        // opinion rather than a lost film.
+                        warnings.push(format!("Visual review did not complete: {error}"));
+                        review_summary.visual_review = ReviewStatus::Failed;
+                    }
+                }
+            }
+
+            if !defects.is_empty() {
+                let described = defects
+                    .iter()
+                    .map(describe_frame_defect)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                if review {
+                    let (repair_name, repair_profile) = reviewer
+                        .or(engine_profile)
+                        .expect("local video engine has an author profile");
+                    emit_stage(&event_sink, GenerationStage::VideoRepair, Some(repair_name));
+                    context.source_snapshot =
+                        serde_json::to_string_pretty(&source.snapshot().map_err(review_error)?)?;
+                    context.validation_error = format!(
+                        "The rendered film has empty frames. Every timed element must be visible at the instant its scene begins, so an entrance animates from a state that is already on screen rather than from nothing: {described}"
+                    );
+                    let mut repair_request = render_request(
+                        prompt_catalog.as_ref(),
+                        PromptId::VideoSourceRepairSystem,
+                        PromptId::VideoSourceRepairUser,
+                        &context,
+                    )?;
+                    repair_request.event_sink = event_sink.clone();
+                    prompts.extend(repair_request.prompt_provenance.clone());
+                    let repairer = provider_factory.text(&config, repair_profile)?;
+                    let repaired = repairer
+                        .generate_text(repair_request, &operation, OperationStage::Repair)
+                        .await
+                        .and_then(|response| {
+                            let patch = crate::review::parse_json_patch(&response.text)
+                                .map_err(review_error)?;
+                            let mut candidate = source.clone();
+                            candidate.apply_patch(&patch).map_err(review_error)?;
+                            normalize_hyperframe_parent_paths(candidate)
+                        });
+                    match repaired {
+                        Ok(candidate) => {
+                            match validate_write_source(
+                                &candidate,
+                                &source_root,
+                                workspace.as_ref(),
+                                video_renderer.as_ref(),
+                                video.engine,
+                                &local_request,
+                                &operation,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    source = candidate;
+                                    // Re-measure: a repair is only worth keeping
+                                    // when the frames actually filled in.
+                                    let snapshots = video_renderer
+                                        .snapshot(
+                                            video.engine,
+                                            &local_request,
+                                            &snapshot_times(&plan),
+                                            &staging_root.join("snapshots"),
+                                            &operation,
+                                        )
+                                        .await?;
+                                    let timed = snapshot_times(&plan)
+                                        .into_iter()
+                                        .zip(snapshots.iter().cloned())
+                                        .collect::<Vec<_>>();
+                                    let measurements = video_renderer
+                                        .measure_snapshots(&timed, &operation)
+                                        .await?;
+                                    let remaining = classify_frames(&plan, &measurements);
+                                    if remaining.len() < defects.len() {
+                                        review_summary.source_repair = ReviewStatus::Completed;
+                                    }
+                                    if !remaining.is_empty() {
+                                        warnings.push(format!(
+                                            "Empty frames remain after one repair: {}",
+                                            remaining
+                                                .iter()
+                                                .map(describe_frame_defect)
+                                                .collect::<Vec<_>>()
+                                                .join("; ")
+                                        ));
+                                    }
+                                    review_summary.frame_defects = remaining;
+                                    workspace.write(
+                                        &staging_root.join("contact-sheet.md"),
+                                        contact_sheet(&plan, &snapshots).as_bytes(),
+                                    )?;
+                                }
+                                Err(error) => {
+                                    warnings.push(format!(
+                                        "Empty-frame repair produced invalid source; keeping the validated film: {error}"
+                                    ));
+                                    review_summary.frame_defects = defects;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            warnings.push(format!(
+                                "Empty-frame repair failed; keeping the validated film: {error}"
+                            ));
+                            review_summary.frame_defects = defects;
+                        }
+                    }
+                } else {
+                    warnings.push(format!("The rendered film has empty frames: {described}"));
+                    review_summary.frame_defects = defects;
+                }
+            }
+            // Written last so a repaired film ships the source that produced it.
+            workspace.write(
+                &staging_root.join("source.json"),
+                source.render().map_err(review_error)?.as_bytes(),
+            )?;
+            // Capturing and measuring the evidence is itself the visual review when
+            // no model looked at it. A reviewer that ran already set its own
+            // verdict, and overwriting a failure here would report an inspection
+            // that did not happen.
+            if review_summary.visual_review == ReviewStatus::Skipped {
+                review_summary.visual_review = ReviewStatus::Completed;
+            }
             if video.visual_review {
                 return pause_for_visual_review(
                     &config,
@@ -995,13 +1397,13 @@ pub(crate) async fn generate_video(
             artifacts,
             published_artifacts: published_paths,
             review: review_summary,
-            visual_review_mode: if video.engine == VideoEngine::Hyperframe {
-                VideoVisualReviewMode::EvidenceOnly
-            } else {
-                VideoVisualReviewMode::Disabled
+            visual_review_mode: match (video.engine, visual_report.is_some()) {
+                (_, true) => VideoVisualReviewMode::Automated,
+                (VideoEngine::Hyperframe, false) => VideoVisualReviewMode::EvidenceOnly,
+                _ => VideoVisualReviewMode::Disabled,
             },
             review_session: None,
-            visual_report: None,
+            visual_report,
             prompts,
             warnings,
         },
@@ -1357,6 +1759,368 @@ fn normalize_hyperframe_parent_paths(source: VideoSourceDocument) -> Result<Vide
     VideoSourceDocument::new(VideoEngine::Hyperframe, files).map_err(review_error)
 }
 
+struct AuthorScenesRequest<'a> {
+    plan: &'a VideoPlanDocument,
+    /// Installed catalog, so a selected piece reaches the author as an example.
+    catalog: Option<&'a VideoCatalog>,
+    renderer: &'a dyn VideoRenderer,
+    engine: VideoEngine,
+    slug: &'a str,
+    width: u32,
+    height: u32,
+    author: &'a dyn crate::providers::TextGenerationProvider,
+    prompt_catalog: &'a dyn PromptCatalog,
+    context: &'a mut VideoPromptContext,
+    prompts: &'a mut Vec<PromptProvenance>,
+    event_sink: &'a Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    operation: &'a OperationContext,
+}
+
+/// Authors one composition per planned scene and assembles the project.
+///
+/// The entry composition is generated, so the model never restates the renderer's
+/// contract; each request carries one beat, its own window, and how the previous
+/// beat leaves the frame.
+async fn author_hyperframe_scenes(
+    request: AuthorScenesRequest<'_>,
+) -> Result<VideoSourceDocument> {
+    let AuthorScenesRequest {
+        plan,
+        catalog,
+        renderer,
+        engine,
+        slug,
+        width,
+        height,
+        author,
+        prompt_catalog,
+        context,
+        prompts,
+        event_sink,
+        operation,
+    } = request;
+    let mut files = BTreeMap::from([
+        ("meta.json".to_string(), master_meta_json(slug)),
+        (
+            "index.html".to_string(),
+            master_index_html(plan, width, height),
+        ),
+    ]);
+    let scenes = plan.scenes();
+    for (index, scene) in scenes.iter().enumerate() {
+        operation.checkpoint(OperationStage::Draft)?;
+        context.scene_id = scene.id.clone();
+        context.scene_position = index + 1;
+        context.scene_count = scenes.len();
+        context.scene_start_seconds = scene.start_seconds;
+        context.scene_duration_seconds = scene.duration_seconds;
+        context.scene_catalog_items = scene_catalog_references(scene, catalog, renderer, engine);
+        context.scene_artifacts = scene.artifacts.clone();
+        context.previous_scene_exit = index
+            .checked_sub(1)
+            .and_then(|previous| scenes.get(previous))
+            .map(|previous| previous.production.exit.clone())
+            .unwrap_or_default();
+        context.scene_snapshot = serde_json::to_string_pretty(scene)?;
+
+        let mut markup = String::new();
+        // One corrective attempt per scene: a scene that comes back malformed is
+        // re-asked with the exact complaint, and only that scene is re-generated.
+        for attempt in 1..=2 {
+            let mut scene_request = render_request(
+                prompt_catalog,
+                PromptId::VideoHyperframeSceneSystem,
+                PromptId::VideoHyperframeSceneUser,
+                context,
+            )?;
+            scene_request.event_sink = event_sink.clone();
+            prompts.extend(scene_request.prompt_provenance.clone());
+            let response = author
+                .generate_text(scene_request, operation, OperationStage::Draft)
+                .await?;
+            let candidate = strip_markup_fence(&response.text);
+            match validate_scene_composition(&scene.id, &candidate) {
+                Ok(()) => {
+                    markup = candidate;
+                    break;
+                }
+                Err(error) if attempt == 1 => {
+                    context.retry_present = true;
+                    context.retry_error = error;
+                    context.retry_invalid_response = excerpt(&candidate, 4_000);
+                }
+                Err(error) => {
+                    return Err(SfumatoError::provider(
+                        ErrorClass::InvalidOutput,
+                        format!("Scene authoring failed after one corrective retry: {error}"),
+                    ));
+                }
+            }
+        }
+        context.retry_present = false;
+        files.insert(scene_composition_path(&scene.id), markup);
+    }
+    VideoSourceDocument::new(VideoEngine::Hyperframe, files).map_err(review_error)
+}
+
+/// Names the scene a validation failure points at, when it points at one.
+///
+/// Both the core validator and the renderer's own check quote the offending path,
+/// so the scene can be recovered from the message rather than guessed at.
+fn failing_scene(source: &VideoSourceDocument, error: &SfumatoError) -> Option<String> {
+    let message = error.to_string();
+    let scenes = source
+        .files()
+        .keys()
+        .filter(|path| path.starts_with("compositions/") && path.ends_with(".html"))
+        .filter_map(|path| {
+            path.strip_prefix("compositions/")
+                .and_then(|name| name.strip_suffix(".html"))
+        })
+        .collect::<Vec<_>>();
+    // The path when the renderer quotes one, and otherwise the scene ID, because
+    // the errors that matter most for quality — overflowing, occluded and
+    // overlapping text — name the offending element rather than its file, and
+    // authored element IDs carry the scene they belong to.
+    scenes
+        .iter()
+        .find(|scene| message.contains(&format!("compositions/{scene}.html")))
+        .or_else(|| scenes.iter().find(|scene| message.contains(**scene)))
+        .map(|scene| (*scene).to_owned())
+}
+
+struct ReauthorSceneRequest<'a> {
+    source: VideoSourceDocument,
+    scene_id: &'a str,
+    plan: &'a VideoPlanDocument,
+    catalog: Option<&'a VideoCatalog>,
+    renderer: &'a dyn VideoRenderer,
+    engine: VideoEngine,
+    failure: &'a str,
+    author: &'a dyn crate::providers::TextGenerationProvider,
+    prompt_catalog: &'a dyn PromptCatalog,
+    context: &'a mut VideoPromptContext,
+    prompts: &'a mut Vec<PromptProvenance>,
+    event_sink: &'a Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    operation: &'a OperationContext,
+}
+
+/// Re-authors one scene against the failure it caused.
+///
+/// Replaces the whole-film patch for the case that matters: the response only has
+/// to carry one scene, and it goes through the same prompt that produced every
+/// other scene rather than a second, differently-shaped repair contract.
+async fn reauthor_scene(request: ReauthorSceneRequest<'_>) -> Result<VideoSourceDocument> {
+    let ReauthorSceneRequest {
+        source,
+        scene_id,
+        plan,
+        catalog,
+        renderer,
+        engine,
+        failure,
+        author,
+        prompt_catalog,
+        context,
+        prompts,
+        event_sink,
+        operation,
+    } = request;
+    let scenes = plan.scenes();
+    let position = scenes
+        .iter()
+        .position(|scene| scene.id == scene_id)
+        .context("The failing scene is not in the plan")?;
+    let scene = &scenes[position];
+
+    context.scene_id = scene.id.clone();
+    context.scene_position = position + 1;
+    context.scene_count = scenes.len();
+    context.scene_start_seconds = scene.start_seconds;
+    context.scene_duration_seconds = scene.duration_seconds;
+    context.scene_catalog_items = scene_catalog_references(scene, catalog, renderer, engine);
+    context.scene_artifacts = scene.artifacts.clone();
+    context.previous_scene_exit = position
+        .checked_sub(1)
+        .and_then(|previous| scenes.get(previous))
+        .map(|previous| previous.production.exit.clone())
+        .unwrap_or_default();
+    context.scene_snapshot = serde_json::to_string_pretty(scene)?;
+    context.retry_present = true;
+    context.retry_error = failure.to_string();
+    context.retry_invalid_response = excerpt(
+        source
+            .files()
+            .get(&scene_composition_path(scene_id))
+            .map(String::as_str)
+            .unwrap_or_default(),
+        4_000,
+    );
+
+    let mut scene_request = render_request(
+        prompt_catalog,
+        PromptId::VideoHyperframeSceneSystem,
+        PromptId::VideoHyperframeSceneUser,
+        context,
+    )?;
+    scene_request.event_sink = event_sink.clone();
+    prompts.extend(scene_request.prompt_provenance.clone());
+    let response = author
+        .generate_text(scene_request, operation, OperationStage::Repair)
+        .await?;
+    context.retry_present = false;
+    let markup = strip_markup_fence(&response.text);
+    validate_scene_composition(scene_id, &markup).map_err(|error| {
+        SfumatoError::provider(
+            ErrorClass::InvalidOutput,
+            format!("Re-authored scene is still invalid: {error}"),
+        )
+    })?;
+    let mut files = source.files().clone();
+    files.insert(scene_composition_path(scene_id), markup);
+    VideoSourceDocument::new(VideoEngine::Hyperframe, files).map_err(review_error)
+}
+
+/// How many frames one visual review may carry.
+///
+/// Every attachment is a full-resolution PNG inlined in the request, so the cap is
+/// what keeps a long film from producing a request no connector will accept. Two
+/// frames per scene means this covers a six-scene film whole.
+const MAX_REVIEWED_FRAMES: usize = 12;
+
+struct VisualReviewRequest<'a> {
+    plan: &'a VideoPlanDocument,
+    timed: &'a [(f32, PathBuf)],
+    measurements: &'a [VideoFrameMeasurement],
+    reviewer: &'a dyn crate::providers::TextGenerationProvider,
+    prompt_catalog: &'a dyn PromptCatalog,
+    workspace: &'a dyn crate::filesystem::WorkspaceFileSystem,
+    context: &'a mut VideoPromptContext,
+    prompts: &'a mut Vec<PromptProvenance>,
+    event_sink: &'a Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    operation: &'a OperationContext,
+}
+
+/// Asks an image-capable model what the rendered frames actually look like.
+///
+/// The deterministic gate answers "is anything on screen"; nothing answers "is it
+/// legible, does it overlap, does it read" without looking. The measurements travel
+/// with the frames so the model spends its attention on what counting cannot see.
+async fn review_frames_visually(
+    request: VisualReviewRequest<'_>,
+) -> Result<(VideoVisualReport, usize)> {
+    let VisualReviewRequest {
+        plan,
+        timed,
+        measurements,
+        reviewer,
+        prompt_catalog,
+        workspace,
+        context,
+        prompts,
+        event_sink,
+        operation,
+    } = request;
+    let reviewed = timed.len().min(MAX_REVIEWED_FRAMES);
+    let mut images = Vec::with_capacity(reviewed);
+    for (at_seconds, path) in timed.iter().take(reviewed) {
+        images.push(crate::providers::ImageAttachment {
+            label: format!(
+                "Frame at {at_seconds:.2}s{}",
+                scene_at(plan, *at_seconds)
+                    .map(|scene| format!(", scene {scene}"))
+                    .unwrap_or_default()
+            ),
+            media_type: "image/png".to_string(),
+            data: workspace.read_bytes(path)?,
+        });
+    }
+    context.frame_measurements = measurements
+        .iter()
+        .map(|measurement| {
+            format!(
+                "- {:.2}s: {:.1}% of the frame differs from its dominant colour, {} distinct colours",
+                measurement.at_seconds,
+                measurement.ink_ratio * 100.0,
+                measurement.distinct_colours
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut review_request = render_request(
+        prompt_catalog,
+        PromptId::VideoVisualReviewSystem,
+        PromptId::VideoVisualReviewUser,
+        context,
+    )?;
+    review_request.event_sink = event_sink.clone();
+    review_request.images = images;
+    prompts.extend(review_request.prompt_provenance.clone());
+    let response = reviewer
+        .generate_text(review_request, operation, OperationStage::Review)
+        .await?;
+    let report: VideoVisualReport =
+        serde_json::from_str(strip_json_fence(&response.text)).map_err(|error| {
+            review_error(format!(
+                "Visual reviewer response must be a JSON object with `approved` and `findings`: {error}"
+            ))
+        })?;
+    Ok((report, reviewed))
+}
+
+/// The catalog pieces one scene selected, with the source the author adapts.
+///
+/// An item whose source cannot be read is dropped rather than named: an example the
+/// author cannot see is worse than no example, and the beat is still authorable by
+/// hand. An unknown selection is dropped for the same reason.
+fn scene_catalog_references(
+    scene: &VideoScene,
+    catalog: Option<&VideoCatalog>,
+    renderer: &dyn VideoRenderer,
+    engine: VideoEngine,
+) -> Vec<SceneCatalogReference> {
+    let Some(catalog) = catalog else {
+        return Vec::new();
+    };
+    scene
+        .production
+        .catalog_items
+        .iter()
+        .filter(|id| catalog.find(id).is_some())
+        .filter_map(|id| {
+            renderer
+                .catalog_item_source(engine, id)
+                .ok()
+                .map(|source| SceneCatalogReference {
+                    id: id.clone(),
+                    source,
+                })
+        })
+        .collect()
+}
+
+/// The one-based scene a timeline position falls in.
+fn scene_at(plan: &VideoPlanDocument, at_seconds: f32) -> Option<usize> {
+    plan.scenes().iter().position(|scene| {
+        at_seconds >= scene.start_seconds
+            && at_seconds < scene.start_seconds + scene.duration_seconds
+    })
+    .map(|index| index + 1)
+}
+
+/// The text that decides which assets one authored source references.
+///
+/// Every file counts, not just the entry composition: a diagram or image is just
+/// as likely to be referenced from a scene sub-composition.
+fn source_reference_text(source: &VideoSourceDocument) -> String {
+    source
+        .files()
+        .values()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn write_source(
     source: &VideoSourceDocument,
     root: &Path,
@@ -1610,6 +2374,82 @@ fn pause_for_visual_review(
             warnings,
         },
     })
+}
+
+/// Ink share below which a frame carries nothing a viewer would call content.
+///
+/// Calibrated against a real 45s video: its scene-start frames measured 0.0000 to
+/// 0.0071 while every mid-scene frame measured 0.05 or more, so this sits in the
+/// gap rather than at a guessed round number.
+const EMPTY_INK_RATIO: f32 = 0.02;
+
+/// Distinct colours at or below which a frame is background plus almost nothing.
+const SPARSE_COLOURS: u32 = 2;
+
+/// Frames are matched to scene starts within this many seconds.
+const FRAME_MATCH_EPSILON: f32 = 0.05;
+
+/// Judges what the captured frames show against what the plan promised.
+///
+/// A scene that opens on an empty frame is the defect worth naming: the cut lands
+/// on nothing, which reads as a stutter rather than as a transition. A mid-scene
+/// frame is allowed to be sparse, because holding on one word is a real choice.
+fn classify_frames(
+    plan: &VideoPlanDocument,
+    measurements: &[VideoFrameMeasurement],
+) -> Vec<VideoFrameDefect> {
+    let starts = plan
+        .scenes()
+        .iter()
+        .enumerate()
+        .map(|(index, scene)| (index + 1, scene.start_seconds))
+        .collect::<Vec<_>>();
+    measurements
+        .iter()
+        .filter_map(|measurement| {
+            let empty = measurement.ink_ratio < EMPTY_INK_RATIO
+                || measurement.distinct_colours <= SPARSE_COLOURS;
+            if !empty {
+                return None;
+            }
+            let scene = starts
+                .iter()
+                .find(|(_, start)| {
+                    (start - measurement.at_seconds).abs() <= FRAME_MATCH_EPSILON
+                })
+                .map(|(position, _)| *position);
+            // Off a scene boundary, only a frame with literally nothing on it is
+            // a defect; a sparse held beat is legitimate.
+            let kind = match scene {
+                Some(_) => VideoFrameDefectKind::EmptySceneStart,
+                None if measurement.ink_ratio == 0.0 => VideoFrameDefectKind::BlankFrame,
+                None => return None,
+            };
+            Some(VideoFrameDefect {
+                at_seconds: measurement.at_seconds,
+                scene,
+                kind,
+                measurement: measurement.clone(),
+            })
+        })
+        .collect()
+}
+
+/// One line per defect, for the warnings and the repair prompt.
+fn describe_frame_defect(defect: &VideoFrameDefect) -> String {
+    match defect.kind {
+        VideoFrameDefectKind::EmptySceneStart => format!(
+            "scene {} opens on an empty frame at {:.2}s: {:.2}% of pixels carry content across {} colours",
+            defect.scene.unwrap_or(0),
+            defect.at_seconds,
+            defect.measurement.ink_ratio * 100.0,
+            defect.measurement.distinct_colours
+        ),
+        VideoFrameDefectKind::BlankFrame => format!(
+            "the frame at {:.2}s is blank",
+            defect.at_seconds
+        ),
+    }
 }
 
 fn snapshot_times(plan: &VideoPlanDocument) -> Vec<f32> {

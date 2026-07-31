@@ -503,6 +503,19 @@ pub trait VideoRenderer: Send + Sync {
         operation: &OperationContext,
     ) -> SfumatoResult<()>;
 
+    /// Measures what each captured snapshot actually contains.
+    ///
+    /// Sfumato already captures snapshots at every scene start and midpoint and
+    /// writes a contact sheet for a human. Measuring them is what turns that
+    /// evidence into something the workflow can act on without a model.
+    async fn measure_snapshots(
+        &self,
+        _snapshots: &[(f32, PathBuf)],
+        _operation: &OperationContext,
+    ) -> SfumatoResult<Vec<crate::generation::VideoFrameMeasurement>> {
+        Ok(Vec::new())
+    }
+
     /// Validates that a final file is a playable video with expected shape.
     async fn inspect(
         &self,
@@ -516,6 +529,20 @@ pub trait VideoRenderer: Send + Sync {
     /// installation; workflows read it instead of restating the item list.
     fn catalog(&self, _engine: VideoEngine) -> SfumatoResult<Option<VideoCatalog>> {
         Ok(None)
+    }
+
+    /// The authored source of one installed catalog item.
+    ///
+    /// Measured against the registry rather than assumed: these files are showcase
+    /// documents, not embeddable components. They carry no `<template>` and their
+    /// copy is a demonstration — `flowchart` asks "Should I learn to code?" and
+    /// `whip-pan` labels its halves "SCENE A" and "SCENE B" — so mounting one puts
+    /// that demonstration into the film. Their value is the technique, which is why
+    /// the source is handed to the author to adapt instead.
+    fn catalog_item_source(&self, _engine: VideoEngine, _id: &str) -> SfumatoResult<String> {
+        Err(crate::errors::SfumatoError::internal(
+            "This renderer has no managed catalog",
+        ))
     }
 }
 

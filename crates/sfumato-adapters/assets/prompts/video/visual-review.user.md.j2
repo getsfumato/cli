@@ -1,0 +1,13 @@
+Review the attached frames from "{{ title }}", a {{ duration_seconds }}-second explainer rendered at {{ width }}x{{ height }}.
+
+The film's scenes, so you can tell which frames belong together:
+{{ plan_snapshot }}
+
+{% if frame_measurements %}
+Sfumato already measured these frames pixel by pixel and reports:
+{{ frame_measurements }}
+
+Those numbers say how much of each frame is covered and how many colours it holds. They cannot see composition, legibility, or overlap. Judge what the measurements cannot.
+{% endif %}
+
+Each attached image is labelled with its timeline position and scene. Answer with the JSON object your instructions specify.

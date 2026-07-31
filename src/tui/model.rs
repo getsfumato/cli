@@ -1218,6 +1218,15 @@ impl Activity {
                 detail: compact(error, 300),
                 image_path: None,
             },
+            TextGenerationEvent::SourceRepairStarted { reason, scene } => Self {
+                kind: ActivityKind::Warning,
+                title: match scene {
+                    Some(scene) => format!("Repairing {scene}"),
+                    None => "Repairing source".to_string(),
+                },
+                detail: compact(reason, 300),
+                image_path: None,
+            },
         }
     }
 

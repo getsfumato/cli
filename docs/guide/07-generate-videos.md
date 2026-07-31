@@ -57,6 +57,7 @@ remain mandatory.
 | Semantic review | Reviewer role with text capability. |
 | Hyperframes/Manim author | `code` profile; falls back to drafter only when the drafter declares `code`. |
 | Focused local source repair | Reviewer when enabled, otherwise code author. |
+| Automated frame review | Reviewer role, only when its profile declares `image`. |
 | Remote video | `video` profile. |
 | Optional reference generation | `image` profile when `image-gen` is enabled. |
 
@@ -67,7 +68,7 @@ For local engines, `--model video=...` is invalid. For the remote model engine,
 
 | Option | Behavior |
 | --- | --- |
-| `--duration` | Required, 1 through 3600 seconds at core validation; remote catalog may impose tighter limits. |
+| `--duration` | Required, 1 through 3600 seconds at core validation; remote catalog may impose tighter limits. Hyperframe authors one scene per request, so longer films are viable, but a plan with very many short scenes costs one model call each. |
 | `--resolution` | Local accepted values are `480p`, `720p`, `1080p`; defaults to `1080p` locally and `720p` remotely. |
 | `--aspect-ratio` | Positive `W:H`, default `16:9`. Local width is derived and rounded to an even pixel count. |
 | `--fps` | Local only, 1 through 120, default 30. |
@@ -77,6 +78,63 @@ For local engines, `--model video=...` is invalid. For the remote model engine,
 | `--allow-code-execution` | Manim only; rejected for other engines. |
 
 ## Hyperframes Engine
+
+### Authoring, scene by scene
+
+Sfumato generates the entry composition itself — the canvas, one mount per planned
+scene, and a timeline that runs for the requested duration — and asks the model for
+one scene composition per request. Every part of that entry file is a contract the
+renderer enforces, so generating it removes a whole class of authoring failure, and
+each request carries a single beat, its own time window, and how the previous beat
+leaves the frame.
+
+That last part is what makes the seam rule actionable: a scene knows what it is
+entering from, so a boundary can read as one continuous move instead of two
+animations meeting.
+
+The practical consequence for duration is worth stating plainly. The hard limit is
+3600 seconds, but before this change one model response had to carry the whole film,
+so anything past a minute or two degraded regardless of the limit. Per-scene
+authoring is what makes minutes viable.
+
+### Empty-frame gate
+
+Snapshots were always captured at every scene start and midpoint and written to a
+contact sheet. They are now measured too, without spending a model: Sfumato reads
+each frame's ink coverage and colour count, using the frame's own dominant colour as
+the background so it works for any theme.
+
+A scene that opens on an empty frame is a defect, because the cut lands on nothing
+and reads as a stutter. Away from a scene boundary only a completely blank frame
+counts, since holding on one word over a plain ground is a real choice. A defect
+triggers one focused source repair, the film is re-measured, and anything that
+survives is reported in the warnings and in `review.frame_defects`.
+
+This was not hypothetical: a real 45-second film had all four of its scene
+boundaries land on empty frames, one of them completely blank.
+
+### Renderer-safe fonts
+
+The renderer resolves every family in a stack, fallbacks included, and fails the
+render on any it cannot supply. A real film was lost to `font-family: JetBrains
+Mono, Fira Code, monospace`, where only the unused fallback was unbundled. Sfumato
+now rejects an authored scene that names such a family before the renderer ever runs,
+which routes it back through the scene author instead of failing the whole film.
+
+### Automated frame review
+
+When the reviewer profile declares the `image` capability, Sfumato attaches the
+rendered frames to a review request and asks what they actually look like. This is
+the layer that catches what counting pixels cannot: clipped text, overlapping
+elements, and frames that are technically populated but unreadable. The measurements
+travel with the frames so the model judges composition rather than re-deriving
+coverage.
+
+The review is advisory. Its findings appear in the warnings and in `visual_report`,
+and `visual_review_mode` reports `automated`. A text-only reviewer leaves the mode at
+`evidence_only`: the frames and the deterministic verdict still ship, and Sfumato
+does not claim an inspection that never happened. A connector that cannot accept
+images refuses the request rather than answering from the prompt alone.
 
 ### Production pipeline
 
@@ -107,6 +165,20 @@ caption styles are the current example: they read words with per-word timings fr
 a sidecar file, which only a narration track can supply, and this engine is silent.
 They return to the catalog once the engine renders audio; until then, selecting an
 item like that fails at staging with that reason rather than mid-render.
+
+### Catalog items are references, not components
+
+A selected item reaches the scene author as source to adapt, not as a path to mount.
+This is measured, not stylistic: the registry files are showcase documents. None of
+them carries a `<template>`, and their copy demonstrates the technique on unrelated
+content — `flowchart` asks "Should I learn to code?", `whip-pan` labels its halves
+"SCENE A" and "SCENE B", `data-chart` charts "Monthly Revenue".
+
+Mounting one therefore puts that demonstration on screen. A real film about fibre
+optics mounted the flowchart, and the author — told never to edit a mounted block —
+covered the foreign copy with its own ground, which the renderer then rejected as
+hidden text, repair after repair. Handing over the technique instead keeps what is
+valuable about the catalog and leaves the words to the film.
 
 For a human checkpoint before rendering, pass `--visual-review`. Sfumato stores the
 source bundle, snapshots, and `contact-sheet.md` under its managed review session,

@@ -73,6 +73,31 @@ fn representative_variables() -> PromptVariables {
         ("slide_markdown", json!("## Dense\n\nContent")),
         ("max_tool_rounds", json!(8)),
         ("page_size", json!("a4")),
+        ("scene_id", json!("scene-2")),
+        ("scene_position", json!(2)),
+        ("scene_count", json!(5)),
+        (
+            "scene_snapshot",
+            json!({"id": "scene-2", "content": "total internal reflection"}),
+        ),
+        ("scene_start_seconds", json!(4.0)),
+        ("scene_duration_seconds", json!(9.0)),
+        (
+            "scene_catalog_items",
+            json!([{
+                "id": "data-chart",
+                "source": "<div id=\"data-chart\" data-composition-id=\"data-chart\"></div>"
+            }]),
+        ),
+        ("scene_artifacts", json!(["assets/images/fibre.png"])),
+        (
+            "previous_scene_exit",
+            json!("the core circle slides left and out of frame"),
+        ),
+        (
+            "frame_measurements",
+            json!("- 0.00s: 24.1% of the frame differs from its dominant colour, 33 distinct colours"),
+        ),
         ("table_of_contents", json!(true)),
         (
             "document_snapshot",
@@ -336,6 +361,134 @@ fn document_prompts_ban_the_math_delimiters_markdown_consumes() {
 }
 
 #[test]
+fn the_video_planner_is_told_to_reach_for_generated_images() {
+    // The previous wording told the planner to reuse existing artifacts before
+    // requesting an image, which is why real videos shipped with none: flat vector
+    // shapes where a purpose-built illustration was the point.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoPlanUser,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    assert!(rendered.text.contains("sfumato_image_gen"));
+    assert!(
+        !rendered.text.contains("Reuse suitable existing artifacts before requesting"),
+        "the discouraging wording is gone"
+    );
+}
+
+#[test]
+fn the_video_author_learns_how_to_embed_a_selected_image() {
+    // The author never saw a word about images, so a generated illustration could
+    // not reach the film even when the planner had produced one.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoHyperframeSceneUser,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    assert!(rendered.text.contains("assets/images/"));
+    assert!(rendered.text.contains("<img src="), "it needs the embedding form");
+    // Pruning runs against the authored source, so an image the author ignores is
+    // deleted. Saying so is what stops a generated illustration from vanishing.
+    assert!(rendered.text.contains("deleted before the render"));
+}
+
+#[test]
+fn the_video_reviewer_can_be_told_its_answer_was_rejected() {
+    // Without the corrective retry block the reviewer gets no chance to fix a
+    // malformed patch, and one bad answer discards the whole review.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let mut variables = representative_variables();
+    variables.0.insert("retry_present".into(), json!(true));
+    variables
+        .0
+        .insert("retry_error".into(), json!("must be an RFC 6902 patch"));
+    variables
+        .0
+        .insert("retry_invalid_response".into(), json!("sure, here are my notes"));
+
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoReviewUser,
+            variables,
+        })
+        .unwrap();
+
+    assert!(rendered.text.contains("Corrective retry"));
+    assert!(rendered.text.contains("must be an RFC 6902 patch"));
+}
+
+#[test]
+fn the_video_author_is_told_not_to_open_a_scene_on_nothing() {
+    // Measured on a real film: all four scene boundaries rendered empty, because
+    // nothing told the author that elements must already be on screen when a scene
+    // starts. The deterministic gate rejects it; this is what prevents it.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoHyperframeSceneSystem,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    assert!(rendered.text.contains("Never open a scene on an empty frame"));
+    assert!(
+        rendered.text.contains("perform, not breathe"),
+        "idle motion is banned"
+    );
+    // The doctrine has to live in the prompt that actually authors scenes. It once
+    // sat in the whole-film prompt, which per-scene authoring had already retired.
+    assert!(
+        rendered.text.contains("one scene of a Hyperframes film"),
+        "the rules belong to the live authoring path"
+    );
+}
+
+#[test]
+fn the_video_planner_must_choose_a_visual_means_per_beat() {
+    // A real plan used one catalog item across five scenes and drew the rest by
+    // hand, which is why the film looked like a diagram.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoPlanUser,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    assert!(rendered.text.contains("pick exactly one of"));
+    assert!(rendered.text.contains("generated illustration"));
+}
+
+#[test]
+fn the_scene_author_receives_the_previous_beat_exit_and_its_own_window() {
+    // The seam rule only becomes actionable when the author knows what it is
+    // entering from, and the empty-frame rule has to be restated where the author
+    // is actually writing the first frame.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoHyperframeSceneUser,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    assert!(rendered.text.contains("the core circle slides left and out of frame"));
+    assert!(rendered.text.contains("already be visible at the scene's first frame"));
+    // A scene's own timeline is scene-relative; treating it as film-relative is a
+    // classic way to author a scene that plays at the wrong moment.
+    assert!(rendered.text.contains("start at 0 even though the film places it at 4"));
+    assert!(rendered.text.contains("Reference: `data-chart`"));
+    assert!(rendered.text.contains("assets/images/fibre.png"));
+}
+
+#[test]
 fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
     let catalog = LayeredPromptCatalog::new(None, None);
     let mut aggregate = String::new();
@@ -354,7 +507,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "c9a76a1922bd60caf597e2385daff7267e82c8749d59cb36e3d257afb2f10cf1"
+        "1986e1a7e5bc2ac93251589bf25565da77bc787cdebd65c321e695fd0c572d30"
     );
 }
 
@@ -473,4 +626,108 @@ fn symlinked_override_is_rejected() {
             .to_string()
             .contains("unsafe")
     );
+}
+
+#[test]
+fn the_visual_reviewer_judges_pixels_and_not_intentions() {
+    let catalog = LayeredPromptCatalog::new(None, None);
+
+    let system = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoVisualReviewSystem,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    // Reporting a defect the plan implies rather than the frame shows is how a
+    // visual review turns into a second semantic review that repairs nothing.
+    assert!(system.text.contains("Report only what the frames show"));
+    assert!(system.text.contains("legible"));
+    assert!(system.text.contains("overlap"));
+    // Stillness is craft: the deterministic gate already handles empty frames, and
+    // a reviewer that flags every held beat makes the whole layer noise.
+    assert!(system.text.contains("Deliberate stillness"));
+    assert!(system.text.contains("\"approved\""));
+    assert!(system.text.contains("\"findings\""));
+
+    let user = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoVisualReviewUser,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    // The measurements travel with the frames so the model spends its attention on
+    // what counting pixels cannot see.
+    assert!(user.text.contains("Sfumato already measured"));
+    assert!(user.text.contains("Judge what the measurements cannot"));
+    assert!(user.text.contains("labelled with its timeline position"));
+}
+
+#[test]
+fn the_scene_author_adapts_a_catalog_technique_rather_than_mounting_a_showcase() {
+    // Blocks and components stage into different directories. The prompt used to
+    // derive one path from the item ID, so a real film mounted
+    // `compositions/morph-text.html` for a component that lives under
+    // `compositions/components/`, and the renderer reported a missing
+    // sub-composition after every scene had already been authored.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoHyperframeSceneUser,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    // The item's own markup, so the author can rebuild the technique.
+    assert!(rendered.text.contains("data-composition-id=\"data-chart\""));
+    // These files are showcase documents. Mounting one put "Should I learn to code?"
+    // into a film about fibre optics, and the author then hid it under its own
+    // ground until the renderer rejected the scene for text it could not see.
+    assert!(rendered.text.contains("Never mount one and never copy its copy"));
+    assert!(rendered.text.contains("showcase document, not a component"));
+}
+
+#[test]
+fn the_scene_author_is_told_the_legibility_faults_that_fail_a_render() {
+    // Both are hard renderer errors, not lint advice: a real film failed on a 4.29:1
+    // text run and on two labels that overlapped mid-transition.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoHyperframeSceneSystem,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    // A track holds one clip at a time; a real film failed with two clips on track 3.
+    assert!(rendered.text.contains("A track holds one clip at a time"));
+    for fault in ["4.5:1", "opaque element over text", "share space", "inside its own box"] {
+        assert!(
+            rendered.text.contains(fault),
+            "missing the {fault} rule: {}",
+            rendered.text
+        );
+    }
+    assert!(
+        rendered.text.contains("including mid-transition"),
+        "the overlap has to be checked while things move"
+    );
+}
+
+#[test]
+fn the_video_reviewer_is_told_which_root_its_paths_address() {
+    // The snapshot wraps the plan, so the reviewer wrote `/document/scenes/...` and
+    // every patch was rejected. A real film shipped with its review discarded for
+    // exactly this, twice, including the corrective retry.
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::VideoReviewSystem,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    assert!(rendered.text.contains("never `/document/scenes/0/content`"));
+    assert!(rendered.text.contains("the `/revision` test, which addresses the snapshot"));
 }

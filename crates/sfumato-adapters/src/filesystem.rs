@@ -46,6 +46,12 @@ impl WorkspaceFileSystem for LocalWorkspaceFileSystem {
         )
     }
 
+    fn read_bytes(&self, path: &Path) -> SfumatoResult<Vec<u8>> {
+        workspace_result(
+            fs::read(path).with_context(|| format!("Could not read {}", path.display())),
+        )
+    }
+
     fn create_dir_all(&self, path: &Path) -> SfumatoResult<()> {
         workspace_result(
             fs::create_dir_all(path)

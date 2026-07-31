@@ -203,6 +203,17 @@ impl TextGenerationProvider for CodexAppServerProvider {
         stage: OperationStage,
     ) -> SfumatoResult<TextGenerationResponse> {
         operation.checkpoint(stage)?;
+        if !request.images.is_empty() {
+            // Refused rather than dropped: the App Server protocol carries no
+            // image input, and answering an "is this frame empty?" question from
+            // the prompt text alone would report a verdict nothing looked at.
+            return Err(SfumatoError::config(format_args!(
+                "Model profile '{}' runs on a Codex App Server connector, which accepts text only; \
+                 select an image-capable profile for this step",
+                self.profile.model
+            ))
+            .at_stage(stage));
+        }
         self.generate(&request, operation, stage).await
     }
 }

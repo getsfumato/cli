@@ -180,3 +180,73 @@ async fn connector_resolves_stored_credentials_when_building_a_request() {
         "Bearer resolved-secret"
     );
 }
+
+#[test]
+fn a_text_only_message_still_serialises_as_a_bare_string() {
+    // Several connectors reject the array form for system and tool roles, so text
+    // requests have to keep the exact shape they had before images existed.
+    let message = ChatMessage::from(ModelMessage::System("be brief".to_string()));
+
+    let json = serde_json::to_value(&message).unwrap();
+
+    assert_eq!(json["content"], json!("be brief"));
+}
+
+#[test]
+fn a_message_with_images_carries_each_frame_behind_its_own_label() {
+    let message = ChatMessage::from(ModelMessage::UserWithImages {
+        content: "review these".to_string(),
+        images: vec![
+            ImageAttachment {
+                label: "Frame at 0.00s, scene 1".to_string(),
+                media_type: "image/png".to_string(),
+                data: vec![0x89, 0x50],
+            },
+            ImageAttachment {
+                label: "Frame at 4.00s, scene 2".to_string(),
+                media_type: "image/png".to_string(),
+                data: vec![0xff],
+            },
+        ],
+    });
+
+    let json = serde_json::to_value(&message).unwrap();
+
+    assert_eq!(json["role"], "user");
+    let parts = json["content"].as_array().expect("images need the array form");
+    // Prompt, then label and image for each frame: a model that cannot name the
+    // frame it is describing produces findings nothing can act on.
+    assert_eq!(parts.len(), 5);
+    assert_eq!(parts[0], json!({"type": "text", "text": "review these"}));
+    assert_eq!(
+        parts[1],
+        json!({"type": "text", "text": "Frame at 0.00s, scene 1"})
+    );
+    assert_eq!(
+        parts[2],
+        json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,iVA="}})
+    );
+    assert_eq!(
+        parts[3],
+        json!({"type": "text", "text": "Frame at 4.00s, scene 2"})
+    );
+}
+
+#[test]
+fn an_assistant_reply_in_the_array_form_reads_back_as_text() {
+    // A connector may answer in parts even when it was asked in parts. Reading
+    // only the string form would report an empty response for a real answer.
+    let message: ChatMessage = serde_json::from_value(json!({
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "{\"approved\": true"},
+            {"type": "text", "text": ", \"findings\": []}"},
+        ],
+    }))
+    .unwrap();
+
+    assert_eq!(
+        message.content.as_ref().and_then(MessageContent::text),
+        Some("{\"approved\": true\n, \"findings\": []}".to_string())
+    );
+}

@@ -7,6 +7,9 @@ Managed Hyperframe catalog: {{ catalog }}
 {% endif %}
 Review this plan for factual accuracy, pacing, visual clarity, theme consistency, and grounded artifact use:
 {{ plan_snapshot }}
+{% if retry_present %}
+{% include "shared/review-retry.md.j2" %}
+{% endif %}
 {% if engine == "hyperframe" %}
 Managed catalog rules. `production.catalog_items` may name only IDs from the catalog above, and `artifacts` never carries a catalog ID. Keep or add an ID only when the beat's teaching job matches that item's role — `process` for steps and branches, `quantity` for magnitudes, `code` for source, `emphasis` for typographic stress, `transition` for a scene boundary. Never introduce a `grade` item on a scene: those are whole-film treatments applied once. A block carries the authored runtime shown in parentheses above, so shortening a scene below that runtime cuts off its reveal. Remove a selection the beat does not motivate, because an unmotivated element is worse than none. A patch that names an unknown ID or puts a `grade` item on a scene is rejected whole, so every other correction it carried is lost with it.
 {% endif %}

@@ -102,6 +102,24 @@ impl From<TextGenerationLimitError> for SfumatoError {
     }
 }
 
+/// One image handed to a text model alongside its prompt.
+///
+/// Carries bytes rather than a path: the core reads files through its workspace
+/// port and the encoding a connector needs — a data URI, a base64 block — is an
+/// infrastructure detail that belongs in the adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageAttachment {
+    /// What the image shows, so a model can tell one attachment from another.
+    ///
+    /// Sent as text immediately before the image, because no provider carries a
+    /// caption field and an unlabelled sequence of frames is unreadable.
+    pub label: String,
+    /// IANA media type, such as `image/png`.
+    pub media_type: String,
+    /// Raw encoded image bytes.
+    pub data: Vec<u8>,
+}
+
 #[derive(Clone)]
 pub struct TextGenerationRequest {
     pub system_prompt: String,
@@ -114,6 +132,12 @@ pub struct TextGenerationRequest {
     pub tool_exhausted_prompt: Option<String>,
     /// Template provenance used to construct this request.
     pub prompt_provenance: Vec<PromptProvenance>,
+    /// Images the model must look at to answer, attached to the first user turn.
+    ///
+    /// Empty for every text-only request, which keeps connectors that cannot
+    /// accept images working exactly as before; a connector that cannot must
+    /// reject a non-empty list rather than answer about images it never saw.
+    pub images: Vec<ImageAttachment>,
 }
 
 impl TextGenerationRequest {
@@ -127,6 +151,7 @@ impl TextGenerationRequest {
             max_tool_rounds: 8,
             tool_exhausted_prompt: None,
             prompt_provenance: Vec::new(),
+            images: Vec::new(),
         }
     }
 
@@ -195,6 +220,17 @@ pub enum TextGenerationEvent {
         attempt: usize,
         error: String,
     },
+    /// A generated source failed validation and is about to be repaired.
+    ///
+    /// Carries the reason because a repair that reports only that it happened
+    /// leaves nothing to diagnose: the validation message is the whole signal, and
+    /// it is otherwise visible only inside the repair prompt.
+    SourceRepairStarted {
+        /// What the validator or renderer objected to.
+        reason: String,
+        /// The scene being re-authored, when the failure named one.
+        scene: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,6 +251,8 @@ pub enum GenerationStage {
     VideoReview,
     VideoAuthoring,
     VideoRepair,
+    /// An image-capable model inspecting rendered frames.
+    VideoVisualReview,
     VideoRendering,
     DocumentDraft,
     DocumentValidationRepair,
@@ -244,6 +282,7 @@ impl GenerationStage {
             Self::VideoReview => "reviewing video plan",
             Self::VideoAuthoring => "authoring video source",
             Self::VideoRepair => "repairing video source",
+            Self::VideoVisualReview => "reviewing rendered frames",
             Self::VideoRendering => "rendering video",
             Self::DocumentDraft => "drafting document",
             Self::DocumentValidationRepair => "repairing document structure",
@@ -322,6 +361,17 @@ pub enum ModelMessage {
     System(String),
     /// User instruction or follow-up.
     User(String),
+    /// User instruction the model must read alongside images.
+    ///
+    /// Distinct from `User` so a connector without image support fails loudly on
+    /// exactly the turn it cannot represent, instead of silently dropping the
+    /// evidence and answering from the text alone.
+    UserWithImages {
+        /// The instruction itself.
+        content: String,
+        /// Images the model must look at, in the order they are presented.
+        images: Vec<ImageAttachment>,
+    },
     /// Assistant response, including any requested tools.
     Assistant {
         /// Optional assistant text.
@@ -398,7 +448,14 @@ impl TextGenerationProvider for AgentRunner {
         operation.checkpoint(stage)?;
         let mut messages = vec![
             ModelMessage::System(request.system_prompt.clone()),
-            ModelMessage::User(request.user_prompt.clone()),
+            if request.images.is_empty() {
+                ModelMessage::User(request.user_prompt.clone())
+            } else {
+                ModelMessage::UserWithImages {
+                    content: request.user_prompt.clone(),
+                    images: request.images.clone(),
+                }
+            },
         ];
 
         for round in 0..request.max_tool_rounds {

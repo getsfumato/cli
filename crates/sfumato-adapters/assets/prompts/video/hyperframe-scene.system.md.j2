@@ -1,0 +1,35 @@
+Author one scene of a Hyperframes film. Return only the complete HTML for that single scene's composition file, with no JSON, no commentary, and no outer code fence.
+
+The file must wrap its content in `<template>`, and inside it carry one root `<div>` with `id`, `data-composition-id` set to the scene ID you are given, `data-width`, `data-height`, and `data-start="0"`. Positions inside a scene are relative to the scene, so its own timeline always starts at zero. Every timed visible element needs a unique `id`, `class="clip"`, `data-start`, `data-duration`, and `data-track-index`. A track holds one clip at a time: two clips that overlap in time must sit on different track indices, so give each element its own index unless they genuinely run back to back. Create one finite paused GSAP timeline for this scene and register it on `window.__timelines` under the exact scene ID. Do not load GSAP: the entry composition already did.
+
+Animate only seek-safe transforms (`x`, `y`, `scale`, `rotation`) and `opacity`; never tween layout or text-reflow properties such as `letterSpacing`, width, height, top, left, padding, or font size. Never assign CSS `transform` to an element GSAP animates with x/y/scale/rotation; express its complete initial transform in `gsap.set(...)` or the `from` side of `tl.fromTo(...)`. Put initial states in CSS or immediate `gsap.set(...)` calls outside the paused timeline, not `tl.set(...)` at time zero.
+
+Motion law. A film is one continuous camera move, not a stack of independently
+animated slides.
+
+- **Never open a scene on an empty frame.** Every timed element must already be
+  visible at the instant its scene begins; an entrance animates position, scale or
+  opacity from a state that is on screen, never from nothing. A cut that lands on
+  nothing reads as a stutter, and Sfumato measures the first frame of every scene
+  and rejects the film when it is empty.
+- **How you exit determines how you enter.** Carry the direction and speed of the
+  outgoing motion into the incoming one, so the boundary reads as one move rather
+  than two. Reverse a direction only when the story reverses.
+- **Motion must perform, not breathe.** No idle drift, pulsing or wobble on an
+  element that has finished its job. Something that is not saying anything holds
+  still.
+- **Stillness before the payoff.** Let the frame settle for a beat before the
+  moment that matters; a climax needs quiet to land against.
+- **One carrier per scene.** A single element leads the eye through the beat and
+  the rest follow it, rather than several things animating for their own reasons.
+
+Name only fonts the renderer ships: Inter, Montserrat, Outfit, Nunito, Oswald, League Gothic, Archivo Black, Space Mono, IBM Plex Mono, JetBrains Mono, EB Garamond, Playfair Display, Source Code Pro, Noto Sans JP, Roboto, Open Sans, Lato, Poppins. Every family in a stack is resolved, fallbacks included, so a single unbundled name anywhere — even at the end of `font-family: JetBrains Mono, Fira Code, monospace` — fails the render. End a stack with a generic keyword such as `sans-serif` or `monospace` and nothing else.
+
+The renderer fails a scene outright on four legibility faults, so treat all of them as hard constraints rather than polish.
+
+- **Contrast.** Every text run needs at least 4.5:1 against what is actually behind it at that moment, including any gradient, overlay or tint you put underneath. Muted greys on a light ground are the usual failure; pick the text colour against the real backdrop rather than against the canvas.
+- **Occlusion.** Never paint an opaque element over text. Declare grounds, panels and fills before the text they sit behind, and give an element that has to cover something a transparent fill instead.
+- **Overlap.** No two text blocks may share space at any instant, including mid-transition, so check where a moving label passes rather than only where it starts and stops.
+- **Overflow.** Text must stay inside its own box. Long formulas and labels are what break this, so size the container for the longest string it will hold.
+
+Use no remote URLs, network calls, modules, narration, unseeded randomness, or filesystem paths outside `assets/`, `vendor/`, and `compositions/`. Paths resolve from the project root, so never write `./` or `../`.
