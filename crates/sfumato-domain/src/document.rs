@@ -187,7 +187,8 @@ impl SectionedDocument {
                 "a document must carry exactly one level-1 heading".to_owned(),
             ));
         }
-        let title = clean_heading(body[title_heading.start..title_heading.end].trim_start_matches('#'));
+        let title =
+            clean_heading(body[title_heading.start..title_heading.end].trim_start_matches('#'));
 
         let section_headings = &headings[1..];
         let preamble_end = section_headings
@@ -203,7 +204,10 @@ impl SectionedDocument {
                 .map_or(body.len(), |next| next.start);
             let id = SectionId(format!("section-{}", index + 1));
             order.push(id.clone());
-            sections.insert(id, section_from_markdown(body[heading.start..end].trim().to_owned()));
+            sections.insert(
+                id,
+                section_from_markdown(body[heading.start..end].trim().to_owned()),
+            );
         }
 
         let mut document = Self {
@@ -415,7 +419,9 @@ impl SectionedDocument {
                     if let Some(id) = added_section_path(path) {
                         self.require_existing_tested_section(id, &tested_sections)?;
                     } else if !is_order_path(path, false) && path != "/subtitle" {
-                        return invalid_patch(format!("reviewer cannot remove content at `{path}`"));
+                        return invalid_patch(format!(
+                            "reviewer cannot remove content at `{path}`"
+                        ));
                     }
                 }
                 PatchOperation::Move(operation) => {
@@ -479,7 +485,11 @@ impl SectionedDocument {
         if self.title.trim().is_empty() {
             return invalid_document("document title cannot be empty".into());
         }
-        if self.subtitle.as_ref().is_some_and(|value| value.trim().is_empty()) {
+        if self
+            .subtitle
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
             return invalid_document(
                 "document subtitle must carry text or be absent entirely".into(),
             );
@@ -498,7 +508,11 @@ impl SectionedDocument {
                 "document order and section map do not contain the same sections".into(),
             );
         }
-        if self.order.first().is_some_and(|id| self.sections[id].level != 2) {
+        if self
+            .order
+            .first()
+            .is_some_and(|id| self.sections[id].level != 2)
+        {
             return invalid_document(
                 "the first section must be a level-2 heading so the outline has a root".into(),
             );
@@ -531,9 +545,7 @@ impl SectionedDocument {
             }
             let expected = section_from_markdown(section.markdown.trim().to_owned());
             if section != &expected {
-                return invalid_document(format!(
-                    "section `{id}` contains stale derived metadata"
-                ));
+                return invalid_document(format!("section `{id}` contains stale derived metadata"));
             }
             previous_level = section.level;
         }
@@ -824,7 +836,10 @@ fn summarize_elements(markdown: &str) -> Vec<SectionElement> {
     if list_items > 0 {
         elements.push(SectionElement::List { items: list_items });
     }
-    if markdown.lines().any(|line| line.trim_start().starts_with("> ")) {
+    if markdown
+        .lines()
+        .any(|line| line.trim_start().starts_with("> "))
+    {
         elements.push(SectionElement::Quote);
     }
     if markdown

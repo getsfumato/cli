@@ -159,7 +159,9 @@ pub(crate) fn validate_fenced_code_blocks(markdown: &str, node: &str) -> Result<
         } else {
             language
         };
-        return Err(format!("`{node}` has an unclosed `{kind}` fenced code block"));
+        return Err(format!(
+            "`{node}` has an unclosed `{kind}` fenced code block"
+        ));
     }
     Ok(())
 }

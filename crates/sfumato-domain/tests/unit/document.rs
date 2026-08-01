@@ -60,8 +60,9 @@ fn a_second_level_one_heading_is_rejected() {
 fn a_heading_level_that_skips_a_rank_is_rejected() {
     // An outline that jumps from 2 to 4 renders a table of contents missing a
     // rank, which reads as a bug in the document rather than in the source.
-    let error = SectionedDocument::from_markdown("# Title\n\n## Two\n\nBody.\n\n#### Four\n\nBody.\n")
-        .expect_err("a skipped level is invalid");
+    let error =
+        SectionedDocument::from_markdown("# Title\n\n## Two\n\nBody.\n\n#### Four\n\nBody.\n")
+            .expect_err("a skipped level is invalid");
 
     assert!(format!("{error}").contains("jumps from level 2"), "{error}");
 }
@@ -77,10 +78,14 @@ fn a_document_that_opens_below_level_two_is_rejected() {
 #[test]
 fn frontmatter_may_only_declare_a_subtitle() {
     // Guards against Marp directives leaking over from the deck prompts.
-    let error = SectionedDocument::from_markdown("---\nmarp: true\n---\n\n# Title\n\n## S\n\nBody.\n")
-        .expect_err("only subtitle is allowed");
+    let error =
+        SectionedDocument::from_markdown("---\nmarp: true\n---\n\n# Title\n\n## S\n\nBody.\n")
+            .expect_err("only subtitle is allowed");
 
-    assert!(format!("{error}").contains("only declare `subtitle`"), "{error}");
+    assert!(
+        format!("{error}").contains("only declare `subtitle`"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -146,7 +151,12 @@ fn a_valid_patch_replaces_a_section_and_refreshes_derived_metadata() {
     let mut document = sample();
     let revision = document.revision().as_str().to_owned();
     let section = SectionId::new("section-1").unwrap();
-    let section_revision = document.section(&section).unwrap().revision.as_str().to_owned();
+    let section_revision = document
+        .section(&section)
+        .unwrap()
+        .revision
+        .as_str()
+        .to_owned();
     let patch = parse_json_patch(&format!(
         r#"[{{"op":"test","path":"/revision","value":"{revision}"}},{{"op":"test","path":"/sections/section-1/revision","value":"{section_revision}"}},{{"op":"replace","path":"/sections/section-1/markdown","value":"\n## Primero corregido\n\n- punto uno\n- punto dos"}}]"#
     ))
@@ -190,7 +200,10 @@ fn a_patch_that_gutted_the_document_is_rejected() {
         .apply_patch(&patch)
         .expect_err("a gutting patch is rejected");
 
-    assert!(format!("{error}").contains("would reduce the document"), "{error}");
+    assert!(
+        format!("{error}").contains("would reduce the document"),
+        "{error}"
+    );
 }
 
 #[test]

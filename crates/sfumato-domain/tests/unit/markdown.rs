@@ -8,7 +8,11 @@ fn a_separator_inside_fenced_code_is_not_a_top_level_fence() {
 
     let located = fences(markdown);
 
-    assert_eq!(located.len(), 2, "only the frontmatter delimiters are fences");
+    assert_eq!(
+        located.len(),
+        2,
+        "only the frontmatter delimiters are fences"
+    );
 }
 
 #[test]
