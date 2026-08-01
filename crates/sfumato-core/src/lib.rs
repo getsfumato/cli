@@ -35,6 +35,8 @@ pub mod prompts;
 /// Text and image model ports plus the provider-neutral agent runner.
 #[allow(missing_docs)]
 pub mod providers;
+/// Managed Python environments and disposable execution of generated code.
+pub mod python;
 pub mod renderers;
 pub mod repositories;
 /// Resource-specific application workflows.

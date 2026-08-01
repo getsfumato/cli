@@ -38,6 +38,7 @@ use crate::{
         ConnectorCapabilities, ConnectorIntrospection, ConnectorModelSummary, ConnectorStatus,
         ProviderFactory, TextGenerationEvent,
     },
+    python::PythonRuntime,
     renderers::{
         DiagramRenderer, DocumentAssembler, DocumentRenderer, PageAssembler, PageInspector,
         RendererManager, RendererStatus, SlideRenderer, VideoRenderer,
@@ -228,6 +229,8 @@ pub struct SfumatoApplicationDependencies {
     pub video_renderer: Arc<dyn VideoRenderer>,
     /// Explicit optional-renderer lifecycle.
     pub renderer_manager: Arc<dyn RendererManager>,
+    /// Managed Python environments for generated code.
+    pub python_runtime: Arc<dyn PythonRuntime>,
     /// Offline page plugin catalog.
     pub page_plugins: Arc<dyn PagePluginCatalog>,
     /// Supported-plugin metadata and public-CDN materializer.
@@ -276,6 +279,7 @@ pub struct SfumatoApplication {
     document_renderer: Arc<dyn DocumentRenderer>,
     video_renderer: Arc<dyn VideoRenderer>,
     renderer_manager: Arc<dyn RendererManager>,
+    python_runtime: Arc<dyn PythonRuntime>,
     page_plugins: Arc<dyn PagePluginCatalog>,
     page_plugin_source: Arc<dyn PagePluginSource>,
     templates: Arc<dyn GenerationTemplateCatalog>,
@@ -362,6 +366,7 @@ impl SfumatoApplication {
             document_renderer,
             video_renderer,
             renderer_manager,
+            python_runtime,
             page_plugins,
             page_plugin_source,
             templates,
@@ -392,6 +397,7 @@ impl SfumatoApplication {
             document_renderer,
             video_renderer,
             renderer_manager,
+            python_runtime,
             page_plugins,
             page_plugin_source,
             templates,
@@ -443,6 +449,7 @@ impl SfumatoApplication {
                 slide_renderer: Arc::clone(&self.slides),
                 source_reader: Arc::clone(&self.sources),
                 tool_factory: Arc::clone(&self.tools),
+                python_runtime: Arc::clone(&self.python_runtime),
                 theme_repository: Arc::clone(&self.themes),
                 workspace: Arc::clone(&self.workspace),
             },
@@ -488,6 +495,7 @@ impl SfumatoApplication {
                 document_renderer: Arc::clone(&self.document_renderer),
                 source_reader: Arc::clone(&self.sources),
                 tool_factory: Arc::clone(&self.tools),
+                python_runtime: Arc::clone(&self.python_runtime),
                 theme_repository: Arc::clone(&self.themes),
                 workspace: Arc::clone(&self.workspace),
                 project_asset_catalog: Arc::clone(&self.project_assets),
@@ -539,6 +547,7 @@ impl SfumatoApplication {
                 provider_factory: Arc::clone(&self.providers),
                 source_reader: Arc::clone(&self.sources),
                 tool_factory: Arc::clone(&self.tools),
+                python_runtime: Arc::clone(&self.python_runtime),
                 theme_repository: Arc::clone(&self.themes),
                 plugin_catalog: Arc::clone(&self.page_plugins),
                 page_assembler: Arc::clone(&self.page_assembler),
@@ -577,6 +586,7 @@ impl SfumatoApplication {
                 provider_factory: Arc::clone(&self.providers),
                 source_reader: Arc::clone(&self.sources),
                 tool_factory: Arc::clone(&self.tools),
+                python_runtime: Arc::clone(&self.python_runtime),
                 theme_repository: Arc::clone(&self.themes),
                 video_renderer: Arc::clone(&self.video_renderer),
                 workspace: Arc::clone(&self.workspace),
@@ -653,7 +663,9 @@ impl SfumatoApplication {
             .map(|tool| GenerationToolStatus {
                 tool,
                 enabled: effective.generation_tool_enabled(tool),
-                model_configured: effective.resolve_model(tool.capability()).is_ok(),
+                model_configured: tool
+                    .capability()
+                    .is_none_or(|capability| effective.resolve_model(capability).is_ok()),
             })
             .collect())
     }

@@ -47,7 +47,8 @@ video_gen = false
 audio_gen = true
 
 [security]
-allow_manim = false
+allow_python = false
+python_packages = []
 
 [marp]
 pdf = true
@@ -66,9 +67,17 @@ Command `--tool` and `--disable-tool` overrides win over project defaults. With
 no explicit value, a tool is enabled when its capability has a configured model
 default, except `video_gen`, which stays opt-in because it spends a remote render.
 
-`security.allow_manim` is a persistent opt-in to executing generated Python.
-The one-command alternative is `generate video --engine manim
---allow-code-execution`. It is an authorization boundary, not a strong sandbox.
+`security.allow_python` is a persistent opt-in to executing generated Python. It
+covers every workflow that runs code Sfumato wrote: the Manim video engine and
+the `chart_gen` tool. Projects written before the setting was renamed still say
+`allow_manim`, which is read as the same consent. The one-command alternative is
+`generate video --engine manim --allow-code-execution`. It is an authorization
+boundary, not a strong sandbox.
+
+`security.python_packages` lists requirements a project permits on top of the
+pinned base environments, matched by package name so a pin does not have to be
+repeated. It is empty by default: layering a package installs it from an index
+during generation, which is the project's decision rather than the model's.
 
 ## Model Options
 
@@ -123,7 +132,7 @@ Schema v4 project `plugins` are classified during migration. `shadcn` and
 `materialui` become the exclusive `page.ui` selection, with the last legacy UI
 entry winning; `react` and `react-dom` remain internal dependencies; other
 entries become `page.plugins`. Empty `generation_tools` and
-`security.allow_manim = false` are added. Global and registry documents retain
+`security.allow_python = false` are added. Global and registry documents retain
 their existing values and receive schema version 5.
 
 Versions 1 through 3, a missing version, and future versions fail without

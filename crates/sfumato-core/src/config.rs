@@ -220,11 +220,18 @@ pub enum GenerationToolKind {
     VideoGen,
     /// Speak text aloud and return a local audio artifact with word timings.
     AudioGen,
+    /// Plot data locally with matplotlib and return a local image path.
+    ChartGen,
 }
 
 impl GenerationToolKind {
     /// Every tool, in presentation order.
-    pub const ALL: [Self; 3] = [Self::ImageGen, Self::VideoGen, Self::AudioGen];
+    pub const ALL: [Self; 4] = [
+        Self::ImageGen,
+        Self::VideoGen,
+        Self::AudioGen,
+        Self::ChartGen,
+    ];
 
     /// Stable CLI and configuration identifier.
     pub const fn as_str(self) -> &'static str {
@@ -232,15 +239,21 @@ impl GenerationToolKind {
             Self::ImageGen => "image-gen",
             Self::VideoGen => "video-gen",
             Self::AudioGen => "audio-gen",
+            Self::ChartGen => "chart-gen",
         }
     }
 
-    /// Model capability required by the tool.
-    pub const fn capability(self) -> Capability {
+    /// Model capability required by the tool, when it needs a model at all.
+    ///
+    /// Charting has none: the drafting model writes the plotting code itself and
+    /// Sfumato runs it locally, so there is no second model to configure and no
+    /// capability whose absence should report the tool as unavailable.
+    pub const fn capability(self) -> Option<Capability> {
         match self {
-            Self::ImageGen => Capability::Image,
-            Self::VideoGen => Capability::Video,
-            Self::AudioGen => Capability::Speech,
+            Self::ImageGen => Some(Capability::Image),
+            Self::VideoGen => Some(Capability::Video),
+            Self::AudioGen => Some(Capability::Speech),
+            Self::ChartGen => None,
         }
     }
 }
@@ -253,9 +266,10 @@ impl FromStr for GenerationToolKind {
             "image-gen" | "image_gen" => Ok(Self::ImageGen),
             "video-gen" | "video_gen" => Ok(Self::VideoGen),
             "audio-gen" | "audio_gen" => Ok(Self::AudioGen),
-            _ => {
-                bail!("Unknown generation tool '{value}'. Use image-gen, video-gen, or audio-gen.")
-            }
+            "chart-gen" | "chart_gen" => Ok(Self::ChartGen),
+            _ => bail!(
+                "Unknown generation tool '{value}'. Use image-gen, video-gen, audio-gen, or chart-gen."
+            ),
         }
     }
 }
@@ -268,9 +282,50 @@ pub struct GenerationToolDefaults(pub BTreeMap<GenerationToolKind, bool>);
 /// Project trust settings for generated-code renderers.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProjectSecurityConfig {
-    /// Whether generated Manim Python may execute without a command override.
+    /// Whether generated Python may execute without a command override.
+    ///
+    /// Reads `allow_manim` too: Manim was the only generated-Python workflow when
+    /// the setting was named, and a project that already consented to executing
+    /// generated Python should not be asked again because a second workflow
+    /// started using the same runtime.
+    #[serde(default, alias = "allow_manim")]
+    pub allow_python: bool,
+    /// Requirements a project permits on top of the pinned base environments.
+    ///
+    /// Empty by default: layering a package means installing it from an index at
+    /// generation time, which is a decision a project makes explicitly rather
+    /// than one a model makes for it mid-draft.
     #[serde(default)]
-    pub allow_manim: bool,
+    pub python_packages: Vec<String>,
+}
+
+impl ProjectSecurityConfig {
+    /// Rejects an extra requirement the project has not permitted.
+    ///
+    /// Matching is on the package name, so a project that allows `scipy` accepts
+    /// whichever pin the caller asks for rather than having to enumerate every
+    /// version it might want.
+    pub fn authorize_python_package(&self, requirement: &str) -> Result<()> {
+        crate::python::validate_requirement(requirement)?;
+        let name = |value: &str| {
+            value
+                .split_once("==")
+                .map_or(value, |(name, _)| name)
+                .trim()
+                .to_ascii_lowercase()
+        };
+        let requested = name(requirement);
+        if self
+            .python_packages
+            .iter()
+            .any(|allowed| name(allowed) == requested)
+        {
+            return Ok(());
+        }
+        Err(SfumatoError::validation(format!(
+            "Python package '{requested}' is not permitted. Add it to security.python_packages to allow it."
+        )))
+    }
 }
 
 impl ModelOptions {
@@ -865,6 +920,12 @@ impl ProjectConfig {
         for tool in self.generation_tools.0.keys() {
             let _ = tool.capability();
         }
+        // Caught here rather than at install time: a malformed requirement in the
+        // allowlist is a typo in the project's own trust decision, and reporting
+        // it while editing the config beats reporting it mid-generation.
+        for requirement in &self.security.python_packages {
+            crate::python::validate_requirement(requirement)?;
+        }
         Ok(())
     }
 }
@@ -1019,6 +1080,11 @@ impl EffectiveConfig {
                         self.model_defaults.contains_key(&Capability::Speech)
                     }
                     GenerationToolKind::VideoGen => false,
+                    // Charting needs no model profile, only the project's consent
+                    // to run generated Python, which the workflows check
+                    // separately. Defaulting it on would run code a project never
+                    // agreed to execute.
+                    GenerationToolKind::ChartGen => false,
                 }
             })
     }

@@ -1,0 +1,22 @@
+Author one scene of a Manim Community film. Return only the complete Python module for that single scene, with no JSON, no commentary, and no outer code fence.
+
+The module must define exactly one class, named exactly as you are told, subclassing `Scene`, with a `construct(self)` method. Import from `manim` and use `numpy` and the standard `math` module; import nothing else. Do not touch `config`, do not call `add_sound`, do not guard with `if __name__`, and do not read or write files: Sfumato owns the canvas, the frame rate, the narration mix, and the output path, and a scene that sets one of them silently disagrees with the film it is part of.
+
+Manim is chosen when a picture has to be *correct*, not merely illustrative, so prefer the objects that compute: `Axes` and `ThreeDAxes` with `plot`, `plot_parametric_curve` and `plot_surface` over hand-placed shapes, `MathTex` over `Text` for anything mathematical, and real coordinates over eyeballed positions. Write the mathematics as mathematics — a transform, a region of convergence, a pole — and let Manim draw it.
+
+Fill the scene's whole window. The runtime of `construct` is the length of the beat: every `self.play(...)` consumes its `run_time` and every `self.wait(...)` consumes its argument, and those must add up to the duration you are given. Finish short and the film cuts away mid-thought; finish long and the scene runs over the narration that follows it. End with a `self.wait(...)` that holds the final picture rather than cutting on the last frame of an animation.
+
+Everything inside `MathTex` and `Tex` goes to LaTeX, which reads macros rather than symbols: write `\sigma`, `\omega`, `\ge`, `\to`, never a literal `σ`, `ω`, `≥` or `∈`. Accented prose is fine inside `\text{...}`, and a `Text` mobject is drawn with a font rather than LaTeX, so Unicode belongs there. This is the single most common way a scene written in Spanish fails to render.
+
+Animations are typed. `TransformMatchingTex` reads `tex_string` off both sides, so both must be `MathTex` or `Tex`; pairing it with a `Text` raises at render. Use `TransformMatchingShapes` to morph between different kinds of mobject, `ReplacementTransform` when one thing becomes another, and `Write`/`FadeIn` to introduce. Sfumato executes every scene before rendering the film, so a mismatch like that is caught and sent back to you rather than silently dropped — but it costs an attempt.
+
+Legibility is a hard constraint, not polish.
+
+- **Nothing may leave the frame.** The default camera spans x in [-7.1, 7.1] and y in [-4.0, 4.0]. Size and position every mobject against those bounds, and scale a long `MathTex` down or break it across lines rather than letting it run off the edge. A formula is the widest thing in a scene and the usual cause of an overflow.
+- **Nothing may overlap.** Use `next_to`, `to_edge`, `arrange` and `VGroup` to place things relative to each other instead of guessing absolute coordinates, and clear the old mobject with `FadeOut`, `Transform` or `ReplacementTransform` before the new one lands in the same place.
+- **Contrast.** The background is dark. Use light strokes and fills, and reserve the accent colour for the one thing the beat is about.
+- **One idea per beat.** A scene that puts four equations on screen teaches none of them. Reveal in steps, and let each step hold long enough to be read.
+
+Keep the bottom eighth of the frame clear: Sfumato burns captions from the recorded narration into that band, so anything you place there is covered. Never write the spoken sentence on screen as text — the captions already carry it, and a written copy is duplicate text.
+
+Use no network calls, no subprocesses, no environment access, no unseeded randomness, and no filesystem paths.

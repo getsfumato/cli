@@ -111,10 +111,10 @@ pub enum PromptId {
     VideoHyperframeSceneSystem,
     /// User prompt for authoring one Hyperframe scene composition.
     VideoHyperframeSceneUser,
-    /// System prompt for authoring a Manim scene.
-    VideoManimSystem,
-    /// User prompt for authoring a Manim scene.
-    VideoManimUser,
+    /// System prompt for authoring one Manim scene module.
+    VideoManimSceneSystem,
+    /// User prompt for authoring one Manim scene module.
+    VideoManimSceneUser,
     /// System prompt for inspecting rendered snapshots with an image model.
     VideoVisualReviewSystem,
     /// User prompt for inspecting rendered snapshots with an image model.
@@ -208,8 +208,8 @@ impl PromptId {
             Self::VideoReviewUser,
             Self::VideoHyperframeSceneSystem,
             Self::VideoHyperframeSceneUser,
-            Self::VideoManimSystem,
-            Self::VideoManimUser,
+            Self::VideoManimSceneSystem,
+            Self::VideoManimSceneUser,
             Self::VideoVisualReviewSystem,
             Self::VideoVisualReviewUser,
             Self::VideoSourceRepairSystem,
@@ -283,8 +283,8 @@ impl PromptId {
             Self::VideoReviewUser => "video.review.user",
             Self::VideoHyperframeSceneSystem => "video.hyperframe-scene.system",
             Self::VideoHyperframeSceneUser => "video.hyperframe-scene.user",
-            Self::VideoManimSystem => "video.manim.system",
-            Self::VideoManimUser => "video.manim.user",
+            Self::VideoManimSceneSystem => "video.manim-scene.system",
+            Self::VideoManimSceneUser => "video.manim-scene.user",
             Self::VideoVisualReviewSystem => "video.visual-review.system",
             Self::VideoVisualReviewUser => "video.visual-review.user",
             Self::VideoSourceRepairSystem => "video.source-repair.system",

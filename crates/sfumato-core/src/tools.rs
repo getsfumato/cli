@@ -6,13 +6,14 @@ use std::{
 };
 
 use crate::{
-    config::{SpeechModelOptions, VideoModelOptions},
+    config::{ProjectSecurityConfig, SpeechModelOptions, VideoModelOptions},
     errors::{SfumatoError, SfumatoResult},
     prompts::{PromptCatalog, PromptProvenance},
     providers::{
         ImageGenerationProvider, SpeechGenerationProvider, ToolDefinition, ToolExecutor,
         VideoGenerationProvider,
     },
+    python::PythonRuntime,
     themes::ThemePackage,
 };
 
@@ -100,6 +101,58 @@ pub struct AudioToolConfig {
     pub options: SpeechModelOptions,
 }
 
+/// Optional local charting stage exposed to a text model as a tool.
+///
+/// Unlike the other stages this one has no provider: the drafting model writes
+/// the plotting code itself and Sfumato runs it in a managed environment, so a
+/// chart is reproducible from the code that made it and costs no remote call.
+pub struct ChartToolConfig {
+    /// Managed Python environments used to run the generated plotting code.
+    pub python: Arc<dyn PythonRuntime>,
+    /// Transaction staging directory for rendered charts.
+    pub output_dir: PathBuf,
+    /// Relative artifact directory returned to the text model.
+    pub reference_prefix: String,
+    /// Resolved project theme, applied to the figure before the code runs.
+    pub theme: ThemePackage,
+    /// Optional project-local instructions.
+    pub project_instructions: Option<String>,
+    /// Project trust decisions gating extra requirements.
+    pub security: ProjectSecurityConfig,
+}
+
+impl ChartToolConfig {
+    /// Builds the charting stage when the project both enables and permits it.
+    ///
+    /// Both conditions are checked here rather than at each call site: enabling
+    /// the tool is a preference, consenting to run generated Python is a trust
+    /// decision, and a workflow that remembered only one of them would either
+    /// execute code without permission or silently drop a tool the project asked
+    /// for. Returning `None` leaves the tool off the model's list entirely, which
+    /// is the honest signal that it is unavailable.
+    pub fn enable(
+        config: &crate::config::EffectiveConfig,
+        python: Arc<dyn PythonRuntime>,
+        output_dir: PathBuf,
+        reference_prefix: &str,
+        theme: &ThemePackage,
+        project_instructions: Option<String>,
+    ) -> Option<Self> {
+        let enabled = config.generation_tool_enabled(crate::config::GenerationToolKind::ChartGen);
+        if !enabled || !config.security.allow_python {
+            return None;
+        }
+        Some(Self {
+            python,
+            output_dir,
+            reference_prefix: reference_prefix.to_string(),
+            theme: theme.clone(),
+            project_instructions,
+            security: config.security.clone(),
+        })
+    }
+}
+
 /// Inputs required to construct one operation-scoped tool set.
 pub struct GenerationToolsRequest {
     /// Project working directory allowed to filesystem tools.
@@ -112,6 +165,8 @@ pub struct GenerationToolsRequest {
     pub video: Option<VideoToolConfig>,
     /// Optional speech-synthesis tool.
     pub audio: Option<AudioToolConfig>,
+    /// Optional local charting tool.
+    pub chart: Option<ChartToolConfig>,
     /// Catalog used for model-visible tool descriptions and image prompts.
     pub prompt_catalog: Arc<dyn PromptCatalog>,
 }

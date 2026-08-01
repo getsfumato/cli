@@ -88,7 +88,10 @@ fn the_bundled_catalog_manifest_is_internally_consistent() {
 fn catalog_items_map_to_the_paths_the_renderer_writes() {
     // Guards the copy step: a wrong path silently stages nothing and the
     // generated composition then references a file that is not there.
-    let renderers = ManagedVideoRenderers::new(PathBuf::from("/managed"));
+    let renderers = ManagedVideoRenderers::new(
+        PathBuf::from("/managed"),
+        std::sync::Arc::new(UvPythonRuntime::new(PathBuf::from("/managed-python"))),
+    );
     let catalog = ManagedVideoRenderers::parse_catalog().unwrap();
     let block = catalog
         .items()
@@ -320,7 +323,10 @@ fn the_manifest_pins_the_document_renderer() {
 fn the_document_renderer_installs_under_its_own_managed_prefix() {
     // A shared prefix would let one renderer's dependency tree overwrite
     // another's, which is how a pinned version silently stops being pinned.
-    let renderers = ManagedVideoRenderers::new(PathBuf::from("/managed"));
+    let renderers = ManagedVideoRenderers::new(
+        PathBuf::from("/managed"),
+        std::sync::Arc::new(UvPythonRuntime::new(PathBuf::from("/managed-python"))),
+    );
 
     assert_eq!(
         renderers.pagedjs_executable(),
@@ -509,5 +515,283 @@ fn a_failed_render_reports_its_errors_rather_than_its_advice() {
     assert!(
         !message.contains("composition_self_attribute_selector"),
         "the advice is dropped: {message}"
+    );
+}
+
+/// Runs ffmpeg for a fixture, failing the test with its own diagnostics.
+#[cfg(feature = "real-renderers")]
+async fn ffmpeg_fixture(arguments: &[&str]) {
+    let mut command = Command::new("ffmpeg");
+    command
+        .arg("-y")
+        .args(arguments)
+        .args(["-loglevel", "error"]);
+    let output = command.output().await.expect("ffmpeg should run");
+    assert!(
+        output.status.success(),
+        "fixture ffmpeg failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(feature = "real-renderers")]
+async fn probe_seconds(path: &Path) -> f64 {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .await
+        .expect("ffprobe should run");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("ffprobe reports a duration")
+}
+
+/// Six seconds of video, two 1.5s narration clips at 0s and 3s, one overlay.
+///
+/// The narration deliberately stops at 4.5s while the picture runs to 6s, which
+/// is the ordinary shape of a film whose last beat holds after the voice stops.
+#[cfg(feature = "real-renderers")]
+async fn mux_fixture(root: &Path) -> ManimManifest {
+    std::fs::create_dir_all(root.join("assets/audio")).expect("fixture directories");
+    ffmpeg_fixture(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=navy:s=320x180:d=6:r=24",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        root.join("silent.mp4").to_str().unwrap(),
+    ])
+    .await;
+    for (name, frequency) in [("a.m4a", 440), ("b.m4a", 660)] {
+        ffmpeg_fixture(&[
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("sine=frequency={frequency}:duration=1.5"),
+            "-c:a",
+            "aac",
+            root.join("assets/audio").join(name).to_str().unwrap(),
+        ])
+        .await;
+    }
+    ManimManifest {
+        scenes: Vec::new(),
+        audio: vec![
+            ManimAudioEntry {
+                reference: "assets/audio/a.m4a".into(),
+                start_seconds: 0.0,
+            },
+            ManimAudioEntry {
+                reference: "assets/audio/b.m4a".into(),
+                start_seconds: 3.0,
+            },
+        ],
+        captions: None,
+    }
+}
+
+#[cfg(feature = "real-renderers")]
+#[tokio::test]
+async fn narration_that_ends_before_the_picture_does_not_truncate_the_film() {
+    let temp = tempfile::tempdir().expect("temporary root");
+    let root = temp.path();
+    let manifest = mux_fixture(root).await;
+    let staging = root.join(".assembly");
+    std::fs::create_dir_all(&staging).expect("staging");
+    let output = root.join("out.mp4");
+
+    compose_film(ComposeFilmRequest {
+        silent: &root.join("silent.mp4"),
+        captions: None,
+        manifest: &manifest,
+        source_root: root,
+        staging: &staging,
+        output_path: &output,
+        operation: &OperationContext::detached(),
+    })
+    .await
+    .expect("the film should compose");
+
+    // Without padding the mixed audio, `-shortest` ends the film at the last
+    // spoken word and silently drops the final beat's frames.
+    let seconds = probe_seconds(&output).await;
+    assert!(
+        (seconds - 6.0).abs() < 0.25,
+        "expected the full 6s picture, got {seconds}s"
+    );
+}
+
+#[cfg(feature = "real-renderers")]
+#[tokio::test]
+async fn a_film_with_neither_narration_nor_captions_is_copied_untouched() {
+    let temp = tempfile::tempdir().expect("temporary root");
+    let root = temp.path();
+    let mut manifest = mux_fixture(root).await;
+    manifest.audio.clear();
+    let staging = root.join(".assembly");
+    std::fs::create_dir_all(&staging).expect("staging");
+    let output = root.join("out.mp4");
+
+    compose_film(ComposeFilmRequest {
+        silent: &root.join("silent.mp4"),
+        captions: None,
+        manifest: &manifest,
+        source_root: root,
+        staging: &staging,
+        output_path: &output,
+        operation: &OperationContext::detached(),
+    })
+    .await
+    .expect("the film should compose");
+
+    // Nothing to mix and nothing to draw, so re-encoding would only lose quality.
+    assert_eq!(
+        std::fs::read(root.join("silent.mp4")).unwrap(),
+        std::fs::read(&output).unwrap()
+    );
+}
+
+#[cfg(feature = "real-renderers")]
+#[tokio::test]
+async fn a_missing_narration_clip_fails_instead_of_rendering_a_silent_film() {
+    let temp = tempfile::tempdir().expect("temporary root");
+    let root = temp.path();
+    let mut manifest = mux_fixture(root).await;
+    manifest.audio.push(ManimAudioEntry {
+        reference: "assets/audio/gone.m4a".into(),
+        start_seconds: 5.0,
+    });
+    let staging = root.join(".assembly");
+    std::fs::create_dir_all(&staging).expect("staging");
+
+    let error = compose_film(ComposeFilmRequest {
+        silent: &root.join("silent.mp4"),
+        captions: None,
+        manifest: &manifest,
+        source_root: root,
+        staging: &staging,
+        output_path: &root.join("out.mp4"),
+        operation: &OperationContext::detached(),
+    })
+    .await
+    .expect_err("a missing clip is a defect, not a quieter film");
+    assert!(format!("{error:#}").contains("gone.m4a"));
+}
+
+/// Writes a Manim source tree with one scene module and its manifest.
+#[cfg(feature = "real-renderers")]
+fn manim_source(root: &Path, module_body: &str) {
+    std::fs::create_dir_all(root.join("scenes")).expect("scene directory");
+    std::fs::write(root.join("scenes/scene_1.py"), module_body).expect("scene module");
+    std::fs::write(
+        root.join("manifest.json"),
+        serde_json::json!({
+            "scenes": [{
+                "id": "scene-1",
+                "module": "scenes/scene_1.py",
+                "class_name": "Scene_scene_1",
+                "duration_seconds": 2.0
+            }],
+            "audio": [],
+            "captions": null
+        })
+        .to_string(),
+    )
+    .expect("manifest");
+}
+
+#[cfg(feature = "real-renderers")]
+fn managed_renderers() -> ManagedVideoRenderers {
+    ManagedVideoRenderers::new(
+        ManagedVideoRenderers::default_root().expect("managed root"),
+        Arc::new(UvPythonRuntime::default_path().expect("python root")),
+    )
+}
+
+#[cfg(feature = "real-renderers")]
+fn manim_request(root: &Path) -> VideoRenderRequest {
+    VideoRenderRequest {
+        source_root: root.to_path_buf(),
+        output_path: root.join("out.mp4"),
+        duration_seconds: 2,
+        width: 854,
+        height: 480,
+        fps: 24,
+        quality: "draft".to_string(),
+    }
+}
+
+#[cfg(feature = "real-renderers")]
+#[tokio::test]
+async fn a_scene_that_only_fails_when_it_runs_is_caught_before_the_film_is_rendered() {
+    let temp = tempfile::tempdir().expect("temporary root");
+    // Exactly the fault that killed a real film: `TransformMatchingTex` reads
+    // `tex_string` off both sides, so pairing it with a `Text` parses cleanly and
+    // raises only once Manim builds the animation. Caught at render, it wasted a
+    // whole authoring and narration pass with nothing able to repair it.
+    manim_source(
+        temp.path(),
+        "from manim import *\n\n\
+         class Scene_scene_1(Scene):\n\
+         \x20   def construct(self):\n\
+         \x20       a = Text(\"hola\")\n\
+         \x20       b = MathTex(r\"F(s)\")\n\
+         \x20       self.add(a)\n\
+         \x20       self.play(TransformMatchingTex(a, b), run_time=1.0)\n\
+         \x20       self.wait(1.0)\n",
+    );
+
+    let error = managed_renderers()
+        .validate(
+            VideoEngine::Manim,
+            &manim_request(temp.path()),
+            &OperationContext::detached(),
+        )
+        .await
+        .expect_err("a scene that raises must not reach the render");
+    // The message has to name the module, because that is how the repair loop
+    // recovers which scene to re-author.
+    assert!(
+        format!("{error}").contains("scenes/scene_1.py"),
+        "the failure must name its scene: {error}"
+    );
+}
+
+#[cfg(feature = "real-renderers")]
+#[tokio::test]
+async fn a_scene_that_runs_passes_validation_and_leaves_no_probe_output() {
+    let temp = tempfile::tempdir().expect("temporary root");
+    manim_source(
+        temp.path(),
+        "from manim import *\n\n\
+         class Scene_scene_1(Scene):\n\
+         \x20   def construct(self):\n\
+         \x20       self.play(Write(MathTex(r\"F(s)\")), run_time=1.0)\n\
+         \x20       self.wait(1.0)\n",
+    );
+
+    managed_renderers()
+        .validate(
+            VideoEngine::Manim,
+            &manim_request(temp.path()),
+            &OperationContext::detached(),
+        )
+        .await
+        .expect("a well-formed scene validates");
+    assert!(
+        !temp.path().join(".dry-run").exists(),
+        "the probe's working directory must not survive into the revision"
     );
 }

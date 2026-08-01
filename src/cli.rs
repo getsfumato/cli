@@ -157,6 +157,7 @@ pub enum GenerationToolArg {
     ImageGen,
     VideoGen,
     AudioGen,
+    ChartGen,
 }
 
 #[derive(Debug, Subcommand)]

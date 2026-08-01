@@ -33,13 +33,14 @@ use crate::{
         GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
         TextGenerationProvider, TextGenerationRequest, TextGenerationResponse, ToolDefinition,
     },
+    python::PythonRuntime,
     renderers::{DiagramRenderer, MermaidThemeConfig, SlideRenderer},
     repositories::ThemeRepository,
     review::{ReviewSnapshot, decks::SlideDeckDocument, parse_json_patch},
     sources::SourceReader,
     templates::GenerationTemplate,
     themes::{ThemePackage, ThemeTokens},
-    tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
+    tools::{ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
 
 pub(crate) mod document;
@@ -90,6 +91,8 @@ pub(crate) struct GenerateSlidesOptions {
     pub slide_renderer: Arc<dyn SlideRenderer>,
     pub source_reader: Arc<dyn SourceReader>,
     pub tool_factory: Arc<dyn GenerationToolFactory>,
+    /// Managed Python environments backing the local charting tool.
+    pub python_runtime: Arc<dyn PythonRuntime>,
     pub theme_repository: Arc<dyn ThemeRepository>,
     pub workspace: Arc<dyn WorkspaceFileSystem>,
     pub project_asset_catalog: Arc<dyn ProjectAssetCatalog>,
@@ -125,6 +128,7 @@ pub(crate) async fn generate_slides(
         slide_renderer,
         source_reader,
         tool_factory,
+        python_runtime,
         theme_repository,
         workspace,
         project_asset_catalog,
@@ -236,6 +240,16 @@ pub(crate) async fn generate_slides(
         // Neither a deck nor a printable document has a timeline to hang audio
         // on, so speech is not offered here.
         audio: None,
+        chart: ChartToolConfig::enable(
+            &config,
+            python_runtime.clone(),
+            images_dir.clone(),
+            "images",
+            &theme,
+            project_instructions
+                .as_ref()
+                .map(|value| value.content.clone()),
+        ),
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let review_tool_definitions = tool_set

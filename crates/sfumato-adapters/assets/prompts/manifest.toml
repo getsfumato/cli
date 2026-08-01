@@ -415,14 +415,29 @@ path = "video/hyperframe-scene.user.md.j2"
 required = ["scene_id", "scene_position", "scene_count", "scene_snapshot", "scene_narration", "scene_start_seconds", "scene_duration_seconds", "scene_catalog_items", "scene_artifacts", "previous_scene_exit", "width", "height", "fps", "theme_name", "theme_colors", "theme_fonts", "retry_present"]
 
 [[prompts]]
-id = "video.manim.system"
-path = "video/manim.system.md.j2"
+id = "video.manim-scene.system"
+path = "video/manim-scene.system.md.j2"
 required = []
 
 [[prompts]]
-id = "video.manim.user"
-path = "video/manim.user.md.j2"
-required = ["plan_snapshot", "theme_name", "theme_colors", "theme_fonts", "resolution", "fps"]
+id = "video.manim-scene.user"
+path = "video/manim-scene.user.md.j2"
+required = [
+    "scene_id",
+    "scene_class_name",
+    "scene_module",
+    "scene_position",
+    "scene_count",
+    "scene_duration_seconds",
+    "scene_snapshot",
+    "scene_narration",
+    "previous_scene_exit",
+    "theme_name",
+    "theme_colors",
+    "resolution",
+    "fps",
+    "retry_present",
+]
 
 [[prompts]]
 id = "video.visual-review.system"

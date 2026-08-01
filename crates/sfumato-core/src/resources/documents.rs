@@ -38,6 +38,7 @@ use crate::{
         GenerationStage, ImageGenerationProvider, ProviderFactory, TextGenerationEvent,
         TextGenerationProvider, TextGenerationRequest,
     },
+    python::PythonRuntime,
     renderers::{
         DiagramRenderer, DocumentAssembler, DocumentAssemblyRequest, DocumentRenderRequest,
         DocumentRenderer,
@@ -47,7 +48,7 @@ use crate::{
     sources::SourceReader,
     templates::GenerationTemplate,
     themes::ThemePackage,
-    tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
+    tools::{ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
 
 use super::{
@@ -90,6 +91,8 @@ pub(crate) struct GenerateDocumentOptions {
     pub document_renderer: Arc<dyn DocumentRenderer>,
     pub source_reader: Arc<dyn SourceReader>,
     pub tool_factory: Arc<dyn GenerationToolFactory>,
+    /// Managed Python environments backing the local charting tool.
+    pub python_runtime: Arc<dyn PythonRuntime>,
     pub theme_repository: Arc<dyn ThemeRepository>,
     pub workspace: Arc<dyn WorkspaceFileSystem>,
     pub project_asset_catalog: Arc<dyn ProjectAssetCatalog>,
@@ -170,6 +173,7 @@ pub(crate) async fn generate_document(
         document_renderer,
         source_reader,
         tool_factory,
+        python_runtime,
         theme_repository,
         workspace,
         project_asset_catalog,
@@ -269,6 +273,16 @@ pub(crate) async fn generate_document(
         // Neither a deck nor a printable document has a timeline to hang audio
         // on, so speech is not offered here.
         audio: None,
+        chart: ChartToolConfig::enable(
+            &config,
+            python_runtime.clone(),
+            images_dir.clone(),
+            "images",
+            &theme,
+            project_instructions
+                .as_ref()
+                .map(|value| value.content.clone()),
+        ),
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let tool_summaries = summarize_tools(&tool_set.definitions);

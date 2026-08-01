@@ -752,8 +752,10 @@ sfumato renderer install manim
 sfumato renderer doctor manim
 ```
 
-The renderer has its own managed Python 3.12 environment; installing `manim`
-globally does not satisfy that executable path.
+The renderer uses Sfumato's managed Python 3.12 environment under
+`~/.sfumato/python/manim`; installing `manim` globally does not satisfy that
+executable path. The same runtime backs the `chart-gen` tool, so a broken `uv`
+breaks both.
 
 ### Manim code execution is denied
 
@@ -767,15 +769,58 @@ sfumato generate video \
   --instruction "Animate the geometric meaning of convolution"
 ```
 
-For a trusted project, persist `security.allow_manim = true`. This is consent to
+For a trusted project, persist `security.allow_python = true`. This is consent to
 execute validated generated code, not a strong sandbox. Sfumato rejects known
 filesystem/network/process operations but cannot promise complete isolation.
 
 ### Generated Python is invalid
 
-Sfumato requires `scene.py` with `class SfumatoScene`, runs Python compilation,
-and rejects dangerous imports/operations before Manim. It can request one
-focused source repair with the exact validation/render error.
+A Manim film is authored one scene at a time. Each module must define exactly one
+`Scene` subclass named for its plan scene, must animate or hold, and may not touch
+`config`, call `add_sound`, or open files. Sfumato rejects dangerous
+imports and operations, compiles every module, and then renders. A module that
+comes back malformed is re-asked once with the exact complaint, and a film that
+fails validation has only its offending scene re-authored.
+
+### A Manim film came out silent
+
+Narration needs a `speech` profile and the `audio-gen` tool, and the planner has
+to have written a spoken line for at least one beat. When a speech profile is
+configured but the plan carries no narration, Sfumato reports it as a warning and
+renders silent rather than failing.
+
+```bash
+sfumato tool enable audio-gen --project university
+sfumato model use speech elevenlabs-speech --project university
+```
+
+Pass `--audio on` to make a missing voice an error instead of a silent film.
+
+## Charts
+
+### The chart tool is not offered to the drafter
+
+`chart-gen` needs both the tool enabled and consent to run generated Python.
+Missing either leaves it off the model's tool list entirely rather than failing
+mid-draft, so check both:
+
+```bash
+sfumato tool list --project university
+sfumato config show --scope project --project university
+```
+
+### A chart asks for a package that is refused
+
+Only matplotlib, numpy, and sympy are pinned. Anything else must be listed in
+`security.python_packages`, matched by package name:
+
+```bash
+sfumato config set security.python_packages '["scipy"]' \
+  --scope project --project university
+```
+
+Requirements that read as installer flags, URLs, or local paths are refused
+outright rather than escaped.
 
 ## Remote Model Video
 

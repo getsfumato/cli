@@ -75,8 +75,8 @@ For local engines, `--model video=...` is invalid. For the remote model engine,
 | `--aspect-ratio` | Positive `W:H`, default `16:9`. Local width is derived and rounded to an even pixel count. |
 | `--fps` | Local only, 1 through 120, default 30. |
 | `--quality` | Local only: `draft`, `standard`, or `high`; default `high`. |
-| `--audio` | Hyperframe narrates when a `speech` profile is configured (`auto`, the default); `on` fails if none is; `off` renders silent. Manim is always silent. Remote default is `auto`. |
-| `--voice` | Hyperframe only. Overrides the speech profile's voice for this film. |
+| `--audio` | Both local engines narrate when a `speech` profile is configured (`auto`, the default); `on` fails if none is; `off` renders silent. Remote default is `auto`. |
+| `--voice` | Local engines only. Overrides the speech profile's voice for this film. |
 | `--out` | Publishes MP4 under `<out>/_sfumato/videos`. |
 | `--allow-code-execution` | Manim only; rejected for other engines. |
 
@@ -317,6 +317,10 @@ MusicGen, and Docker checks do not block health.
 
 ## Manim Engine
 
+Manim is the engine for explanations that have to be *correct* rather than merely
+illustrative: an integral, a region of convergence, a surface. It computes what it
+draws, so a plotted curve is the function rather than an impression of it.
+
 Install and check:
 
 ```bash
@@ -324,30 +328,67 @@ sfumato renderer install manim
 sfumato renderer doctor manim
 ```
 
+Manim is a Python package, so it is provisioned through the same managed
+environments the charting tool uses. `renderer install manim` and first use both
+resolve to the pinned interpreter under `~/.sfumato/python/manim`.
+
 Generate with explicit authorization:
 
 ```bash
 sfumato generate video \
   --project university \
   --engine manim \
-  --duration 15 \
+  --duration 75 \
   --resolution 1080p \
   --fps 30 \
-  --audio off \
   --allow-code-execution \
   --model code=codex \
-  --instruction "Animate Fourier synthesis geometrically"
+  --instruction "Explain the Laplace transform: the integral, the region of convergence, and why it turns a differential equation into an algebraic one" \
+  "notes/02 - Laplace"
 ```
 
-The author returns strict JSON containing `scene.py` and must define
-`SfumatoScene`. Sfumato rejects dangerous imports and operations including OS,
-subprocess, sockets, HTTP clients, dynamic execution, and arbitrary file opens.
-It then compiles Python syntax and runs the managed Manim environment.
+### Authoring, scene by scene
+
+Manim is authored the same way Hyperframes is, and for the same reason. Sfumato
+generates the timeline itself — the scene order, each scene's window, where the
+narration sits, and the caption track — and asks the model for one `Scene` subclass
+per beat. A scene module defines exactly one class, named for its plan scene, and
+may not touch `config`, call `add_sound`, or read and write files: each of those is
+a decision made for the whole film, and a scene that set one would silently
+disagree with the timeline being replayed around it.
+
+The whole repair machinery is shared. A module that comes back malformed is
+re-asked once with the exact complaint, and a film that fails validation has only
+its offending scene re-authored, with the repair budget scaled to how many faults
+were reported.
+
+### Narration and captions
+
+Manim narrates. When a `speech` profile is configured and `audio-gen` is enabled,
+Sfumato speaks each scene's planned line, retimes the film so no beat is shorter
+than the words spoken over it, and then assembles the render: every scene is
+rendered on its own, the clips are concatenated, the narration is mixed in at its
+recorded offsets, and the captions are burned over the result.
+
+The caption overlay is itself a generated Manim scene, rendered with a transparent
+background and composited over the film with FFmpeg's core `overlay` filter. Two
+alternatives were rejected: drawing captions inside each `construct` fails because
+a Manim scene has no notion of an overlay that outlives it, so a caption crossing a
+scene boundary would have to be authored into both scenes and kept in sync by hand;
+burning a subtitle file fails because that needs an FFmpeg built with libass, which
+many installations — including some Homebrew builds — do not have. Captions ride
+the lower eighth of the frame, so scenes are told to keep that band clear.
+
+### Safety
+
+Sfumato rejects dangerous imports and operations including OS access,
+subprocesses, sockets, HTTP clients, dynamic execution, and arbitrary file opens.
+It then compiles each module before running it in the managed Manim environment.
 
 Authorization can persist in project config:
 
 ```bash
-sfumato config set security.allow_manim true \
+sfumato config set security.allow_python true \
   --scope project --project university
 ```
 

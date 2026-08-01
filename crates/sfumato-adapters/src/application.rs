@@ -25,6 +25,7 @@ use crate::{
     project_assets::FilesystemProjectAssetCatalog,
     prompts::{LayeredPromptCatalog, LayeredPromptManager},
     providers::AdapterProviderFactory,
+    python::UvPythonRuntime,
     renderers::{MarpCliRenderer, MermaidCliRenderer, PagedDocumentCliRenderer},
     repositories::{FilesystemGlobalConfigRepository, FilesystemProjectRepository},
     secrets::SystemSecretStore,
@@ -96,7 +97,13 @@ pub fn production_application() -> Result<SfumatoApplication> {
     let secret_resolver: Arc<dyn sfumato_core::secrets::SecretResolver> = secrets.clone();
     let secret_store: Arc<dyn sfumato_core::secrets::SecretStore> = secrets;
     let providers = Arc::new(AdapterProviderFactory::new(secret_resolver));
-    let video_renderers = Arc::new(ManagedVideoRenderers::default_path()?);
+    // The Python runtime is shared: the Manim renderer provisions its interpreter
+    // through it, and the chart tool runs generated plotting code in it.
+    let python_runtime = Arc::new(UvPythonRuntime::default_path()?);
+    let video_renderers = Arc::new(ManagedVideoRenderers::new(
+        ManagedVideoRenderers::default_root()?,
+        python_runtime.clone(),
+    ));
     Ok(SfumatoApplication::new(SfumatoApplicationDependencies {
         config: config_resolver,
         prompts: Arc::new(LayeredPromptCatalogFactory),
@@ -112,6 +119,7 @@ pub fn production_application() -> Result<SfumatoApplication> {
         document_renderer: Arc::new(PagedDocumentCliRenderer),
         video_renderer: video_renderers.clone(),
         renderer_manager: video_renderers,
+        python_runtime,
         page_plugins: Arc::new(FilesystemPagePluginCatalog::default_path()?),
         page_plugin_source: Arc::new(CdnPagePluginSource::new()?),
         templates: Arc::new(FilesystemGenerationTemplateCatalog::default_path()?),

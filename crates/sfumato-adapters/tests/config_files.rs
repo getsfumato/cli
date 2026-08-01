@@ -121,3 +121,52 @@ fn stale_revision_cannot_overwrite_a_newer_config() {
         "newer writer"
     );
 }
+
+#[test]
+fn an_edit_heals_a_project_that_still_names_the_renamed_setting() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("project.toml");
+    fs::write(
+        &path,
+        "schema_version = 5\nname = \"university\"\ntheme = \"gruvbox\"\n\n[security]\nallow_manim = true\n",
+    )
+    .unwrap();
+
+    // Setting the new key while the old one is present used to fail with a
+    // duplicate-field error, because the serde alias makes them one field.
+    edit_toml(&path, |table| {
+        let security = table
+            .get_mut("security")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap();
+        security.insert("python_packages".into(), toml::Value::Array(Vec::new()));
+        Ok(())
+    })
+    .expect("the edit should succeed");
+
+    let rewritten = fs::read_to_string(&path).unwrap();
+    assert!(rewritten.contains("allow_python = true"));
+    assert!(
+        !rewritten.contains("allow_manim"),
+        "the legacy spelling must not survive beside the new one"
+    );
+}
+
+#[test]
+fn an_explicit_new_key_wins_over_the_legacy_spelling() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("project.toml");
+    // A document carrying both cannot be loaded at all, so the rename has to pick
+    // one. It keeps the current spelling: that is the one a user last set.
+    fs::write(
+        &path,
+        "schema_version = 5\nname = \"university\"\ntheme = \"gruvbox\"\n\n[security]\nallow_python = false\nallow_manim = true\n",
+    )
+    .unwrap();
+
+    edit_toml(&path, |_| Ok(())).expect("the edit should succeed");
+
+    let rewritten = fs::read_to_string(&path).unwrap();
+    assert!(rewritten.contains("allow_python = false"));
+    assert!(!rewritten.contains("allow_manim"));
+}

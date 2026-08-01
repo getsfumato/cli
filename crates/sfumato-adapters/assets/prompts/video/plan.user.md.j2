@@ -8,7 +8,7 @@ Requested title: {% if title_provided %}{{ title }}{% else %}choose a concise ed
 Output: {{ resolution }}, {{ aspect_ratio }}
 Workflow requested: {{ workflow }}
 Captured URLs: {{ urls }}
-Managed Hyperframe catalog: {{ catalog }}
+{% if engine != "manim" %}Managed Hyperframe catalog: {{ catalog }}{% endif %}
 
 Theme {{ theme_name }}:
 - Colors: {{ theme_colors }}

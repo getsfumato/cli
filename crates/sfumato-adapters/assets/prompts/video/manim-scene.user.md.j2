@@ -1,0 +1,31 @@
+Author scene {{ scene_position }} of {{ scene_count }}: `{{ scene_id }}`.
+
+Define exactly `class {{ scene_class_name }}(Scene)` in module `{{ scene_module }}`.
+
+Canvas: {{ resolution }} at {{ fps }} FPS.
+This scene runs {{ scene_duration_seconds }} seconds. The total of every `run_time` and every `self.wait(...)` in `construct` must add up to that, and the scene must end holding its final picture.
+
+Scene plan:
+{{ scene_snapshot }}
+
+{% if scene_narration %}
+Spoken over this beat: "{{ scene_narration }}"
+Time the drawing to those words: what the voice names should be on screen as it is
+said, and nothing should arrive so late that the sentence has moved on. When the
+narration states a formula, that formula is what belongs on screen. Never write the
+spoken sentence itself as text — Sfumato burns captions from the recorded voice
+into the lower eighth of the frame, so keep that band clear and do not duplicate
+the line.
+{% endif %}
+
+{% if previous_scene_exit %}
+The previous scene ends like this: {{ previous_scene_exit }}
+Open from there rather than from an unrelated blank frame, so the cut reads as one continuous explanation. If the previous beat left a diagram standing, redraw it and build on it instead of starting over.
+{% else %}
+This is the film's first scene, so it may open on an empty frame and build up.
+{% endif %}
+
+Theme {{ theme_name }} colors: {{ theme_colors }}
+Use those colours for emphasis, and keep the palette to the background, one neutral for structure, and one accent for the thing this beat is about.
+
+{% if retry_present %}{% include "shared/scene-repair-retry.md.j2" %}{% endif %}

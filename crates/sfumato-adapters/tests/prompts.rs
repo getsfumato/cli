@@ -75,6 +75,8 @@ fn representative_variables() -> PromptVariables {
         ("max_tool_rounds", json!(8)),
         ("page_size", json!("a4")),
         ("scene_id", json!("scene-2")),
+        ("scene_class_name", json!("Scene_scene_2")),
+        ("scene_module", json!("scenes/scene_2.py")),
         ("scene_position", json!(2)),
         ("scene_count", json!(5)),
         (
@@ -536,7 +538,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "08c9c1f92495437f107a88410bff47dd6c5717ba47caa2be7f87d50c3caec3aa"
+        "eacac02db2ec67f5484db2a97302daf53ead160579d35752bbafbdf207d0c42a"
     );
 }
 

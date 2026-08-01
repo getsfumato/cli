@@ -1,0 +1,17 @@
+schema_version = 1
+
+# Environments Sfumato provisions on demand for generated Python.
+#
+# Every requirement is fully pinned: two runs of the same generated chart must
+# produce the same picture, and a floating dependency turns that into a promise
+# the manifest cannot keep. A project may layer additional packages on top via
+# `security.python_packages`, which are installed into a separate cached layer
+# so these base environments stay exactly as declared here.
+
+[environments.charting]
+python = "3.12"
+packages = ["matplotlib==3.10.7", "numpy==2.3.4", "sympy==1.14.0"]
+
+[environments.manim]
+python = "3.12"
+packages = ["manim==0.20.1"]

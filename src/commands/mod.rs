@@ -477,6 +477,7 @@ fn generation_tool(tool: GenerationToolArg) -> GenerationToolKind {
         GenerationToolArg::ImageGen => GenerationToolKind::ImageGen,
         GenerationToolArg::VideoGen => GenerationToolKind::VideoGen,
         GenerationToolArg::AudioGen => GenerationToolKind::AudioGen,
+        GenerationToolArg::ChartGen => GenerationToolKind::ChartGen,
     }
 }
 
@@ -1205,17 +1206,14 @@ pub(crate) async fn execute_video(
         Some(VideoAudioArg::Auto) => VideoAudioMode::Auto,
         Some(VideoAudioArg::On) => VideoAudioMode::On,
         Some(VideoAudioArg::Off) => VideoAudioMode::Off,
-        // Hyperframe narrates when the project can: a configured speech profile
-        // is the opt-in, the same way a configured image profile enables
-        // illustrations. Manim has no audio track to fill.
-        None if matches!(engine, sfumato_core::renderers::VideoEngine::Hyperframe) => {
-            VideoAudioMode::Auto
-        }
-        None if local => VideoAudioMode::Off,
+        // A local engine narrates when the project can: a configured speech
+        // profile is the opt-in, the same way a configured image profile enables
+        // illustrations. Sfumato owns both local timelines, so both can be
+        // retimed around the voice.
         None => VideoAudioMode::Auto,
     };
-    if args.voice.is_some() && !matches!(engine, sfumato_core::renderers::VideoEngine::Hyperframe) {
-        bail!("--voice is only valid with --engine hyperframe");
+    if args.voice.is_some() && matches!(engine, sfumato_core::renderers::VideoEngine::Model) {
+        bail!("--voice is only valid with a local engine; a remote model picks its own voice");
     }
     let config = ConfigOverrides {
         project: args.project.clone(),

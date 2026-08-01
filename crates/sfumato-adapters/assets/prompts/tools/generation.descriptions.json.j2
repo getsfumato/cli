@@ -11,5 +11,10 @@
   "video_accessible_description": "A concise accessible description of what the video teaches and shows.",
   "audio_generation": "Speak a line of narration with the configured voice and save it inside the current resource. Returns the audio path, its spoken length in seconds, and a JSON file of word-level timings you can use to synchronise captions.",
   "audio_text": "Exactly the words to speak, written for the ear: short sentences, expanded numbers and no markup. Do not describe the voice because Sfumato injects it.",
-  "audio_voice": "Optional provider voice identifier. Omit it to use the project's configured voice."
+  "audio_voice": "Optional provider voice identifier. Omit it to use the project's configured voice.",
+  "chart_generation": "Plot data or a mathematical function by writing matplotlib code that Sfumato runs locally, and save the result inside the current resource. Use the returned markdown_path as its relative image path. Prefer this over image generation for anything quantitative: axes, curves, distributions, phase and convergence diagrams, and 3D surfaces, because the picture is computed rather than imagined and the numbers are therefore correct.",
+  "chart_code": "The body of a matplotlib script: the plotting statements only. `matplotlib.pyplot as plt` and `numpy as np` are already imported, the project theme is already applied, and Sfumato saves the figure afterwards, so do not import them, do not restyle, and do not call savefig or show. Label every axis and add a legend whenever more than one series is drawn. The code runs offline with no filesystem or network access, so compute the data inline.",
+  "chart_alt_text": "A concise accessible description of what the chart shows and what it demonstrates.",
+  "chart_packages": "Optional extra Python packages needed beyond matplotlib, numpy, and sympy. Each must be permitted by the project, so omit this unless a plot genuinely cannot be drawn without one.",
+  "chart_size": "Optional figure dimension in inches, between 2 and 20. Omit for the default 8 by 4.5."
 }

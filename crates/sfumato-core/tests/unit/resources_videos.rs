@@ -601,7 +601,11 @@ fn a_validation_failure_names_the_scene_it_points_at() {
         "missing_or_empty_sub_composition: references \"compositions/scene-2.html\", but the file has no content",
     );
 
-    assert_eq!(failing_scene(&source, &error).as_deref(), Some("scene-2"));
+    let plan_scene_ids = vec!["scene-1".to_string(), "scene-2".to_string()];
+    assert_eq!(
+        failing_scene(&source, &plan_scene_ids, &error).as_deref(),
+        Some("scene-2")
+    );
 }
 
 #[test]
@@ -622,7 +626,8 @@ fn a_failure_that_names_no_scene_falls_back_to_the_whole_film() {
     .expect("source is valid");
     let error = SfumatoError::render(ErrorClass::Unavailable, "Chrome could not start");
 
-    assert!(failing_scene(&source, &error).is_none());
+    let plan_scene_ids = vec!["scene-1".to_string()];
+    assert!(failing_scene(&source, &plan_scene_ids, &error).is_none());
 }
 
 #[test]
@@ -746,7 +751,11 @@ fn a_failure_that_names_only_an_element_still_finds_its_scene() {
         "text_box_overflow div.formula inside #scene-2-formula overflowed right 11.58px",
     );
 
-    assert_eq!(failing_scene(&source, &error).as_deref(), Some("scene-2"));
+    let plan_scene_ids = vec!["scene-1".to_string(), "scene-2".to_string()];
+    assert_eq!(
+        failing_scene(&source, &plan_scene_ids, &error).as_deref(),
+        Some("scene-2")
+    );
 }
 
 #[test]
@@ -756,7 +765,7 @@ fn the_repair_budget_follows_how_much_the_renderer_reported() {
     let nine = "✗ clipped_text #scene-3-ratio overflowed right 80px\n9 error(s), 1 warning(s)";
     assert_eq!(reported_faults(nine), 9);
     assert_eq!(
-        repair_rounds(reported_faults(nine)),
+        repair_rounds(reported_faults(nine), 1),
         8,
         "capped, not unbounded"
     );
@@ -764,13 +773,13 @@ fn the_repair_budget_follows_how_much_the_renderer_reported() {
     let one = "✗ text_box_overflow #scene-2-ghost overflowed top 9px\n1 error(s), 51 warning(s)";
     assert_eq!(reported_faults(one), 1);
     assert_eq!(
-        repair_rounds(reported_faults(one)),
+        repair_rounds(reported_faults(one), 1),
         3,
         "a single fault still gets room for a second look"
     );
 
     let four = "4 error(s), 3 warning(s)";
-    assert_eq!(repair_rounds(reported_faults(four)), 4);
+    assert_eq!(repair_rounds(reported_faults(four), 1), 4);
 }
 
 #[test]
@@ -778,7 +787,10 @@ fn a_failure_that_itemises_nothing_is_still_worth_repairing() {
     // Not every failure comes from the linter: a crash or a refusal reports no count
     // and no crosses, and treating that as zero faults would skip repair entirely.
     assert_eq!(reported_faults("Chrome could not start"), 1);
-    assert_eq!(repair_rounds(reported_faults("Chrome could not start")), 3);
+    assert_eq!(
+        repair_rounds(reported_faults("Chrome could not start"), 1),
+        3
+    );
 
     // A clean count must not be read as work to do.
     assert_eq!(
@@ -807,4 +819,109 @@ fn repair_stops_once_two_rounds_in_a_row_clear_nothing() {
     assert!(!another_repair_round(1, 8, 2), "two in a row is circling");
     // The budget still binds on its own.
     assert!(!another_repair_round(8, 8, 0));
+}
+
+/// A project that can reach every model a local film needs.
+fn video_config() -> EffectiveConfig {
+    let global = crate::config::GlobalConfig::default_config();
+    EffectiveConfig {
+        user: global.user,
+        project_name: "university".to_string(),
+        project_root: PathBuf::from("/tmp/university"),
+        publish_dir: None,
+        theme: "sfumato-default".to_string(),
+        connectors: global.connectors,
+        models: global.models,
+        model_defaults: global.defaults.0,
+        model_roles: global.model_roles,
+        page: crate::config::PageDefaults::default(),
+        generation_tools: crate::config::GenerationToolDefaults::default(),
+        security: crate::config::ProjectSecurityConfig::default(),
+        marp: global.marp,
+    }
+}
+
+fn narrated_request(engine: VideoEngine) -> GenerateVideoRequest {
+    GenerateVideoRequest {
+        engine,
+        title: None,
+        duration_seconds: 30,
+        resolution: "1080p".into(),
+        aspect_ratio: "16:9".into(),
+        fps: 30,
+        quality: "high".into(),
+        audio: VideoAudioMode::On,
+        voice: None,
+        allow_code_execution: true,
+        workflow: VideoWorkflow::Explainer,
+        urls: Vec::new(),
+        visual_review: false,
+    }
+}
+
+#[test]
+fn both_local_engines_may_be_narrated() {
+    // Manim used to be refused here on the grounds that it "renders silently".
+    // Sfumato owns both local timelines, so both can be retimed around a voice
+    // and mixed afterwards; refusing one of them was a limitation, not a fact.
+    let mut config = video_config();
+    config
+        .generation_tools
+        .0
+        .insert(GenerationToolKind::AudioGen, true);
+    config.security.allow_python = true;
+
+    for engine in [VideoEngine::Hyperframe, VideoEngine::Manim] {
+        validate_video_options(&config, &narrated_request(engine))
+            .unwrap_or_else(|error| panic!("{engine:?} should accept narration: {error}"));
+    }
+}
+
+#[test]
+fn asking_for_narration_without_the_speech_tool_is_refused_for_either_local_engine() {
+    // `--audio on` that cannot be honoured has to fail rather than quietly
+    // render silent: the caller would otherwise only find out by watching.
+    let mut config = video_config();
+    config
+        .generation_tools
+        .0
+        .insert(GenerationToolKind::AudioGen, false);
+    config.security.allow_python = true;
+
+    for engine in [VideoEngine::Hyperframe, VideoEngine::Manim] {
+        assert!(
+            validate_video_options(&config, &narrated_request(engine)).is_err(),
+            "{engine:?} should refuse narration with the audio tool disabled"
+        );
+    }
+}
+
+#[test]
+fn a_film_gets_at_least_one_repair_round_per_scene() {
+    // A checker that stops at the first bad scene reports one fault at a time, so
+    // three independent faults across a seven-scene film look like three separate
+    // one-fault failures. A budget sized for one of them ran out while every round
+    // was still clearing its target — which is what killed a real seven-scene film.
+    assert_eq!(repair_rounds(1, 7), 7);
+    // A short film is unaffected: the proportional floor still applies.
+    assert_eq!(repair_rounds(1, 2), 3);
+    // And a large fault count still wins when it is the bigger of the two.
+    assert_eq!(repair_rounds(8, 3), 8);
+    // The ceiling holds however many scenes a film has.
+    assert_eq!(repair_rounds(1, 40), 12);
+}
+
+#[test]
+fn repairing_one_scene_and_uncovering_another_counts_as_progress() {
+    // A Manim traceback carries no fault summary, so the count reads as one every
+    // round. Judging progress by the count alone marked each round stalled even
+    // though it had fixed its scene, and cut a seven-scene film off after two
+    // repairs with five rounds of budget still unspent.
+    assert!(repair_advanced(1, 1, Some("scene-7"), "scene-2"));
+    // The same scene failing again is the real stall.
+    assert!(!repair_advanced(1, 1, Some("scene-2"), "scene-2"));
+    // A falling count is still progress, whatever the scene.
+    assert!(repair_advanced(2, 5, Some("scene-2"), "scene-2"));
+    // A failure naming no scene cannot be shown to have advanced.
+    assert!(!repair_advanced(1, 1, None, "scene-2"));
 }

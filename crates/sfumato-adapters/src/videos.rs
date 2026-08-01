@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
@@ -11,8 +12,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use sfumato_core::{
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
-    operation::OperationContext,
     generation::VideoFrameMeasurement,
+    operation::OperationContext,
+    python::PythonRuntime,
     renderers::{
         RendererManager, RendererStatus, VideoCatalog, VideoCatalogItem, VideoCatalogKind,
         VideoEngine, VideoInspection, VideoRenderRequest, VideoRenderer,
@@ -21,7 +23,7 @@ use sfumato_core::{
 use tokio::process::Command;
 use walkdir::WalkDir;
 
-use crate::runtime::run_command;
+use crate::{python::UvPythonRuntime, runtime::run_command};
 
 const RENDERER_MANIFEST: &str = include_str!("../assets/video-renderers/manifest.toml");
 const HYPERFRAME_CATALOG: &str = include_str!("../assets/video-catalog/manifest.json");
@@ -192,7 +194,10 @@ fn strip_remote_font_imports(content: &str) -> String {
         let tail = &rest[start..];
         let offset = tail.find(';').unwrap_or(tail.len() - 1);
         let statement = &tail[..=offset];
-        if REMOTE_FONT_HOSTS.iter().any(|host| statement.contains(host)) {
+        if REMOTE_FONT_HOSTS
+            .iter()
+            .any(|host| statement.contains(host))
+        {
             output.push_str(&rest[..start]);
         } else {
             output.push_str(&rest[..start + offset + 1]);
@@ -274,23 +279,32 @@ fn mountable_component(id: &str, content: &str, width: u32, height: u32) -> Stri
 }
 
 /// Filesystem/process implementation for optional local video renderers.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ManagedVideoRenderers {
     root: PathBuf,
+    /// Manim is a Python package, so its interpreter is provisioned by the shared
+    /// Python runtime rather than by a second venv story owned by this adapter.
+    python: Arc<dyn PythonRuntime>,
 }
 
 impl ManagedVideoRenderers {
     /// Creates a manager rooted at an explicit directory.
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(root: PathBuf, python: Arc<dyn PythonRuntime>) -> Self {
+        Self { root, python }
     }
 
-    /// Creates a manager under `~/.sfumato/renderers`.
+    /// Resolves the managed renderer root under `~/.sfumato/renderers`.
+    pub fn default_root() -> Result<PathBuf> {
+        Ok(dirs::home_dir()
+            .context("Home directory is unavailable")?
+            .join(".sfumato/renderers"))
+    }
+
+    /// Creates a manager under `~/.sfumato/renderers` with the default runtime.
     pub fn default_path() -> Result<Self> {
         Ok(Self::new(
-            dirs::home_dir()
-                .context("Home directory is unavailable")?
-                .join(".sfumato/renderers"),
+            Self::default_root()?,
+            Arc::new(UvPythonRuntime::default_path()?),
         ))
     }
 
@@ -408,9 +422,8 @@ impl ManagedVideoRenderers {
             };
             let parent = staged.parent().expect("staged catalog item has a parent");
             fs::create_dir_all(parent)?;
-            let content = fs::read_to_string(&installed).with_context(|| {
-                format!("Could not read managed catalog item '{}'", item.id)
-            })?;
+            let content = fs::read_to_string(&installed)
+                .with_context(|| format!("Could not read managed catalog item '{}'", item.id))?;
             let offline = offline_catalog_item(&item.id, &content)?;
             let mountable = match item.kind {
                 VideoCatalogKind::Block => offline,
@@ -428,8 +441,16 @@ impl ManagedVideoRenderers {
         self.root.join("pagedjs/node_modules/.bin/pagedjs-cli")
     }
 
-    fn manim_executable(&self) -> PathBuf {
-        self.root.join("manim/.venv/bin/manim")
+    /// The `manim` console script installed beside the managed interpreter.
+    fn manim_executable(&self) -> Result<PathBuf> {
+        let interpreter = self
+            .python
+            .interpreter_path("manim")
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok(interpreter
+            .parent()
+            .context("Managed Python interpreter has no parent directory")?
+            .join("manim"))
     }
 
     async fn renderer_status(
@@ -443,7 +464,7 @@ impl ManagedVideoRenderers {
                 self.hyperframe_executable(),
                 vec!["node", "ffmpeg", "ffprobe"],
             ),
-            "manim" => (self.manim_executable(), vec!["ffmpeg", "ffprobe"]),
+            "manim" => (self.manim_executable()?, vec!["ffmpeg", "ffprobe"]),
             // The document renderer drives a browser through Node; the browser
             // itself is the one Sfumato already requires elsewhere.
             "pagedjs" => (self.pagedjs_executable(), vec!["node"]),
@@ -592,32 +613,13 @@ impl RendererManager for ManagedVideoRenderers {
                         self.install_hyperframe_catalog(operation).await?;
                     }
                     "manim" => {
-                        let package = renderer_package(id)?;
-                        let root = self.root.join("manim");
-                        fs::create_dir_all(&root)?;
-                        let environment = root.join(".venv");
-                        let mut venv = Command::new("uv");
-                        venv.args(["venv", "--python", "3.12"]).arg(&environment);
-                        checked(
-                            &mut venv,
-                            operation,
-                            OperationStage::Resolve,
-                            "Manim environment creation",
-                        )
-                        .await?;
-                        let python = environment.join("bin/python");
-                        let mut install = Command::new("uv");
-                        install
-                            .args(["pip", "install", "--python"])
-                            .arg(&python)
-                            .arg(format!("{}=={}", package.package, package.version));
-                        checked(
-                            &mut install,
-                            operation,
-                            OperationStage::Resolve,
-                            "Manim installation",
-                        )
-                        .await?;
+                        // Manim's pins live in the Python environment manifest, so
+                        // installing it is the same operation the chart tool uses
+                        // to provision its own interpreter.
+                        self.python
+                            .ensure("manim", &[], operation)
+                            .await
+                            .map_err(|error| anyhow::anyhow!("{error}"))?;
                     }
                     "pagedjs" => {
                         let package = renderer_package(id)?;
@@ -695,7 +697,7 @@ impl VideoRenderer for ManagedVideoRenderers {
     ) -> SfumatoResult<()> {
         let result = match engine {
             VideoEngine::Hyperframe => self.validate_hyperframe(request, operation).await,
-            VideoEngine::Manim => Ok(()),
+            VideoEngine::Manim => self.validate_manim(request, operation).await,
             VideoEngine::Model => Err(anyhow::anyhow!(
                 "Direct model videos do not use a local renderer"
             )),
@@ -789,6 +791,94 @@ impl VideoRenderer for ManagedVideoRenderers {
 }
 
 impl ManagedVideoRenderers {
+    /// Compiles every authored scene before the film is rendered.
+    ///
+    /// This is what makes a malformed module repairable. The repair loop is driven
+    /// by validation, not by rendering, so without a check here a scene that does
+    /// not parse would fail the whole film at the last step with no chance to be
+    /// re-authored — and a syntax error is the most common way generated Python
+    /// comes back wrong.
+    async fn validate_manim(
+        &self,
+        request: &VideoRenderRequest,
+        operation: &OperationContext,
+    ) -> Result<()> {
+        let manifest = read_manim_manifest(&request.source_root)?;
+        let python = self
+            .python
+            .interpreter_path("manim")
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        if !python.is_file() {
+            bail!("Manim is not installed. Run `sfumato renderer install manim`.");
+        }
+        let mut modules = manifest
+            .scenes
+            .iter()
+            .map(|scene| scene.module.clone())
+            .collect::<Vec<_>>();
+        // The caption overlay is generated rather than authored, but it is Python
+        // that has to run, so a defect in it should surface here too.
+        if let Some(captions) = &manifest.captions {
+            modules.push(captions.module.clone());
+        }
+        for module in &modules {
+            let path = request.source_root.join(module);
+            if !path.is_file() {
+                bail!("Manim source is missing {module}");
+            }
+            let mut compile = Command::new(&python);
+            compile
+                .args(["-m", "py_compile"])
+                .arg(module)
+                // Byte-code caches are a side effect of checking, not part of the
+                // film. Pointed at a scratch directory they never reach the
+                // committed revision.
+                .env(
+                    "PYTHONPYCACHEPREFIX",
+                    request.source_root.join(".dry-run/cache"),
+                )
+                .current_dir(&request.source_root);
+            checked(
+                &mut compile,
+                operation,
+                OperationStage::Render,
+                &format!("Manim syntax check for {module}"),
+            )
+            .await?;
+        }
+
+        // Compiling proves a module parses, not that it runs. A scene that calls
+        // an animation with the wrong kind of mobject raises only once Manim
+        // builds it, and that used to surface at the final render — after every
+        // scene had been authored and narrated — where nothing could repair it.
+        // A dry run executes `construct` at the lowest quality without writing
+        // any output, so a runtime fault costs about a second per scene and
+        // arrives while the scene can still be re-authored.
+        let executable = self.manim_executable()?;
+        for scene in &manifest.scenes {
+            operation.checkpoint(OperationStage::Render)?;
+            let mut probe = Command::new(&executable);
+            probe
+                .arg("render")
+                .arg("--dry_run")
+                .args(["-q", "l"])
+                .arg("--media_dir")
+                .arg(request.source_root.join(".dry-run"))
+                .arg(&scene.module)
+                .arg(&scene.class_name)
+                .current_dir(&request.source_root);
+            checked(
+                &mut probe,
+                operation,
+                OperationStage::Render,
+                &format!("Manim dry run for {}", scene.module),
+            )
+            .await?;
+        }
+        fs::remove_dir_all(request.source_root.join(".dry-run")).ok();
+        Ok(())
+    }
+
     async fn validate_hyperframe(
         &self,
         request: &VideoRenderRequest,
@@ -900,64 +990,337 @@ impl ManagedVideoRenderers {
         .await
     }
 
+    /// Renders every planned scene and assembles them into one film.
+    ///
+    /// Manim renders a scene at a time and has no concept of a film, so the
+    /// timeline lives in the generated manifest and is replayed here: render each
+    /// module, concatenate in plan order, mix the narration in at its recorded
+    /// offsets, and burn the caption track over the result. Doing the audio and
+    /// captions in post rather than inside `construct` keeps a scene's Python
+    /// about the picture, and lets a caption span a scene boundary at all.
     async fn render_manim(
         &self,
         request: &VideoRenderRequest,
         operation: &OperationContext,
     ) -> Result<()> {
-        let executable = self.manim_executable();
+        let executable = self.manim_executable()?;
         if !executable.is_file() {
             bail!("Manim is not installed. Run `sfumato renderer install manim`.");
         }
-        let scene = request.source_root.join("scene.py");
-        let python = self.root.join("manim/.venv/bin/python");
-        let mut compile = Command::new(&python);
-        compile
-            .args(["-m", "py_compile"])
-            .arg(&scene)
-            .current_dir(&request.source_root);
-        checked(
-            &mut compile,
-            operation,
-            OperationStage::Render,
-            "Manim Python syntax check",
-        )
-        .await?;
+        // Re-checked here so a render is never attempted on source that would not
+        // have passed validation, however this renderer was reached.
+        self.validate_manim(request, operation).await?;
+        let manifest = read_manim_manifest(&request.source_root)?;
         let media = request.source_root.join(".media");
-        let mut command = Command::new(&executable);
-        command
-            .arg("render")
-            .arg("--format")
-            .arg("mp4")
-            .arg("--fps")
-            .arg(request.fps.to_string())
-            .arg("--resolution")
-            .arg(format!("{},{}", request.width, request.height))
-            .arg("--media_dir")
-            .arg(&media)
-            .arg("--output_file")
-            .arg("sfumato-video.mp4")
-            .arg(&scene)
-            .arg("SfumatoScene")
-            .current_dir(&request.source_root);
-        checked(
-            &mut command,
+
+        let mut clips = Vec::with_capacity(manifest.scenes.len());
+        for scene in &manifest.scenes {
+            operation.checkpoint(OperationStage::Render)?;
+            let module = request.source_root.join(&scene.module);
+            let output_name = format!("{}.mp4", scene.class_name);
+            let mut render = Command::new(&executable);
+            render
+                .arg("render")
+                .arg("--format")
+                .arg("mp4")
+                .arg("--fps")
+                .arg(request.fps.to_string())
+                .arg("--resolution")
+                .arg(format!("{},{}", request.width, request.height))
+                .arg("--media_dir")
+                .arg(&media)
+                .arg("--output_file")
+                .arg(&output_name)
+                .arg(&module)
+                .arg(&scene.class_name)
+                .current_dir(&request.source_root);
+            checked(
+                &mut render,
+                operation,
+                OperationStage::Render,
+                &format!("Manim render for scene '{}'", scene.id),
+            )
+            .await?;
+            clips.push(find_rendered_clip(&media, &output_name).with_context(|| {
+                format!(
+                    "Manim rendered scene '{}' without producing {output_name}",
+                    scene.id
+                )
+            })?);
+        }
+
+        let staging = request.source_root.join(".assembly");
+        // Rebuilt each run so a stale clip from an earlier attempt cannot be
+        // concatenated into this one.
+        if staging.exists() {
+            fs::remove_dir_all(&staging)?;
+        }
+        fs::create_dir_all(&staging)?;
+        let silent = staging.join("silent.mp4");
+        concat_clips(&clips, &staging, &silent, operation).await?;
+
+        // The caption overlay is a Manim render too, with a transparent
+        // background, so compositing it needs only FFmpeg's core `overlay`. The
+        // alternative — burning a subtitle file — needs an FFmpeg built with
+        // libass, which many installations do not have.
+        let captions = match &manifest.captions {
+            Some(captions) => {
+                let module = request.source_root.join(&captions.module);
+                if !module.is_file() {
+                    bail!("Manim source is missing {}", captions.module);
+                }
+                let output_name = format!("{}.mov", captions.class_name);
+                let mut render = Command::new(&executable);
+                render
+                    .arg("render")
+                    .arg("--format")
+                    .arg("mov")
+                    .arg("--transparent")
+                    .arg("--fps")
+                    .arg(request.fps.to_string())
+                    .arg("--resolution")
+                    .arg(format!("{},{}", request.width, request.height))
+                    .arg("--media_dir")
+                    .arg(&media)
+                    .arg("--output_file")
+                    .arg(&output_name)
+                    .arg(&module)
+                    .arg(&captions.class_name)
+                    .current_dir(&request.source_root);
+                checked(
+                    &mut render,
+                    operation,
+                    OperationStage::Render,
+                    "Manim caption overlay render",
+                )
+                .await?;
+                Some(find_rendered_clip(&media, &output_name).with_context(|| {
+                    format!("Manim rendered captions without producing {output_name}")
+                })?)
+            }
+            None => None,
+        };
+
+        compose_film(ComposeFilmRequest {
+            silent: &silent,
+            captions: captions.as_deref(),
+            manifest: &manifest,
+            source_root: &request.source_root,
+            staging: &staging,
+            output_path: &request.output_path,
             operation,
-            OperationStage::Render,
-            "Manim render",
-        )
+        })
         .await?;
-        let rendered = WalkDir::new(&media)
-            .into_iter()
-            .filter_map(Result::ok)
-            .map(|entry| entry.into_path())
-            .find(|path| {
-                path.file_name().and_then(|name| name.to_str()) == Some("sfumato-video.mp4")
-            })
-            .context("Manim completed without producing sfumato-video.mp4")?;
-        fs::copy(&rendered, &request.output_path)?;
+        // Both working directories sit inside the source root, which is what the
+        // transaction commits. Left behind, every revision would carry a second
+        // copy of the film in per-scene pieces plus an uncompressed overlay.
+        fs::remove_dir_all(&staging).ok();
+        fs::remove_dir_all(&media).ok();
         Ok(())
     }
+}
+
+/// The generated timeline a Manim source carries beside its scenes.
+#[derive(Clone, Debug, Deserialize)]
+struct ManimManifest {
+    scenes: Vec<ManimSceneEntry>,
+    #[serde(default)]
+    audio: Vec<ManimAudioEntry>,
+    #[serde(default)]
+    captions: Option<ManimCaptionEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ManimCaptionEntry {
+    module: String,
+    class_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ManimSceneEntry {
+    id: String,
+    module: String,
+    class_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ManimAudioEntry {
+    reference: String,
+    start_seconds: f32,
+}
+
+fn read_manim_manifest(source_root: &Path) -> Result<ManimManifest> {
+    let path = source_root.join("manifest.json");
+    let contents = fs::read_to_string(&path)
+        .with_context(|| format!("Could not read the Manim manifest at {}", path.display()))?;
+    let manifest: ManimManifest =
+        serde_json::from_str(&contents).context("Manim manifest is invalid")?;
+    if manifest.scenes.is_empty() {
+        bail!("Manim manifest declares no scenes");
+    }
+    Ok(manifest)
+}
+
+/// Finds the MP4 Manim wrote, wherever its media layout put it.
+///
+/// Manim nests its output under a directory named for the module and the
+/// resolution, so the file is located by name rather than by a path this adapter
+/// would have to keep in sync with Manim's own conventions.
+fn find_rendered_clip(media: &Path, file_name: &str) -> Option<PathBuf> {
+    WalkDir::new(media)
+        .into_iter()
+        .filter_map(Result::ok)
+        .map(|entry| entry.into_path())
+        .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(file_name))
+}
+
+/// Joins the rendered scenes into one continuous silent film.
+///
+/// The concat demuxer is used rather than a filter graph because every clip came
+/// out of the same renderer at the same resolution and frame rate, so the streams
+/// can be copied instead of re-encoded.
+async fn concat_clips(
+    clips: &[PathBuf],
+    staging: &Path,
+    output: &Path,
+    operation: &OperationContext,
+) -> Result<()> {
+    let list = staging.join("clips.txt");
+    let mut manifest = String::new();
+    for clip in clips {
+        // The demuxer treats a quote as a delimiter, so a path carrying one has to
+        // be escaped rather than trusted.
+        manifest.push_str(&format!(
+            "file '{}'\n",
+            clip.display().to_string().replace('\'', r"'\''")
+        ));
+    }
+    fs::write(&list, manifest).with_context(|| format!("Could not write {}", list.display()))?;
+    let mut concat = Command::new("ffmpeg");
+    concat
+        .args(["-y", "-f", "concat", "-safe", "0", "-i"])
+        .arg(&list)
+        .args(["-c", "copy"])
+        .arg(output);
+    checked(
+        &mut concat,
+        operation,
+        OperationStage::Render,
+        "Manim scene concatenation",
+    )
+    .await
+}
+
+struct ComposeFilmRequest<'a> {
+    silent: &'a Path,
+    captions: Option<&'a Path>,
+    manifest: &'a ManimManifest,
+    source_root: &'a Path,
+    staging: &'a Path,
+    output_path: &'a Path,
+    operation: &'a OperationContext,
+}
+
+/// Mixes the narration under the film and burns the captions over it.
+///
+/// One pass rather than two: each narration clip is delayed to its recorded start
+/// and the results are mixed, while the subtitle filter draws the caption track
+/// onto the video. Splitting this into separate passes would re-encode the video
+/// twice for no benefit.
+async fn compose_film(request: ComposeFilmRequest<'_>) -> Result<()> {
+    let ComposeFilmRequest {
+        silent,
+        captions,
+        manifest,
+        source_root,
+        staging,
+        output_path,
+        operation,
+    } = request;
+
+    if manifest.audio.is_empty() && captions.is_none() {
+        fs::copy(silent, output_path).with_context(|| {
+            format!(
+                "Could not write the rendered film to {}",
+                output_path.display()
+            )
+        })?;
+        return Ok(());
+    }
+
+    let mut command = Command::new("ffmpeg");
+    command.args(["-y", "-i"]).arg(silent);
+    if let Some(captions) = captions {
+        command.arg("-i").arg(captions);
+    }
+    for clip in &manifest.audio {
+        let path = source_root.join(&clip.reference);
+        if !path.is_file() {
+            bail!("Narration clip {} is missing", clip.reference);
+        }
+        command.arg("-i").arg(&path);
+    }
+
+    // Audio inputs sit after the video and the optional overlay.
+    let first_audio_input = if captions.is_some() { 2 } else { 1 };
+    let mut filters = Vec::new();
+    if captions.is_some() {
+        // `eof_action=pass` so a caption track that ends early leaves the rest of
+        // the film untouched rather than ending the output with it.
+        filters.push("[0:v][1:v]overlay=eof_action=pass[v]".to_string());
+    }
+    if !manifest.audio.is_empty() {
+        for (index, clip) in manifest.audio.iter().enumerate() {
+            let delay = (clip.start_seconds.max(0.0) * 1_000.0).round() as u64;
+            // Both channels are delayed: `adelay` leaves any channel it is not
+            // given a value for at zero, which would play half the narration early.
+            filters.push(format!(
+                "[{}:a]adelay={delay}|{delay}[a{index}]",
+                first_audio_input + index
+            ));
+        }
+        let inputs = (0..manifest.audio.len())
+            .map(|index| format!("[a{index}]"))
+            .collect::<String>();
+        // Padded with silence, then cut to the video by `-shortest`. Narration
+        // almost always ends before the last scene does, because a final beat
+        // holds its picture after the voice stops; without the pad, `-shortest`
+        // would end the film at the last spoken word and drop those frames.
+        filters.push(format!(
+            "{inputs}amix=inputs={}:normalize=0,apad[a]",
+            manifest.audio.len()
+        ));
+    }
+    command.arg("-filter_complex").arg(filters.join(";"));
+    command
+        .arg("-map")
+        .arg(if captions.is_some() { "[v]" } else { "0:v" });
+    if manifest.audio.is_empty() {
+        command.args(["-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+    } else {
+        command
+            .args(["-map", "[a]"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+            // The film is as long as its pictures; a narration clip that overruns
+            // the last scene must not extend it past the frames that exist.
+            .arg("-shortest");
+    }
+    let composed = staging.join("composed.mp4");
+    command.arg(&composed);
+    checked(
+        &mut command,
+        operation,
+        OperationStage::Render,
+        "Manim narration and caption mux",
+    )
+    .await?;
+    fs::copy(&composed, output_path).with_context(|| {
+        format!(
+            "Could not write the rendered film to {}",
+            output_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 /// Colour buckets per channel when counting distinct colours.

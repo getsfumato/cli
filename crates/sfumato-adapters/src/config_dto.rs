@@ -196,8 +196,12 @@ struct PageDefaultsDto {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectSecurityDto {
+    // `allow_manim` is still read so a project that already consented to running
+    // generated Python is not asked again now that charts use the same runtime.
+    #[serde(default, alias = "allow_manim")]
+    allow_python: bool,
     #[serde(default)]
-    allow_manim: bool,
+    python_packages: Vec<String>,
 }
 
 impl GlobalConfigDto {
@@ -485,7 +489,8 @@ impl ProjectConfigDto {
             },
             generation_tools: GenerationToolDefaults(self.generation_tools),
             security: ProjectSecurityConfig {
-                allow_manim: self.security.allow_manim,
+                allow_python: self.security.allow_python,
+                python_packages: self.security.python_packages,
             },
             marp: self.marp.map(Into::into),
         };
@@ -507,7 +512,8 @@ impl ProjectConfigDto {
             },
             generation_tools: project.generation_tools.0.clone(),
             security: ProjectSecurityDto {
-                allow_manim: project.security.allow_manim,
+                allow_python: project.security.allow_python,
+                python_packages: project.security.python_packages.clone(),
             },
             marp: project.marp.as_ref().map(MarpConfigDto::from),
         }

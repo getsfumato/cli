@@ -258,8 +258,8 @@ not page JavaScript plugins.
 
 ```bash
 sfumato tool list [--project <project>]
-sfumato tool enable image-gen|video-gen|audio-gen [--project <project>]
-sfumato tool disable image-gen|video-gen|audio-gen [--project <project>]
+sfumato tool enable image-gen|video-gen|audio-gen|chart-gen [--project <project>]
+sfumato tool disable image-gen|video-gen|audio-gen|chart-gen [--project <project>]
 ```
 
 `tool list` reports whether the project enables each tool and whether a required
@@ -267,11 +267,29 @@ model profile is configured.
 
 Compatibility matrix:
 
-| Resource | `image-gen` | `video-gen` | `audio-gen` |
-| --- | --- | --- | --- |
-| Slides | Yes | No | No |
-| Pages | Yes | Yes, remote model only and at most once per page generation. | Yes, as `sfumato_audio_gen`. |
-| Videos | Yes during planning/reference selection | No | Yes, but not as a tool: enabling it makes a Hyperframe film narrated, and Sfumato speaks the plan's per-scene lines itself. |
+| Resource | `image-gen` | `video-gen` | `audio-gen` | `chart-gen` |
+| --- | --- | --- | --- | --- |
+| Slides | Yes | No | No | Yes |
+| Documents | Yes | No | No | Yes |
+| Pages | Yes | Yes, remote model only and at most once per page generation. | Yes, as `sfumato_audio_gen`. | Yes |
+| Videos | Yes during planning/reference selection | No | Yes, but not as a tool: enabling it makes a local film narrated, and Sfumato speaks the plan's per-scene lines itself. | Yes during planning |
+
+`chart-gen` is the odd one out: it has no provider and costs no remote call. The
+drafter writes matplotlib code and Sfumato runs it locally, which is why a chart's
+numbers are computed rather than imagined — prefer it over `image-gen` for anything
+quantitative. The drafter supplies only the plotting statements; Sfumato owns the
+imports, the headless backend, the theme styling, and the save, so a chart matches
+the resource it sits in without being told the palette.
+
+Because it executes generated Python, `chart-gen` needs both the tool enabled and
+`security.allow_python` set. Missing either leaves the tool off the model's list
+entirely rather than failing mid-draft. Extra Python packages beyond matplotlib,
+numpy, and sympy must be listed in `security.python_packages`.
+
+```bash
+sfumato tool enable chart-gen --project university
+sfumato config set security.allow_python true --scope project --project university
+```
 
 Filesystem list/read tools are internal, read-only, mandatory, and restricted
 to the selected project/source roots. They do not appear in project tool config.
@@ -287,7 +305,7 @@ One-request overrides:
 
 ```bash
 sfumato generate page --instruction "..." --tool image-gen --tool video-gen
-sfumato generate slides --instruction "..." --disable-tool image-gen
+sfumato generate slides --instruction "..." --tool chart-gen --disable-tool image-gen
 ```
 
 ## Local Video Renderers
@@ -332,5 +350,5 @@ sfumato renderer doctor manim
 ```
 
 Manim executes generated Python. Generation additionally requires project
-`security.allow_manim = true` or the per-command `--allow-code-execution` flag.
+`security.allow_python = true` or the per-command `--allow-code-execution` flag.
 This is explicit authorization, not a strong sandbox.

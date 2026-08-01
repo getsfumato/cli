@@ -32,14 +32,15 @@ use crate::{
         GenerationStage, ImageGenerationProvider, ProviderFactory, SpeechGenerationProvider,
         TextGenerationEvent, TextGenerationRequest, ToolDefinition, VideoGenerationProvider,
     },
+    python::PythonRuntime,
     renderers::{AssembledPage, PageAssembler, PageAssemblyRequest, PageInspector},
     repositories::ThemeRepository,
     sources::{SourceDocument, SourceReader},
     templates::GenerationTemplate,
     themes::ThemePackage,
     tools::{
-        AudioToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig,
-        VideoToolConfig,
+        AudioToolConfig, ChartToolConfig, GenerationToolFactory, GenerationToolsRequest,
+        ImageToolConfig, VideoToolConfig,
     },
 };
 
@@ -75,6 +76,8 @@ pub(crate) struct GeneratePageOptions {
     pub provider_factory: Arc<dyn ProviderFactory>,
     pub source_reader: Arc<dyn SourceReader>,
     pub tool_factory: Arc<dyn GenerationToolFactory>,
+    /// Managed Python environments backing the local charting tool.
+    pub python_runtime: Arc<dyn PythonRuntime>,
     pub theme_repository: Arc<dyn ThemeRepository>,
     pub plugin_catalog: Arc<dyn PagePluginCatalog>,
     pub page_assembler: Arc<dyn PageAssembler>,
@@ -163,6 +166,7 @@ pub(crate) async fn generate_page(
         provider_factory,
         source_reader,
         tool_factory,
+        python_runtime,
         theme_repository,
         plugin_catalog,
         page_assembler,
@@ -325,6 +329,16 @@ pub(crate) async fn generate_page(
             reference_prefix: "assets/audio".into(),
             options: profile.options.speech.clone(),
         }),
+        chart: ChartToolConfig::enable(
+            &config,
+            python_runtime.clone(),
+            images_dir.clone(),
+            "assets/images",
+            &theme,
+            project_instructions
+                .as_ref()
+                .map(|value| value.content.clone()),
+        ),
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let tool_summaries = summarize_tools(&tool_set.definitions);

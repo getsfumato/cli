@@ -38,21 +38,28 @@ use crate::{
         GenerationStage, ImageGenerationProvider, ProviderFactory, SpeechGenerationProvider,
         TextGenerationEvent, TextGenerationRequest, ToolDefinition, VideoGenerationRequest,
     },
+    python::PythonRuntime,
     renderers::{
         VideoCatalog, VideoCatalogViolation, VideoInspection, VideoRenderRequest, VideoRenderer,
     },
     repositories::ThemeRepository,
     sources::{SourceDocument, SourceReader},
     themes::ThemePackage,
-    tools::{GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
+    tools::{ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
 };
 
 mod assembly;
+mod manim;
 
 use assembly::{
     CAPTIONS_COMPOSITION_ID, NarrationClip, NarrationLayer, captions_composition_html,
     master_index_html, master_meta_json, scene_composition_path, strip_markup_fence,
     validate_scene_composition,
+};
+use manim::{
+    CAPTIONS_PATH, MANIFEST_PATH, ManimManifest, captions_module, film_seconds, manim_error,
+    manim_manifest_json, scene_class_name, scene_module_path, strip_python_fence,
+    validate_scene_module,
 };
 
 use super::narration::{
@@ -84,7 +91,7 @@ pub struct GenerateVideoRequest {
     pub fps: u32,
     /// Local renderer quality.
     pub quality: String,
-    /// Audio policy: narration for Hyperframe, native audio for direct models.
+    /// Audio policy: narration for a local engine, native audio for direct models.
     pub audio: VideoAudioMode,
     /// Voice override for this film, replacing the speech profile's own.
     pub voice: Option<String>,
@@ -121,6 +128,8 @@ pub(crate) struct GenerateVideoOptions {
     pub provider_factory: Arc<dyn ProviderFactory>,
     pub source_reader: Arc<dyn SourceReader>,
     pub tool_factory: Arc<dyn GenerationToolFactory>,
+    /// Managed Python environments backing the local charting tool.
+    pub python_runtime: Arc<dyn PythonRuntime>,
     pub theme_repository: Arc<dyn ThemeRepository>,
     pub video_renderer: Arc<dyn VideoRenderer>,
     pub workspace: Arc<dyn WorkspaceFileSystem>,
@@ -188,6 +197,10 @@ struct VideoPromptContext {
     retry_error: String,
     retry_invalid_response: String,
     scene_id: String,
+    /// The class a Manim scene must define, so the module and the renderer agree.
+    scene_class_name: String,
+    /// The module path a Manim scene is written to.
+    scene_module: String,
     scene_position: usize,
     scene_count: usize,
     scene_snapshot: String,
@@ -273,12 +286,6 @@ where
         serde_json::Value::String(value) => value,
         value => value.to_string(),
     })
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VideoSourceDraft {
-    files: BTreeMap<String, String>,
 }
 
 /// Renders the immutable source bundle from a previously approved review session.
@@ -550,6 +557,7 @@ pub(crate) async fn generate_video(
         provider_factory,
         source_reader,
         tool_factory,
+        python_runtime,
         theme_repository,
         video_renderer,
         workspace,
@@ -598,9 +606,10 @@ pub(crate) async fn generate_video(
             }
         })
         .transpose()?;
-    // Narration is a Hyperframe-only stage: a direct model produces its own
-    // audio, and Manim has no timeline to hang an audio track on.
-    let narration_requested = video.engine == VideoEngine::Hyperframe
+    // Narration is a local-engine stage: a direct model produces its own audio,
+    // while Hyperframe and Manim both have a timeline Sfumato controls and can
+    // therefore be retimed around the voice.
+    let narration_requested = video.engine != VideoEngine::Model
         && video.audio != VideoAudioMode::Off
         && config.generation_tool_enabled(GenerationToolKind::AudioGen);
     let speech_selection = match (narration_requested, video.audio) {
@@ -651,6 +660,16 @@ pub(crate) async fn generate_video(
         // timeline is retimed around it: a tool that returned audio mid-plan
         // would have nowhere to put the seconds it just created.
         audio: None,
+        chart: ChartToolConfig::enable(
+            &config,
+            python_runtime.clone(),
+            image_dir.clone(),
+            "assets/images",
+            &theme,
+            project_instructions
+                .as_ref()
+                .map(|value| value.content.clone()),
+        ),
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let tool_summaries = summarize_tools(&tool_set.definitions);
@@ -965,8 +984,7 @@ pub(crate) async fn generate_video(
         // the inspection asserts that rather than restating the request: a film
         // that lost its narration between synthesis and mux is a defect, and a
         // silent film that grew an audio stream is one too.
-        VideoEngine::Hyperframe => Some(narrated.is_some()),
-        VideoEngine::Manim => Some(false),
+        VideoEngine::Hyperframe | VideoEngine::Manim => Some(narrated.is_some()),
         VideoEngine::Model => match video.audio {
             VideoAudioMode::Auto => None,
             VideoAudioMode::On => Some(true),
@@ -1031,44 +1049,28 @@ pub(crate) async fn generate_video(
             context.plan_snapshot =
                 serde_json::to_string_pretty(&plan.snapshot().map_err(review_error)?)?;
             let author = provider_factory.text(&config, profile)?;
-            let mut source = if video.engine == VideoEngine::Hyperframe {
-                // One scene per request. A single response used to carry the whole
-                // film, which capped the practical duration and spent the model's
-                // attention on restating the master timeline's contract instead of
-                // on the beat it was writing.
-                let (width, height) =
-                    resolution_dimensions(&video.resolution, &video.aspect_ratio)?;
-                author_hyperframe_scenes(AuthorScenesRequest {
-                    plan: &plan,
-                    narration: narrated.as_ref(),
-                    catalog: managed_catalog.as_ref(),
-                    renderer: video_renderer.as_ref(),
-                    engine: video.engine,
-                    slug: &slug,
-                    width,
-                    height,
-                    author: author.as_ref(),
-                    prompt_catalog: prompt_catalog.as_ref(),
-                    context: &mut context,
-                    prompts: &mut prompts,
-                    event_sink: &event_sink,
-                    operation: &operation,
-                })
-                .await?
-            } else {
-                let mut author_request = render_request(
-                    prompt_catalog.as_ref(),
-                    PromptId::VideoManimSystem,
-                    PromptId::VideoManimUser,
-                    &context,
-                )?;
-                author_request.event_sink = event_sink.clone();
-                prompts.extend(author_request.prompt_provenance.clone());
-                let response = author
-                    .generate_text(author_request, &operation, OperationStage::Draft)
-                    .await?;
-                parse_source(&response.text, video.engine)?
-            };
+            // One scene per request, for both local engines. A single response
+            // used to carry the whole film, which capped the practical duration
+            // and spent the model's attention on restating the renderer's
+            // contract instead of on the beat it was writing.
+            let (width, height) = resolution_dimensions(&video.resolution, &video.aspect_ratio)?;
+            let mut source = author_scenes(AuthorScenesRequest {
+                plan: &plan,
+                narration: narrated.as_ref(),
+                catalog: managed_catalog.as_ref(),
+                renderer: video_renderer.as_ref(),
+                engine: video.engine,
+                slug: &slug,
+                width,
+                height,
+                author: author.as_ref(),
+                prompt_catalog: prompt_catalog.as_ref(),
+                context: &mut context,
+                prompts: &mut prompts,
+                event_sink: &event_sink,
+                operation: &operation,
+            })
+            .await?;
             let local_request = local_render_request(&source_root, &video_path, &video)?;
             // Every project asset goes to disk before validation, because the
             // renderer's own check fails on a referenced file that is not there
@@ -1094,11 +1096,14 @@ pub(crate) async fn generate_video(
                 // sees a repair happened but never learns what was wrong, which is
                 // exactly the position this project was in while being debugged.
                 warnings.push(format!("Video source needed repair: {error}"));
-                let named_scene = if video.engine == VideoEngine::Hyperframe {
-                    failing_scene(&source, &error)
-                } else {
-                    None
-                };
+                // Both local engines are authored one scene at a time, so both can
+                // be repaired one scene at a time.
+                let plan_scene_ids = plan
+                    .scenes()
+                    .iter()
+                    .map(|scene| scene.id.clone())
+                    .collect::<Vec<_>>();
+                let named_scene = failing_scene(&source, &plan_scene_ids, &error);
                 if let Some(sink) = &event_sink {
                     sink(TextGenerationEvent::SourceRepairStarted {
                         reason: error.to_string(),
@@ -1126,7 +1131,7 @@ pub(crate) async fn generate_video(
                     // when to stop: a round that fixes nothing is not going to be
                     // rescued by another.
                     let mut faults = reported_faults(&error.to_string());
-                    let budget = repair_rounds(faults);
+                    let budget = repair_rounds(faults, plan_scene_ids.len());
                     let mut scene_id = first_scene;
                     let mut failure = error.to_string();
                     let mut round = 0;
@@ -1169,15 +1174,18 @@ pub(crate) async fn generate_video(
                             // is reported rather than retried forever.
                             Err(next) => {
                                 let remaining = reported_faults(&next.to_string());
-                                // Two rounds without a single fault cleared: the
-                                // author is circling rather than converging, and
-                                // every further round costs a model call plus a
-                                // full renderer check.
-                                stalled = if remaining < faults { 0 } else { stalled + 1 };
+                                let named = failing_scene(&source, &plan_scene_ids, &next);
+                                // Two rounds that advance nothing: the author is
+                                // circling rather than converging, and every
+                                // further round costs a model call plus a full
+                                // renderer check.
+                                //
+                                let advanced =
+                                    repair_advanced(remaining, faults, named.as_deref(), &scene_id);
+                                stalled = if advanced { 0 } else { stalled + 1 };
                                 faults = remaining;
-                                let next_scene = another_repair_round(round, budget, stalled)
-                                    .then(|| failing_scene(&source, &next))
-                                    .flatten();
+                                let next_scene =
+                                    named.filter(|_| another_repair_round(round, budget, stalled));
                                 let Some(next_scene) = next_scene else {
                                     return Err(next);
                                 };
@@ -1705,18 +1713,6 @@ fn apply_catalog_policy(scenes: &mut [VideoScene], catalog: Option<&VideoCatalog
     warnings
 }
 
-fn parse_source(response: &str, engine: VideoEngine) -> Result<VideoSourceDocument> {
-    let draft: VideoSourceDraft =
-        serde_json::from_str(strip_json_fence(response)).map_err(|error| {
-            SfumatoError::provider(
-                ErrorClass::InvalidOutput,
-                format!("Video source must be strict JSON: {error}"),
-            )
-        })?;
-    let source = VideoSourceDocument::new(engine, draft.files).map_err(review_error)?;
-    normalize_hyperframe_parent_paths(source)
-}
-
 fn validate_source(source: &VideoSourceDocument) -> Result<()> {
     let combined = source
         .files()
@@ -1812,36 +1808,24 @@ fn validate_source(source: &VideoSourceDocument) -> Result<()> {
             }
         }
         VideoEngine::Manim => {
-            let python = source
+            // The manifest is generated, so its absence means the source did not
+            // come from the assembler and nothing downstream can be trusted.
+            let manifest = source
                 .files()
-                .get("scene.py")
-                .context("Manim source is missing scene.py")?;
-            if !python.contains("class SfumatoScene") {
-                return Err(SfumatoError::render(
-                    ErrorClass::InvalidOutput,
-                    "Manim source must define class SfumatoScene",
-                ));
+                .get(MANIFEST_PATH)
+                .context("Manim source is missing its generated manifest")?;
+            let manifest: ManimManifest = serde_json::from_str(manifest)
+                .map_err(|error| manim_error(format!("Manim manifest is unreadable: {error}")))?;
+            if manifest.scenes.is_empty() {
+                return Err(manim_error("Manim source must define at least one scene"));
             }
-            let lowercase = python.to_ascii_lowercase();
-            for forbidden in [
-                "import os",
-                "import sys",
-                "subprocess",
-                "socket",
-                "requests",
-                "urllib",
-                "open(",
-                "exec(",
-                "eval(",
-                "__import__",
-                "environ",
-            ] {
-                if lowercase.contains(forbidden) {
-                    return Err(SfumatoError::render(
-                        ErrorClass::InvalidOutput,
-                        format!("Manim source contains forbidden operation '{forbidden}'"),
-                    ));
-                }
+            for scene in &manifest.scenes {
+                let module = source.files().get(&scene.module).ok_or_else(|| {
+                    manim_error(format!("Manim source is missing {}", scene.module))
+                })?;
+                validate_scene_module(&scene.id, module).map_err(|error| {
+                    manim_error(format!("{} is invalid: {error}", scene.module))
+                })?;
             }
         }
         VideoEngine::Model => {
@@ -2018,7 +2002,7 @@ struct AuthorScenesRequest<'a> {
 /// The entry composition is generated, so the model never restates the renderer's
 /// contract; each request carries one beat, its own window, and how the previous
 /// beat leaves the frame.
-async fn author_hyperframe_scenes(request: AuthorScenesRequest<'_>) -> Result<VideoSourceDocument> {
+async fn author_scenes(request: AuthorScenesRequest<'_>) -> Result<VideoSourceDocument> {
     let AuthorScenesRequest {
         plan,
         narration,
@@ -2038,23 +2022,42 @@ async fn author_hyperframe_scenes(request: AuthorScenesRequest<'_>) -> Result<Vi
     let layer = narration
         .map(|narration| narration.layer.clone())
         .unwrap_or_default();
-    let mut files = BTreeMap::from([
-        ("meta.json".to_string(), master_meta_json(slug)),
-        (
-            "index.html".to_string(),
-            master_index_html(plan, width, height, &layer),
-        ),
-    ]);
+    // Every engine generates its own non-authored parts and then fills in one
+    // file per scene. Only those two things differ, so the retry, the repair
+    // budget, and the per-scene context below are shared verbatim.
+    let mut files = if engine == VideoEngine::Manim {
+        BTreeMap::from([(
+            MANIFEST_PATH.to_string(),
+            manim_manifest_json(plan, &layer)?,
+        )])
+    } else {
+        BTreeMap::from([
+            ("meta.json".to_string(), master_meta_json(slug)),
+            (
+                "index.html".to_string(),
+                master_index_html(plan, width, height, &layer),
+            ),
+        ])
+    };
     if let Some(narration) = narration.filter(|narration| narration.layer.captions) {
-        files.insert(
-            format!("compositions/{CAPTIONS_COMPOSITION_ID}.html"),
-            captions_composition_html(&narration.captions, width, height),
-        );
+        if engine == VideoEngine::Manim {
+            files.insert(
+                CAPTIONS_PATH.to_string(),
+                captions_module(&narration.captions, film_seconds(plan), height),
+            );
+        } else {
+            files.insert(
+                format!("compositions/{CAPTIONS_COMPOSITION_ID}.html"),
+                captions_composition_html(&narration.captions, width, height),
+            );
+        }
     }
     let scenes = plan.scenes();
     for (index, scene) in scenes.iter().enumerate() {
         operation.checkpoint(OperationStage::Draft)?;
         context.scene_id = scene.id.clone();
+        context.scene_class_name = scene_class_name(&scene.id);
+        context.scene_module = scene_module_path(&scene.id);
         context.scene_position = index + 1;
         context.scene_count = scenes.len();
         context.scene_start_seconds = scene.start_seconds;
@@ -2069,23 +2072,19 @@ async fn author_hyperframe_scenes(request: AuthorScenesRequest<'_>) -> Result<Vi
             .unwrap_or_default();
         context.scene_snapshot = serde_json::to_string_pretty(scene)?;
 
+        let (system, user) = scene_prompts(engine);
         let mut markup = String::new();
         // One corrective attempt per scene: a scene that comes back malformed is
         // re-asked with the exact complaint, and only that scene is re-generated.
         for attempt in 1..=2 {
-            let mut scene_request = render_request(
-                prompt_catalog,
-                PromptId::VideoHyperframeSceneSystem,
-                PromptId::VideoHyperframeSceneUser,
-                context,
-            )?;
+            let mut scene_request = render_request(prompt_catalog, system, user, context)?;
             scene_request.event_sink = event_sink.clone();
             prompts.extend(scene_request.prompt_provenance.clone());
             let response = author
                 .generate_text(scene_request, operation, OperationStage::Draft)
                 .await?;
-            let candidate = strip_markup_fence(&response.text);
-            match validate_scene_composition(&scene.id, &candidate) {
+            let candidate = strip_scene_fence(engine, &response.text);
+            match validate_scene_source(engine, &scene.id, &candidate) {
                 Ok(()) => {
                     markup = candidate;
                     break;
@@ -2104,36 +2103,81 @@ async fn author_hyperframe_scenes(request: AuthorScenesRequest<'_>) -> Result<Vi
             }
         }
         context.retry_present = false;
-        files.insert(scene_composition_path(&scene.id), markup);
+        files.insert(scene_source_path(engine, &scene.id), markup);
     }
-    VideoSourceDocument::new(VideoEngine::Hyperframe, files).map_err(review_error)
+    VideoSourceDocument::new(engine, files).map_err(review_error)
+}
+
+/// The prompt pair that authors one scene for an engine.
+fn scene_prompts(engine: VideoEngine) -> (PromptId, PromptId) {
+    match engine {
+        VideoEngine::Manim => (
+            PromptId::VideoManimSceneSystem,
+            PromptId::VideoManimSceneUser,
+        ),
+        _ => (
+            PromptId::VideoHyperframeSceneSystem,
+            PromptId::VideoHyperframeSceneUser,
+        ),
+    }
+}
+
+/// The file one authored scene lives at.
+fn scene_source_path(engine: VideoEngine, scene_id: &str) -> String {
+    match engine {
+        VideoEngine::Manim => scene_module_path(scene_id),
+        _ => scene_composition_path(scene_id),
+    }
+}
+
+/// Unwraps a scene a model returned inside a fenced code block.
+fn strip_scene_fence(engine: VideoEngine, response: &str) -> String {
+    match engine {
+        VideoEngine::Manim => strip_python_fence(response),
+        _ => strip_markup_fence(response),
+    }
+}
+
+/// Rejects an authored scene that would not render as planned.
+fn validate_scene_source(
+    engine: VideoEngine,
+    scene_id: &str,
+    source: &str,
+) -> std::result::Result<(), String> {
+    match engine {
+        VideoEngine::Manim => validate_scene_module(scene_id, source),
+        _ => validate_scene_composition(scene_id, source),
+    }
 }
 
 /// Names the scene a validation failure points at, when it points at one.
 ///
 /// Both the core validator and the renderer's own check quote the offending path,
 /// so the scene can be recovered from the message rather than guessed at.
-fn failing_scene(source: &VideoSourceDocument, error: &SfumatoError) -> Option<String> {
+fn failing_scene(
+    source: &VideoSourceDocument,
+    plan_scene_ids: &[String],
+    error: &SfumatoError,
+) -> Option<String> {
     let message = error.to_string();
-    let scenes = source
-        .files()
-        .keys()
-        .filter(|path| path.starts_with("compositions/") && path.ends_with(".html"))
-        .filter_map(|path| {
-            path.strip_prefix("compositions/")
-                .and_then(|name| name.strip_suffix(".html"))
-        })
+    // Matched against the plan's scene IDs rather than the file stems, because a
+    // Manim module's stem is a sanitised identifier while the plan, the prompts,
+    // and the re-author request all speak in scene IDs.
+    let scenes = plan_scene_ids
+        .iter()
         // The caption overlay is generated, not authored: naming it here would
         // send a re-author request for a scene the plan does not contain.
-        .filter(|name| *name != CAPTIONS_COMPOSITION_ID)
+        .filter(|name| name.as_str() != CAPTIONS_COMPOSITION_ID)
+        .map(String::as_str)
         .collect::<Vec<_>>();
+    let engine = source.engine();
     // The path when the renderer quotes one, and otherwise the scene ID, because
     // the errors that matter most for quality — overflowing, occluded and
     // overlapping text — name the offending element rather than its file, and
     // authored element IDs carry the scene they belong to.
     scenes
         .iter()
-        .find(|scene| message.contains(&format!("compositions/{scene}.html")))
+        .find(|scene| message.contains(&scene_source_path(engine, scene)))
         .or_else(|| scenes.iter().find(|scene| message.contains(**scene)))
         .map(|scene| (*scene).to_owned())
 }
@@ -2183,6 +2227,8 @@ async fn reauthor_scene(request: ReauthorSceneRequest<'_>) -> Result<VideoSource
     let scene = &scenes[position];
 
     context.scene_id = scene.id.clone();
+    context.scene_class_name = scene_class_name(&scene.id);
+    context.scene_module = scene_module_path(&scene.id);
     context.scene_position = position + 1;
     context.scene_count = scenes.len();
     context.scene_start_seconds = scene.start_seconds;
@@ -2201,34 +2247,30 @@ async fn reauthor_scene(request: ReauthorSceneRequest<'_>) -> Result<VideoSource
     context.retry_invalid_response = excerpt(
         source
             .files()
-            .get(&scene_composition_path(scene_id))
+            .get(&scene_source_path(engine, scene_id))
             .map(String::as_str)
             .unwrap_or_default(),
         4_000,
     );
 
-    let mut scene_request = render_request(
-        prompt_catalog,
-        PromptId::VideoHyperframeSceneSystem,
-        PromptId::VideoHyperframeSceneUser,
-        context,
-    )?;
+    let (system, user) = scene_prompts(engine);
+    let mut scene_request = render_request(prompt_catalog, system, user, context)?;
     scene_request.event_sink = event_sink.clone();
     prompts.extend(scene_request.prompt_provenance.clone());
     let response = author
         .generate_text(scene_request, operation, OperationStage::Repair)
         .await?;
     context.retry_present = false;
-    let markup = strip_markup_fence(&response.text);
-    validate_scene_composition(scene_id, &markup).map_err(|error| {
+    let markup = strip_scene_fence(engine, &response.text);
+    validate_scene_source(engine, scene_id, &markup).map_err(|error| {
         SfumatoError::provider(
             ErrorClass::InvalidOutput,
             format!("Re-authored scene is still invalid: {error}"),
         )
     })?;
     let mut files = source.files().clone();
-    files.insert(scene_composition_path(scene_id), markup);
-    VideoSourceDocument::new(VideoEngine::Hyperframe, files).map_err(review_error)
+    files.insert(scene_source_path(engine, scene_id), markup);
+    VideoSourceDocument::new(engine, files).map_err(review_error)
 }
 
 /// How many frames one visual review may carry.
@@ -2346,9 +2388,19 @@ fn reported_faults(message: &str) -> usize {
 /// roughly a round per scene at fault plus a second pass on the stubborn one. The
 /// ceiling is what stops a pathological film from spending an afternoon, since each
 /// round is a model call and a full renderer check.
-fn repair_rounds(faults: usize) -> usize {
-    faults.clamp(3, 8)
+///
+/// The scene count is a floor because a checker that stops at the first bad scene
+/// reports one fault at a time: a seven-scene film with an independent fault in
+/// three different scenes looks like three separate one-fault failures, and a
+/// budget sized for one of them runs out while every round was still making
+/// progress. Rounds that clear nothing are caught by the stall counter instead,
+/// which is the honest signal that repair is not working.
+fn repair_rounds(faults: usize, scene_count: usize) -> usize {
+    faults.clamp(3, 8).max(scene_count.min(MAX_REPAIR_ROUNDS))
 }
+
+/// Hard ceiling on repair rounds, however many scenes a film has.
+const MAX_REPAIR_ROUNDS: usize = 12;
 
 /// Rounds allowed to clear nothing before the film is reported instead.
 ///
@@ -2356,6 +2408,18 @@ fn repair_rounds(faults: usize) -> usize {
 /// renderer could not see behind it, which leaves the count level without meaning
 /// the author is lost.
 const MAX_STALLED_REPAIRS: usize = 2;
+
+/// Whether the last round moved the film forward at all.
+///
+/// Not only a smaller fault count. A checker that stops at the first bad scene
+/// reports one fault at a time, so the count never moves, and every round read as
+/// stalled even while each one fixed its scene and surfaced the next scene's
+/// independent fault — which cut a seven-scene film off after two repairs. Where
+/// the count cannot show progress, the failing scene changing does; a stall is the
+/// same scene failing again.
+fn repair_advanced(remaining: usize, previous: usize, named: Option<&str>, repaired: &str) -> bool {
+    remaining < previous || named.is_some_and(|scene| scene != repaired)
+}
 
 /// Whether another focused repair round is worth spending.
 fn another_repair_round(round: usize, budget: usize, stalled: usize) -> bool {
@@ -2476,12 +2540,7 @@ fn validate_video_options(config: &EffectiveConfig, video: &GenerateVideoRequest
             "Video quality must be draft, standard, or high",
         ));
     }
-    if video.engine == VideoEngine::Manim && video.audio == VideoAudioMode::On {
-        return Err(SfumatoError::validation(
-            "Manim renders silently; use --audio off or generate with --engine hyperframe",
-        ));
-    }
-    if video.engine == VideoEngine::Hyperframe
+    if video.engine != VideoEngine::Model
         && video.audio == VideoAudioMode::On
         && !config.generation_tool_enabled(GenerationToolKind::AudioGen)
     {
@@ -2490,10 +2549,10 @@ fn validate_video_options(config: &EffectiveConfig, video: &GenerateVideoRequest
         ));
     }
     if video.engine == VideoEngine::Manim
-        && !(video.allow_code_execution || config.security.allow_manim)
+        && !(video.allow_code_execution || config.security.allow_python)
     {
         return Err(SfumatoError::validation(
-            "Manim executes generated Python. Pass --allow-code-execution or enable project security.allow_manim.",
+            "Manim executes generated Python. Pass --allow-code-execution or enable project security.allow_python.",
         ));
     }
     if !video.urls.is_empty() && video.engine != VideoEngine::Hyperframe {

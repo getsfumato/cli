@@ -788,12 +788,12 @@ sfumato generate video [INPUTS]... \
 | `--aspect-ratio` | Defaults to `16:9`; validated against engine/provider support. |
 | `--fps` | Local engines only; defaults to `30`, valid range `1..=120`. |
 | `--quality` | Local engines only; defaults to `high`. |
-| `--audio` | Hyperframe narrates when a `speech` default exists (`auto`); `on` requires one and fails without it; `off` renders silent. Manim is always silent. Remote defaults to `auto`. |
-| `--voice` | Hyperframe only. Overrides the speech profile's voice for this film. |
-| `--allow-code-execution` | Valid only for Manim and authorizes generated Python for this request. Project `security.allow_manim` is the persistent alternative. |
+| `--audio` | Both local engines narrate when a `speech` default exists (`auto`); `on` requires one and fails without it; `off` renders silent. Remote defaults to `auto`. |
+| `--voice` | Local engines only. Overrides the speech profile's voice for this film. |
+| `--allow-code-execution` | Valid only for Manim and authorizes generated Python for this request. Project `security.allow_python` is the persistent alternative. |
 | `--model` | Text drafter plus `code` for local authoring or `video` for remote generation. |
 | `--review-model`, `--no-review` | Controls semantic plan review. Invalid local source is still eligible for one focused repair so the renderer contract can be satisfied. |
-| `--tool`, `--disable-tool` | Video planning supports `image-gen` and `audio-gen`; standalone video never injects `video-gen`. `audio-gen` turns narration on or off for a Hyperframe film. |
+| `--tool`, `--disable-tool` | Video planning supports `image-gen`, `audio-gen`, and `chart-gen`; standalone video never injects `video-gen`. `audio-gen` turns narration on or off for a local film. |
 | `--dry-run`, `--json` | Preflight or machine-readable output. |
 
 Engine-incompatible flags fail before paid provider calls or code execution.

@@ -142,7 +142,7 @@ fn migrate_v4(path: &Path, kind: &str) -> Result<()> {
                 .or_insert_with(|| toml::Value::Table(toml::Table::new()));
             table.entry("security").or_insert_with(|| {
                 toml::Value::Table(toml::Table::from_iter([(
-                    "allow_manim".into(),
+                    "allow_python".into(),
                     toml::Value::Boolean(false),
                 )]))
             });
@@ -216,9 +216,32 @@ pub fn edit_toml(path: &Path, edit: impl FnOnce(&mut toml::Table) -> Result<()>)
         } else {
             toml::Table::new()
         };
+        rename_legacy_keys(&mut table);
         edit(&mut table)?;
         write_toml_unlocked(path, &toml::Value::Table(table))
     })
+}
+
+/// Settings that were renamed, as `[table]`, old key, new key.
+///
+/// A renamed key is still accepted on load through a serde alias, but a document
+/// that carries the old spelling cannot also grow the new one: the alias makes
+/// them the same field, and two of the same field is a duplicate. Renaming on
+/// the way into an edit means the first change to a project heals it, rather
+/// than failing with a duplicate-field error the user did not cause.
+const RENAMED_KEYS: [(&str, &str, &str); 1] = [("security", "allow_manim", "allow_python")];
+
+fn rename_legacy_keys(table: &mut toml::Table) {
+    for (section, old, new) in RENAMED_KEYS {
+        let Some(toml::Value::Table(section)) = table.get_mut(section) else {
+            continue;
+        };
+        let Some(value) = section.remove(old) else {
+            continue;
+        };
+        // An explicit new key wins: it is what the document already meant to say.
+        section.entry(new).or_insert(value);
+    }
 }
 
 fn with_write_lock<T>(path: &Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {

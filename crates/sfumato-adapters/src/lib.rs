@@ -20,6 +20,7 @@ pub mod pages;
 pub mod project_assets;
 pub mod prompts;
 pub mod providers;
+pub mod python;
 pub mod renderers;
 pub mod repositories;
 mod runtime;

@@ -99,7 +99,7 @@ video_gen = false
 audio_gen = true
 
 [security]
-allow_manim = false
+allow_python = false
 
 [marp]
 pdf = true
@@ -191,7 +191,7 @@ sfumato config set user.name '"Alex"'
 sfumato config set defaults.text codex
 sfumato config set publish_dir '"Resources/Sfumato"' --scope project
 sfumato config set generation_tools.image_gen true --scope project --project university
-sfumato config set security.allow_manim true --scope project --project university
+sfumato config set security.allow_python true --scope project --project university
 ```
 
 Quote strings as TOML when shell ambiguity matters. A bare value that is not

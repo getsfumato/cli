@@ -182,3 +182,57 @@ fn image_tool_defaults_to_model_availability_and_video_stays_off() {
     assert!(config.generation_tool_enabled(GenerationToolKind::ImageGen));
     assert!(!config.generation_tool_enabled(GenerationToolKind::VideoGen));
 }
+
+#[test]
+fn an_allowed_python_package_is_matched_by_name_not_by_pin() {
+    let security = ProjectSecurityConfig {
+        allow_python: true,
+        python_packages: vec!["scipy".to_string(), "Pandas==2.3.3".to_string()],
+    };
+    // A project that permits a package permits whichever pin a caller asks for;
+    // enumerating every version it might want is not a trust decision.
+    security.authorize_python_package("scipy").unwrap();
+    security.authorize_python_package("scipy==1.16.2").unwrap();
+    security.authorize_python_package("pandas==2.0.0").unwrap();
+}
+
+#[test]
+fn an_unlisted_python_package_is_refused() {
+    let security = ProjectSecurityConfig {
+        allow_python: true,
+        python_packages: vec!["scipy".to_string()],
+    };
+    assert!(security.authorize_python_package("requests").is_err());
+    // Even a listed name cannot smuggle an installer flag past validation.
+    assert!(
+        security
+            .authorize_python_package("scipy --index-url http://evil")
+            .is_err()
+    );
+}
+
+#[test]
+fn an_empty_allowlist_permits_nothing() {
+    let security = ProjectSecurityConfig::default();
+    assert!(!security.allow_python);
+    assert!(security.authorize_python_package("numpy").is_err());
+}
+
+#[test]
+fn a_malformed_allowlist_entry_is_reported_while_editing_the_project() {
+    let project = ProjectConfig {
+        name: "university".to_string(),
+        theme: "sfumato-default".to_string(),
+        publish_dir: None,
+        model_defaults: Default::default(),
+        model_roles: Default::default(),
+        page: Default::default(),
+        generation_tools: Default::default(),
+        security: ProjectSecurityConfig {
+            allow_python: true,
+            python_packages: vec!["--index-url=http://evil".to_string()],
+        },
+        marp: None,
+    };
+    assert!(project.validate().is_err());
+}

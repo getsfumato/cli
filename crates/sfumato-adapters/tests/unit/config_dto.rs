@@ -315,3 +315,55 @@ fn project_and_registry_versions_are_owned_by_persistence_dtos() {
         "university"
     );
 }
+
+#[test]
+fn an_existing_project_that_allowed_manim_still_allows_generated_python() {
+    // Renaming the setting must not silently revoke consent a project already
+    // gave: an untouched project.toml written before charts existed still says
+    // `allow_manim`, and re-prompting for permission would be a regression.
+    let document = r#"
+schema_version = 5
+name = "university"
+theme = "sfumato-default"
+
+[page]
+plugins = []
+
+[generation_tools]
+
+[security]
+allow_manim = true
+"#;
+    let project = toml::from_str::<ProjectConfigDto>(document)
+        .expect("a v5 project using the old spelling should parse")
+        .into_domain()
+        .expect("and should be a valid project");
+    assert!(project.security.allow_python);
+    assert!(project.security.python_packages.is_empty());
+}
+
+#[test]
+fn security_settings_round_trip_under_the_current_spelling() {
+    let project = ProjectConfig {
+        name: "university".to_string(),
+        theme: "sfumato-default".to_string(),
+        publish_dir: None,
+        model_defaults: BTreeMap::new(),
+        model_roles: BTreeMap::new(),
+        page: PageDefaults::default(),
+        generation_tools: GenerationToolDefaults::default(),
+        security: ProjectSecurityConfig {
+            allow_python: true,
+            python_packages: vec!["scipy==1.16.2".to_string()],
+        },
+        marp: None,
+    };
+    let rendered = toml::to_string_pretty(&ProjectConfigDto::from_domain(&project)).unwrap();
+    assert!(rendered.contains("allow_python = true"));
+    let restored = toml::from_str::<ProjectConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+    assert!(restored.security.allow_python);
+    assert_eq!(restored.security.python_packages, vec!["scipy==1.16.2"]);
+}

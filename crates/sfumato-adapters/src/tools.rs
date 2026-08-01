@@ -1,6 +1,7 @@
 //! Filesystem and generated-image tools exposed to text models.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     sync::{
@@ -21,10 +22,12 @@ use sfumato_core::{
         ImageGenerationRequest, SpeechGenerationRequest, ToolDefinition, ToolExecutionRequest,
         ToolExecutor, ToolFunctionDefinition, VideoGenerationRequest,
     },
+    python::{PythonRunRequest, screen_python_source},
     resources::narration::{audio_extension, audio_media_type},
+    themes::ThemePackage,
     tools::{
-        AudioToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig, ToolSet,
-        VideoToolConfig,
+        AudioToolConfig, ChartToolConfig, GenerationToolFactory, GenerationToolsRequest,
+        ImageToolConfig, ToolSet, VideoToolConfig,
     },
 };
 use sha2::{Digest, Sha256};
@@ -267,6 +270,343 @@ struct GenerationToolExecutor {
     image: Option<ImageGenerationTool>,
     video: Option<VideoGenerationTool>,
     audio: Option<AudioGenerationTool>,
+    chart: Option<ChartGenerationTool>,
+}
+
+/// Plots data locally by running model-written matplotlib code.
+///
+/// The model supplies only the plotting body. Sfumato owns the imports, the
+/// non-interactive backend, the theme styling, the figure size, and the save,
+/// because those are the parts that decide whether the picture matches the rest
+/// of the resource and whether it renders at all on a machine with no display.
+struct ChartGenerationTool {
+    config: ChartToolConfig,
+    artifacts: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+/// Statements the caller owns, which a plotting body must not repeat.
+///
+/// Each of these would override a decision made for the whole resource — the
+/// backend, the theme, where the file lands — so a body containing one is
+/// refused with an explanation rather than silently overridden.
+const RESERVED_CHART_STATEMENTS: [(&str, &str); 5] = [
+    (
+        "savefig",
+        "Sfumato saves the figure; end with the plot, not a save",
+    ),
+    ("plt.show", "there is no display to show a figure on"),
+    (
+        "matplotlib.use",
+        "the rendering backend is selected by Sfumato",
+    ),
+    (
+        "plt.style.use",
+        "the project theme already styles the figure",
+    ),
+    ("rcparams", "the project theme already styles the figure"),
+];
+
+/// The five roles a chart needs, resolved from whatever a theme happens to name.
+///
+/// Themes are free-form: the bundled one says `background`/`text`, another says
+/// `canvas`/`ink`, a third omits a role entirely. Reading fixed key names and
+/// falling back to fixed hex values meant a dark theme silently produced a white
+/// chart, and the only fix would have been editing this file — which defeats the
+/// point of configuring a theme once. So each role is resolved through a chain of
+/// names themes actually use, and anything still missing is derived from the
+/// colours that were found rather than guessed.
+struct ChartPalette {
+    background: String,
+    text: String,
+    muted: String,
+    primary: String,
+    accent: String,
+    family: String,
+}
+
+impl ChartPalette {
+    fn from_theme(theme: &ThemePackage) -> Self {
+        let tokens = &theme.manifest.tokens;
+        // `surface-card` and `background_hard` are the same convention spelled two
+        // ways, so lookup ignores the separator.
+        let normalise = |name: &str| name.trim().to_ascii_lowercase().replace('-', "_");
+        let colours = tokens
+            .colors
+            .iter()
+            .map(|(name, value)| (normalise(name), value.trim().to_string()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let role = |candidates: &[&str]| {
+            candidates
+                .iter()
+                .find_map(|candidate| colours.get(&normalise(candidate)).cloned())
+        };
+
+        let background = role(&[
+            "background",
+            "canvas",
+            "surface",
+            "background_hard",
+            "background_soft",
+            "surface_card",
+        ])
+        .unwrap_or_else(|| "#ffffff".to_string());
+        let mut text = role(&[
+            "text",
+            "ink",
+            "text_strong",
+            "body_strong",
+            "on_dark",
+            "body",
+        ])
+        .unwrap_or_else(|| readable_on(&background));
+        // A theme may name a text colour meant for a different surface. Chart text
+        // that cannot be read against the chart's own background is a defect no
+        // matter which token it came from.
+        if contrast_ratio(&text, &background) < 3.0 {
+            text = readable_on(&background);
+        }
+        let muted = role(&["muted", "muted_soft", "hairline", "body", "text_muted"])
+            .unwrap_or_else(|| blend(&text, &background, 0.45));
+        let primary = role(&["primary", "accent"]).unwrap_or_else(|| text.clone());
+        let accent = role(&[
+            "accent",
+            "accent_yellow",
+            "primary_hover",
+            "primary_active",
+            "secondary",
+        ])
+        .unwrap_or_else(|| primary.clone());
+        // Only the family name is useful to matplotlib; a CSS stack's fallbacks
+        // are resolved by a browser, not by a font manager.
+        let family = tokens
+            .fonts
+            .get("body")
+            .and_then(|stack| stack.split(',').next())
+            .map(|family| family.trim().trim_matches(['"', '\'']).to_string())
+            .filter(|family| !family.is_empty())
+            .unwrap_or_else(|| "DejaVu Sans".to_string());
+
+        Self {
+            background,
+            text,
+            muted,
+            primary,
+            accent,
+            family,
+        }
+    }
+}
+
+/// Parses `#rgb` or `#rrggbb` into channels.
+fn channels(colour: &str) -> Option<(f64, f64, f64)> {
+    let hex = colour.trim().strip_prefix('#')?;
+    let expand = |value: &str| u8::from_str_radix(value, 16).ok().map(f64::from);
+    match hex.len() {
+        3 => {
+            let mut digits = hex.chars().map(|digit| expand(&format!("{digit}{digit}")));
+            Some((digits.next()??, digits.next()??, digits.next()??))
+        }
+        6 | 8 => Some((
+            expand(&hex[0..2])?,
+            expand(&hex[2..4])?,
+            expand(&hex[4..6])?,
+        )),
+        _ => None,
+    }
+}
+
+/// Relative luminance per WCAG, used to decide readability.
+fn luminance(colour: &str) -> f64 {
+    let Some((red, green, blue)) = channels(colour) else {
+        // An unparseable colour is treated as light, which is the safer guess: it
+        // yields dark text, legible on most surfaces.
+        return 1.0;
+    };
+    let channel = |value: f64| {
+        let value = value / 255.0;
+        if value <= 0.039_28 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+}
+
+fn contrast_ratio(left: &str, right: &str) -> f64 {
+    let (lighter, darker) = {
+        let (left, right) = (luminance(left), luminance(right));
+        if left >= right {
+            (left, right)
+        } else {
+            (right, left)
+        }
+    };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// The near-black or near-white that reads against a surface.
+fn readable_on(background: &str) -> String {
+    if luminance(background) > 0.4 {
+        "#101010".to_string()
+    } else {
+        "#f5f5f5".to_string()
+    }
+}
+
+/// Mixes two colours, used to derive a muted tone a theme did not declare.
+fn blend(colour: &str, towards: &str, amount: f64) -> String {
+    let (Some(from), Some(to)) = (channels(colour), channels(towards)) else {
+        return colour.to_string();
+    };
+    let mix = |from: f64, to: f64| (from + (to - from) * amount).round().clamp(0.0, 255.0) as u8;
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        mix(from.0, to.0),
+        mix(from.1, to.1),
+        mix(from.2, to.2)
+    )
+}
+
+impl ChartGenerationTool {
+    /// Wraps the model's plotting body in the parts Sfumato owns.
+    ///
+    /// Theme colours are pushed through `rcParams` rather than described in
+    /// prose, so a chart matches the deck it sits in without the model having to
+    /// be told the palette and remember to apply it.
+    fn program(&self, body: &str, width: f64, height: f64) -> String {
+        let palette = ChartPalette::from_theme(&self.config.theme);
+        let ChartPalette {
+            background,
+            text,
+            muted,
+            primary,
+            accent,
+            family,
+        } = palette;
+        format!(
+            r#"import logging
+import matplotlib
+
+matplotlib.use("Agg")
+# A theme names web fonts, which a plotting environment has no reason to carry.
+# Falling back to the bundled family is the intended behaviour, so it is not
+# worth eighty warning lines that would crowd out a real traceback.
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+import matplotlib.pyplot as plt
+from matplotlib import cycler
+import numpy as np
+
+plt.rcParams.update({{
+    "figure.figsize": ({width}, {height}),
+    "figure.dpi": 200,
+    "figure.facecolor": "{background}",
+    "axes.facecolor": "{background}",
+    "axes.edgecolor": "{muted}",
+    "axes.labelcolor": "{text}",
+    "axes.titlecolor": "{text}",
+    "axes.prop_cycle": cycler(color=["{primary}", "{accent}", "{muted}", "{text}"]),
+    "text.color": "{text}",
+    "xtick.color": "{muted}",
+    "ytick.color": "{muted}",
+    "grid.color": "{muted}",
+    "grid.alpha": 0.25,
+    "font.family": ["{family}", "DejaVu Sans"],
+    "savefig.facecolor": "{background}",
+    "savefig.bbox": "tight",
+}})
+
+{body}
+
+plt.savefig("chart.png")
+"#
+        )
+    }
+
+    async fn execute(
+        &self,
+        arguments: &Value,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<String> {
+        operation.checkpoint(stage)?;
+        let code = string_arg(arguments, "code")?;
+        if code.trim().is_empty() {
+            bail!("sfumato_chart_gen needs matplotlib code to run");
+        }
+        let alt_text = string_arg(arguments, "alt_text")?;
+        let lowercase = code.to_ascii_lowercase();
+        for (statement, reason) in RESERVED_CHART_STATEMENTS {
+            if lowercase.contains(statement) {
+                bail!("Remove `{statement}` from the chart code: {reason}.");
+            }
+        }
+        screen_python_source(&code).map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        let packages = optional_string_list_arg(arguments, "packages")?;
+        for requirement in &packages {
+            self.config
+                .security
+                .authorize_python_package(requirement)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
+        let width = optional_f64_arg(arguments, "width_inches")?.unwrap_or(8.0);
+        let height = optional_f64_arg(arguments, "height_inches")?.unwrap_or(4.5);
+        for (name, value) in [("width_inches", width), ("height_inches", height)] {
+            if !(2.0..=20.0).contains(&value) {
+                bail!("{name} must be between 2 and 20 inches; received {value}");
+            }
+        }
+
+        let mut files = BTreeMap::new();
+        files.insert("chart.py".to_string(), self.program(&code, width, height));
+        let result = self
+            .config
+            .python
+            .run(
+                PythonRunRequest {
+                    environment: "charting".to_string(),
+                    extra_packages: packages,
+                    files,
+                    entrypoint: "chart.py".to_string(),
+                    arguments: Vec::new(),
+                    outputs: vec!["chart.png".to_string()],
+                    output_dir: self.config.output_dir.clone(),
+                },
+                operation,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let produced = result
+            .outputs
+            .first()
+            .context("Chart run reported no output")?;
+
+        // Named by content hash like a generated image, so two identical charts
+        // are one file and the unreferenced-asset sweep treats both the same way.
+        let bytes = fs::read(produced)
+            .with_context(|| format!("Could not read rendered chart {}", produced.display()))?;
+        let content_hash = format!("{:x}", Sha256::digest(&bytes));
+        let filename = format!("chart-{}.png", &content_hash[..24]);
+        let path = self.config.output_dir.join(&filename);
+        if path != *produced {
+            fs::rename(produced, &path)
+                .with_context(|| format!("Could not name rendered chart {}", path.display()))?;
+        }
+        // Registered like a generated image so a chart the draft never referenced
+        // is swept up with the rest instead of lingering in the revision.
+        self.artifacts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Generated chart artifact registry is unavailable"))?
+            .push(path.clone());
+        Ok(json!({
+            "path": path,
+            "markdown_path": format!("{}/{filename}", self.config.reference_prefix),
+            "alt_text": alt_text,
+            "media_type": "image/png",
+        })
+        .to_string())
+    }
 }
 
 /// Speaks text and returns the audio plus the word timings behind it.
@@ -499,6 +839,21 @@ impl ToolExecutor for GenerationToolExecutor {
                 .await
                 .map_err(|error| tool_error(error, stage));
         }
+        if request.name == "sfumato_chart_gen" {
+            return self
+                .chart
+                .as_ref()
+                .ok_or_else(|| {
+                    SfumatoError::tool(
+                        ErrorClass::Permanent,
+                        "Charting is not enabled for this project",
+                    )
+                    .at_stage(stage)
+                })?
+                .execute(&request.arguments, operation, stage)
+                .await
+                .map_err(|error| tool_error(error, stage));
+        }
         if request.name == "sfumato_video_gen" {
             return self
                 .video
@@ -538,6 +893,7 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
                 image,
                 video,
                 audio,
+                chart,
                 prompt_catalog,
             } = request;
             let mut roots = vec![project_root];
@@ -589,6 +945,13 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
                     artifacts: artifacts.clone(),
                 }
             });
+            let chart = chart.map(|config| {
+                definitions.push(chart_generation_tool(&descriptions));
+                ChartGenerationTool {
+                    config,
+                    artifacts: artifacts.clone(),
+                }
+            });
             Ok(ToolSet {
                 definitions,
                 executor: Arc::new(GenerationToolExecutor {
@@ -596,6 +959,7 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
                     image,
                     video,
                     audio,
+                    chart,
                 }),
                 artifacts,
                 prompts,
@@ -629,6 +993,11 @@ struct ToolDescriptions {
     audio_generation: String,
     audio_text: String,
     audio_voice: String,
+    chart_generation: String,
+    chart_code: String,
+    chart_alt_text: String,
+    chart_packages: String,
+    chart_size: String,
 }
 
 fn list_directory_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
@@ -691,6 +1060,31 @@ fn image_generation_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
     }
 }
 
+fn chart_generation_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
+    ToolDefinition {
+        kind: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "sfumato_chart_gen".to_string(),
+            description: descriptions.chart_generation.clone(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string", "description": descriptions.chart_code },
+                    "alt_text": { "type": "string", "description": descriptions.chart_alt_text },
+                    "packages": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": descriptions.chart_packages
+                    },
+                    "width_inches": { "type": "number", "description": descriptions.chart_size },
+                    "height_inches": { "type": "number", "description": descriptions.chart_size }
+                },
+                "required": ["code", "alt_text"]
+            }),
+        },
+    }
+}
+
 fn video_generation_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
     ToolDefinition {
         kind: "function".to_string(),
@@ -745,6 +1139,34 @@ fn optional_string_arg(arguments: &Value, key: &str) -> Result<Option<String>> {
         Some(Value::String(value)) => Ok(Some(value.clone())),
         Some(_) => bail!("Tool argument '{key}' must be a string"),
         None => Ok(None),
+    }
+}
+
+fn optional_string_list_arg(arguments: &Value, key: &str) -> Result<Vec<String>> {
+    let arguments = normalized_arguments(arguments)?;
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .with_context(|| format!("Tool argument '{key}' must be a list of strings"))
+            })
+            .collect(),
+        Some(_) => bail!("Tool argument '{key}' must be a list of strings"),
+    }
+}
+
+fn optional_f64_arg(arguments: &Value, key: &str) -> Result<Option<f64>> {
+    let arguments = normalized_arguments(arguments)?;
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_f64()
+            .map(Some)
+            .with_context(|| format!("Tool argument '{key}' must be a number")),
     }
 }
 
