@@ -85,6 +85,35 @@ fn narration_track_totals_include_the_gap_after_every_passage() {
 }
 
 #[test]
+fn a_passage_identifier_cannot_become_a_path_that_escapes_the_output_directory() {
+    // The identifier is interpolated into `narration-<id>-<digest>.<ext>` and
+    // joined onto the output directory, so anything that is not a plain name
+    // component writes somewhere the caller did not choose.
+    for id in [
+        "../../../../tmp/pwned",
+        "..",
+        "nested/scene",
+        "scene\\windows",
+        "/absolute",
+        "scene.mp3",
+        "",
+    ] {
+        assert!(
+            validate_segment_id(id).is_err(),
+            "`{id}` is not a safe file-name component"
+        );
+    }
+    for id in ["intro", "scene-2", "chapter_3", "A1"] {
+        assert!(
+            validate_segment_id(id).is_ok(),
+            "`{id}` is a normal passage name and must stay valid"
+        );
+    }
+    assert!(validate_segment_id(&"a".repeat(64)).is_ok());
+    assert!(validate_segment_id(&"a".repeat(65)).is_err());
+}
+
+#[test]
 fn audio_extension_follows_the_requested_container() {
     assert_eq!(audio_extension(Some("mp3_44100_128")), "mp3");
     assert_eq!(audio_extension(Some("wav_44100")), "wav");

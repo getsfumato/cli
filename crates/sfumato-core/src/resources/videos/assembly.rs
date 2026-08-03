@@ -69,8 +69,8 @@ pub(super) fn master_index_html(
     for (index, scene) in plan.scenes().iter().enumerate() {
         mounts.push_str(&format!(
             "    <div id=\"{host}\" class=\"clip\" data-composition-id=\"{host}\" data-composition-src=\"{path}\" data-start=\"{start}\" data-duration=\"{duration}\" data-track-index=\"{track}\"></div>\n",
-            host = scene_host_id(&scene.id),
-            path = scene_composition_path(&scene.id),
+            host = escape_attribute(&scene_host_id(&scene.id)),
+            path = escape_attribute(&scene_composition_path(&scene.id)),
             start = format_seconds(scene.start_seconds),
             duration = format_seconds(scene.duration_seconds),
             track = index,
@@ -166,6 +166,17 @@ pub(super) fn captions_composition_html(
         "<template>\n  <div id=\"{id}\" data-composition-id=\"{id}\" data-width=\"{width}\" data-height=\"{height}\" data-start=\"0\">\n    <style>\n      #{id} {{ position: absolute; inset: 0; pointer-events: none; }}\n      #{id} .caption {{\n        position: absolute;\n        left: {side}px;\n        right: {side}px;\n        bottom: {bottom}px;\n        margin: 0 auto;\n        text-align: center;\n        font-family: Inter, sans-serif;\n        font-weight: 700;\n        font-size: {font_size}px;\n        line-height: 1.25;\n        color: #ffffff;\n        opacity: 0;\n        overflow: visible;\n      }}\n      #{id} .caption-line {{\n        display: inline-block;\n        padding: 0.24em 0.6em;\n        border-radius: 0.18em;\n        background: rgba(12, 14, 17, 0.66);\n        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);\n      }}\n    </style>\n{markup}    <script>\n      const tl = gsap.timeline({{ paused: true }});\n{timeline}      tl.set({{}}, {{}}, {total});\n      window.__timelines = window.__timelines || {{}};\n      window.__timelines[\"{id}\"] = tl;\n    </script>\n  </div>\n</template>\n",
         total = format_seconds(total),
     )
+}
+
+/// Escapes text destined for a double-quoted attribute value.
+///
+/// The scene IDs interpolated here are validated in the domain, so nothing that
+/// needs escaping should reach this point. It runs anyway: the values are
+/// model-derived, this markup is executed by a headless browser, and a quote that
+/// slipped through would close the attribute and inject script rather than
+/// produce a validation error.
+fn escape_attribute(value: &str) -> String {
+    escape_html(value).replace('"', "&quot;")
 }
 
 /// Escapes text destined for element content.

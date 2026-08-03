@@ -33,6 +33,32 @@ pub const DEFAULT_SEGMENT_GAP_SECONDS: f32 = 0.45;
 /// provider error nobody can attribute.
 const MAX_SEGMENT_CHARACTERS: usize = 5_000;
 
+/// Longest identifier accepted for a passage.
+const MAX_SEGMENT_ID_CHARACTERS: usize = 64;
+
+/// Rejects an identifier that is unsafe to build a file name out of.
+///
+/// The caller's ID becomes a path component in `narration-<id>-<digest>.<ext>`,
+/// and the callers that matter are upstream of a model: a film names passages
+/// after plan scenes. Video plans already pin the charset in the domain, but this
+/// function is engine-neutral and a podcast naming passages after chapters gets
+/// the same guarantee here rather than by convention.
+fn validate_segment_id(id: &str) -> Result<()> {
+    let permitted =
+        |character: char| character.is_ascii_alphanumeric() || matches!(character, '-' | '_');
+    if id.is_empty() || id.chars().count() > MAX_SEGMENT_ID_CHARACTERS {
+        return Err(SfumatoError::validation(format!(
+            "Narration passage identifier '{id}' must be between 1 and {MAX_SEGMENT_ID_CHARACTERS} characters"
+        )));
+    }
+    if !id.chars().all(permitted) {
+        return Err(SfumatoError::validation(format!(
+            "Narration passage identifier '{id}' must use only letters, digits, `-`, and `_`"
+        )));
+    }
+    Ok(())
+}
+
 /// One passage to speak, named by whatever owns it.
 #[derive(Clone, Debug)]
 pub struct NarrationSegmentRequest {
@@ -127,6 +153,7 @@ pub async fn synthesize_narration(
         .filter(|segment| !segment.text.trim().is_empty())
         .collect::<Vec<_>>();
     for segment in &spoken {
+        validate_segment_id(&segment.id)?;
         if segment.text.chars().count() > MAX_SEGMENT_CHARACTERS {
             return Err(SfumatoError::validation(format!(
                 "Narration for '{}' is {} characters; the per-request limit is {MAX_SEGMENT_CHARACTERS}",

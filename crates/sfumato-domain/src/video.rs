@@ -17,6 +17,12 @@ pub const VIDEO_SOURCE_SCHEMA_VERSION: u32 = 1;
 const MAX_VIDEO_SECONDS: u32 = 3_600;
 const MAX_TEXT_CHARS: usize = 128_000;
 const MAX_SOURCE_CHARS: usize = 1_000_000;
+/// Longest scene identifier accepted.
+///
+/// Generous for a name a model picks for a beat, and short enough that the file
+/// names and element IDs derived from it stay inside every platform's limits
+/// once the prefixes and content digests are appended.
+const MAX_SCENE_ID_CHARS: usize = 64;
 
 /// Engine selected to materialize a video plan.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -383,7 +389,8 @@ impl VideoPlanDocument {
         }
         let mut ids = BTreeSet::new();
         for scene in &self.scenes {
-            if scene.id.trim().is_empty() || !ids.insert(scene.id.clone()) {
+            validate_scene_id(&scene.id)?;
+            if !ids.insert(scene.id.clone()) {
                 return invalid_video("scene identifiers must be non-empty and unique");
             }
             if !scene.start_seconds.is_finite()
@@ -704,6 +711,39 @@ fn validate_scene_production(value: &VideoSceneProduction) -> Result<(), ReviewE
         .chain(value.acceptance.iter())
     {
         validate_text("scene production value", text, MAX_TEXT_CHARS, false)?;
+    }
+    Ok(())
+}
+
+/// Rejects a scene identifier that is unsafe to derive a path or an element from.
+///
+/// A scene ID is model-supplied and every consumer treats it as a name it can
+/// build something out of: narration writes `narration-<id>-<digest>.mp3`, the
+/// master timeline interpolates it into `data-composition-src` and an element
+/// ID. Both of those trust it, so the charset is pinned here rather than in each
+/// consumer — a plan that reaches them has already been through this function.
+/// The rule matches the domain's own token values: ASCII alphanumerics plus `-`
+/// and `_`, bounded by alphanumerics. That leaves no `/`, no `..`, no quote, and
+/// no control character to escape with.
+fn validate_scene_id(value: &str) -> Result<(), ReviewError> {
+    if value.is_empty() {
+        return invalid_video("scene identifiers must be non-empty and unique");
+    }
+    if value.chars().count() > MAX_SCENE_ID_CHARS {
+        return invalid_video(format!(
+            "scene identifier is longer than {MAX_SCENE_ID_CHARS} characters"
+        ));
+    }
+    let permitted =
+        |character: char| character.is_ascii_alphanumeric() || matches!(character, '-' | '_');
+    let bounded = |character: Option<char>| character.is_some_and(|c| c.is_ascii_alphanumeric());
+    if !value.chars().all(permitted)
+        || !bounded(value.chars().next())
+        || !bounded(value.chars().last())
+    {
+        return invalid_video(format!(
+            "scene identifier `{value}` must use only letters, digits, `-`, and `_`, and start and end with a letter or digit"
+        ));
     }
     Ok(())
 }

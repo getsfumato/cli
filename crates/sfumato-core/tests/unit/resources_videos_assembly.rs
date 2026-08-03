@@ -44,6 +44,20 @@ fn the_master_composition_satisfies_the_renderer_contract() {
 }
 
 #[test]
+fn a_scene_identifier_cannot_close_the_attribute_it_is_written_into() {
+    // The domain rejects an ID like this before assembly ever sees it. This asserts
+    // the second layer: the markup a headless browser executes escapes what it
+    // interpolates, so a quote that got past validation cannot become script.
+    let escaped = escape_attribute("a\" onload=\"fetch('http://evil')");
+    assert!(
+        !escaped.contains('"'),
+        "an unescaped quote would end `data-composition-src` and start an attribute"
+    );
+    assert_eq!(escape_attribute("scene-1"), "scene-1");
+    assert_eq!(escape_attribute("a<b&c>d"), "a&lt;b&amp;c&gt;d");
+}
+
+#[test]
 fn every_planned_scene_is_mounted_at_its_planned_position() {
     let html = master_index_html(&plan(), 1920, 1080, &NarrationLayer::default());
 
