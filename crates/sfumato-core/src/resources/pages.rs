@@ -40,7 +40,7 @@ use crate::{
     themes::ThemePackage,
     tools::{
         AudioToolConfig, ChartToolConfig, GenerationToolFactory, GenerationToolsRequest,
-        ImageToolConfig, VideoToolConfig,
+        ImageToolConfig, VideoToolConfig, chart_tool_gate_warning,
     },
 };
 
@@ -338,6 +338,7 @@ pub(crate) async fn generate_page(
             project_instructions
                 .as_ref()
                 .map(|value| value.content.clone()),
+            false,
         ),
         prompt_catalog: prompt_catalog.clone(),
     })?;
@@ -505,6 +506,9 @@ pub(crate) async fn generate_page(
     let mut page =
         page.map_err(|error| error.context("Generated page remained invalid after repair"))?;
     let mut warnings = prepared_assets.warnings.clone();
+    // A charting tool the project enabled but the Python gate withheld leaves no
+    // other trace: the resource simply comes back without charts.
+    warnings.extend(chart_tool_gate_warning(&config, false));
 
     if let Some((reviewer_name, reviewer_profile)) = reviewer {
         emit_stage(

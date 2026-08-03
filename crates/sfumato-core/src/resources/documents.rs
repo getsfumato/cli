@@ -48,7 +48,10 @@ use crate::{
     sources::SourceReader,
     templates::GenerationTemplate,
     themes::ThemePackage,
-    tools::{ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
+    tools::{
+        ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig,
+        chart_tool_gate_warning,
+    },
 };
 
 use super::{
@@ -282,6 +285,7 @@ pub(crate) async fn generate_document(
             project_instructions
                 .as_ref()
                 .map(|value| value.content.clone()),
+            false,
         ),
         prompt_catalog: prompt_catalog.clone(),
     })?;
@@ -341,6 +345,9 @@ pub(crate) async fn generate_document(
         DocumentReviewSummary::disabled()
     };
     let mut warnings = prepared_assets.warnings.clone();
+    // A charting tool the project enabled but the Python gate withheld leaves no
+    // other trace: the resource simply comes back without charts.
+    warnings.extend(chart_tool_gate_warning(&config, false));
     let mut prompts = prepared_assets.prompts.clone();
 
     let mut draft_request = render_pair(

@@ -1187,8 +1187,12 @@ pub(crate) async fn execute_video(
     if !local && (args.fps.is_some() || args.quality.is_some()) {
         bail!("--fps and --quality are only valid with Hyperframe or Manim");
     }
-    if args.allow_code_execution && !matches!(engine, sfumato_core::renderers::VideoEngine::Manim) {
-        bail!("--allow-code-execution is only valid with --engine manim");
+    // Manim is not the only engine that runs generated Python: a Hyperframe film
+    // with chart-gen enabled runs it too, and rejecting the flag there left that
+    // tool permanently unreachable. The flag is refused only for `--engine model`,
+    // which runs no local code at all, so consenting to it would mean nothing.
+    if args.allow_code_execution && matches!(engine, sfumato_core::renderers::VideoEngine::Model) {
+        bail!("--allow-code-execution is not valid with --engine model, which runs no local code");
     }
     if args.visual_review && !matches!(engine, sfumato_core::renderers::VideoEngine::Hyperframe) {
         bail!("--visual-review is only valid with --engine hyperframe");

@@ -45,7 +45,10 @@ use crate::{
     repositories::ThemeRepository,
     sources::{SourceDocument, SourceReader},
     themes::ThemePackage,
-    tools::{ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
+    tools::{
+        ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig,
+        chart_tool_gate_warning,
+    },
 };
 
 mod assembly;
@@ -669,6 +672,7 @@ pub(crate) async fn generate_video(
             project_instructions
                 .as_ref()
                 .map(|value| value.content.clone()),
+            video.allow_code_execution,
         ),
         prompt_catalog: prompt_catalog.clone(),
     })?;
@@ -803,6 +807,9 @@ pub(crate) async fn generate_video(
         managed_catalog.as_ref(),
     )?;
     let mut warnings = prepared_assets.warnings.clone();
+    // A charting tool the project enabled but the Python gate withheld leaves no
+    // other trace: the resource simply comes back without charts.
+    warnings.extend(chart_tool_gate_warning(&config, video.allow_code_execution));
     warnings.extend(catalog_warnings);
     if let Some((reviewer_name, reviewer_profile)) = reviewer {
         emit_stage(

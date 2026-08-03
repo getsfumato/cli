@@ -130,6 +130,15 @@ impl ChartToolConfig {
     /// execute code without permission or silently drop a tool the project asked
     /// for. Returning `None` leaves the tool off the model's list entirely, which
     /// is the honest signal that it is unavailable.
+    ///
+    /// `code_execution_approved` carries a one-time per-run consent such as
+    /// `--allow-code-execution`. It is accepted alongside the persisted
+    /// `security.allow_python` because they say the same thing with different
+    /// lifetimes, and reading only the persisted one made this tool unreachable
+    /// for anyone who consented per run — silently, since a tool that is never
+    /// offered produces no error. Callers that have no per-run consent to offer
+    /// pass `false`; see [`chart_tool_gate_warning`] for what the caller then
+    /// tells the user.
     pub fn enable(
         config: &crate::config::EffectiveConfig,
         python: Arc<dyn PythonRuntime>,
@@ -137,9 +146,9 @@ impl ChartToolConfig {
         reference_prefix: &str,
         theme: &ThemePackage,
         project_instructions: Option<String>,
+        code_execution_approved: bool,
     ) -> Option<Self> {
-        let enabled = config.generation_tool_enabled(crate::config::GenerationToolKind::ChartGen);
-        if !enabled || !config.security.allow_python {
+        if !chart_tool_requested(config) || !python_permitted(config, code_execution_approved) {
             return None;
         }
         Some(Self {
@@ -151,6 +160,34 @@ impl ChartToolConfig {
             security: config.security.clone(),
         })
     }
+}
+
+/// Whether the project asked for the charting tool at all.
+fn chart_tool_requested(config: &crate::config::EffectiveConfig) -> bool {
+    config.generation_tool_enabled(crate::config::GenerationToolKind::ChartGen)
+}
+
+/// Whether running generated Python is permitted, persistently or for this run.
+fn python_permitted(
+    config: &crate::config::EffectiveConfig,
+    code_execution_approved: bool,
+) -> bool {
+    config.security.allow_python || code_execution_approved
+}
+
+/// Explains a charting tool that was enabled but withheld from the model.
+///
+/// Returning `None` from [`ChartToolConfig::enable`] is right — an unavailable
+/// tool must not be offered — but on its own it is invisible: the run finishes
+/// without charts and with nothing said, and there is no way to find out why.
+/// Workflows push this into the warnings they already surface and record.
+pub fn chart_tool_gate_warning(
+    config: &crate::config::EffectiveConfig,
+    code_execution_approved: bool,
+) -> Option<String> {
+    (chart_tool_requested(config) && !python_permitted(config, code_execution_approved)).then(|| {
+        "The chart-gen tool is enabled but was not offered to the model: it runs generated Python. Pass --allow-code-execution for this run, or set security.allow_python in the project configuration.".to_string()
+    })
 }
 
 /// Inputs required to construct one operation-scoped tool set.
@@ -176,3 +213,7 @@ pub trait GenerationToolFactory: Send + Sync {
     /// Creates validated tool definitions and their sandboxed executor.
     fn create(&self, request: GenerationToolsRequest) -> SfumatoResult<ToolSet>;
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/tools.rs"]
+mod tests;

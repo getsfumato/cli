@@ -40,7 +40,10 @@ use crate::{
     sources::SourceReader,
     templates::GenerationTemplate,
     themes::{ThemePackage, ThemeTokens},
-    tools::{ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig},
+    tools::{
+        ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig,
+        chart_tool_gate_warning,
+    },
 };
 
 pub(crate) mod document;
@@ -249,6 +252,7 @@ pub(crate) async fn generate_slides(
             project_instructions
                 .as_ref()
                 .map(|value| value.content.clone()),
+            false,
         ),
         prompt_catalog: prompt_catalog.clone(),
     })?;
@@ -312,6 +316,9 @@ pub(crate) async fn generate_slides(
         SlideReviewSummary::disabled()
     };
     let mut warnings = prepared_assets.warnings.clone();
+    // A charting tool the project enabled but the Python gate withheld leaves no
+    // other trace: the resource simply comes back without charts.
+    warnings.extend(chart_tool_gate_warning(&config, false));
 
     if dry_run {
         let dry_run_title = title_override.as_deref().unwrap_or("model-generated-title");
