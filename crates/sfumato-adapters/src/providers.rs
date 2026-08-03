@@ -27,6 +27,7 @@ use crate::{
     ollama::OllamaConnector,
     openai_compatible::OpenAiCompatibleProviderFactory,
     openrouter::OpenRouterConnector,
+    retry::{RetryingImageProvider, RetryingSpeechProvider, RetryingTextModel},
 };
 
 /// Dispatches resolved model profiles to their configured transport adapter.
@@ -77,7 +78,11 @@ impl ProviderFactory for AdapterProviderFactory {
             ConnectorConfig::Anthropic(connector) => {
                 let model = AnthropicConnector::new(connector.clone(), self.secrets.clone())?
                     .text_model(profile.clone());
-                Ok(Box::new(AgentRunner::new(Arc::new(model))) as Box<dyn TextGenerationProvider>)
+                // Between the agent and the transport: a 429 or a 529 overload
+                // repeats the one turn that failed, not the tool calls it made.
+                Ok(Box::new(AgentRunner::new(Arc::new(RetryingTextModel::new(
+                    Arc::new(model),
+                )))) as Box<dyn TextGenerationProvider>)
             }
             ConnectorConfig::ElevenLabs(_) => Err(SfumatoError::config(
                 "ElevenLabs only synthesizes speech; configure a text profile on another connector",
@@ -112,13 +117,13 @@ impl ProviderFactory for AdapterProviderFactory {
             // tool, rather than an endpoint that returns bytes. It runs on Codex's
             // authentication instead of a metered image endpoint, and a turn that
             // answers in prose is reported as a tool failure.
-            ConnectorConfig::CodexAppServer(connector) => {
-                Ok(Box::new(CodexAppServerImageProvider::new(
+            ConnectorConfig::CodexAppServer(connector) => Ok(Box::new(RetryingImageProvider::new(
+                Box::new(CodexAppServerImageProvider::new(
                     connector.clone(),
                     profile.clone(),
                     config.project_root.clone(),
-                )))
-            }
+                )),
+            ))),
         }
     }
 
@@ -133,6 +138,11 @@ impl ProviderFactory for AdapterProviderFactory {
             ));
         }
         match Self::connector(config, profile)? {
+            // Deliberately not wrapped in a retry, unlike text, image, and speech:
+            // `generate_video` submits an asynchronous job and then polls it, so
+            // repeating the whole call can submit a second billable job for a
+            // first one that already started. Recovering from a transient failure
+            // here means retrying the submit step alone, inside the connector.
             ConnectorConfig::OpenRouter(connector) => Ok(Box::new(
                 OpenRouterConnector::new(&profile.connector, connector, self.secrets.clone())?
                     .video_provider(profile.clone()),
@@ -154,10 +164,14 @@ impl ProviderFactory for AdapterProviderFactory {
             ));
         }
         match Self::connector(config, profile)? {
-            ConnectorConfig::ElevenLabs(connector) => Ok(Box::new(
-                ElevenLabsConnector::new(connector.clone(), self.secrets.clone())?
-                    .speech_provider(profile.clone()),
-            )),
+            // A film speaks one passage per scene, so a rate limit part-way
+            // through would otherwise throw away every passage already paid for.
+            ConnectorConfig::ElevenLabs(connector) => {
+                Ok(Box::new(RetryingSpeechProvider::new(Box::new(
+                    ElevenLabsConnector::new(connector.clone(), self.secrets.clone())?
+                        .speech_provider(profile.clone()),
+                ))))
+            }
             _ => Err(SfumatoError::config(
                 "Speech generation currently requires an ElevenLabs connector",
             )),

@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use reqwest::{Client, RequestBuilder};
+use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use sfumato_core::{
     config::{ElevenLabsConnectorConfig, ModelProfile, SpeechModelOptions},
@@ -15,6 +15,7 @@ use sfumato_core::{
         ConnectorModelSummary, ConnectorStatus, ConnectorStatusField, SpeechGenerationProvider,
         SpeechGenerationRequest, SpeechGenerationResponse, SpeechWordTiming,
     },
+    retry::RETRY_AFTER_DETAIL,
     secrets::SecretResolver,
 };
 
@@ -191,9 +192,12 @@ impl ElevenLabsConnector {
         let request = self.get(path).await?.send();
         let response = await_operation(operation, OperationStage::Resolve, request).await?;
         let status = response.status();
+        let retry_after = retry_after_header(response.headers());
         let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
         if !status.is_success() {
-            bail!("ElevenLabs {what} returned HTTP {status}: {body}");
+            return Err(classify_status(what, status, &body, retry_after.as_deref())
+                .at_stage(OperationStage::Resolve)
+                .into());
         }
         Ok(body)
     }
@@ -264,9 +268,14 @@ impl ElevenLabsSpeechProvider {
             .send();
         let response = await_operation(operation, stage, send).await?;
         let status = response.status();
+        let retry_after = retry_after_header(response.headers());
         let body = await_operation(operation, stage, response.text()).await?;
         if !status.is_success() {
-            bail!("ElevenLabs speech synthesis returned HTTP {status}: {body}");
+            return Err(
+                classify_status("speech synthesis", status, &body, retry_after.as_deref())
+                    .at_stage(stage)
+                    .into(),
+            );
         }
         let synthesized: SpeechResponseBody =
             serde_json::from_str(&body).context("ElevenLabs speech returned invalid JSON")?;
@@ -548,6 +557,68 @@ fn field(name: &str, value: impl ToString) -> ConnectorStatusField {
     ConnectorStatusField {
         name: name.into(),
         value: value.to_string(),
+    }
+}
+
+/// Reads a `Retry-After` delay so the backoff can honour the provider's own number.
+fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
+}
+
+/// Maps an unsuccessful ElevenLabs response onto a typed recovery class.
+///
+/// Needed once the speech transport retries: every failure here used to collapse
+/// into `Unavailable`, and under a retry that would resend a rejected credential
+/// or a malformed voice ID three more times before reporting the same thing.
+fn classify_status(
+    what: &str,
+    status: StatusCode,
+    body: &str,
+    retry_after: Option<&str>,
+) -> SfumatoError {
+    let detail = compact_detail(body);
+    let error = match status.as_u16() {
+        401 | 403 => SfumatoError::provider(
+            ErrorClass::Permanent,
+            format_args!(
+                "ElevenLabs rejected the credential for {what}: {detail}. Run `sfumato connector login <name>`."
+            ),
+        ),
+        // 422 is how ElevenLabs reports an unusable request — an unknown voice, an
+        // invalid output format. Resending it changes nothing.
+        400 | 404 | 422 => SfumatoError::provider(
+            ErrorClass::Permanent,
+            format_args!("ElevenLabs rejected {what}: {detail}"),
+        ),
+        408 | 429 => SfumatoError::provider(
+            ErrorClass::Retry,
+            format_args!("ElevenLabs rate limit reached for {what}: {detail}"),
+        ),
+        500..=504 | 529 => SfumatoError::provider(
+            ErrorClass::Unavailable,
+            format_args!("ElevenLabs is unavailable for {what}: {detail}"),
+        ),
+        _ => SfumatoError::provider(
+            ErrorClass::Permanent,
+            format_args!("ElevenLabs {what} returned HTTP {status}: {detail}"),
+        ),
+    };
+    match retry_after {
+        Some(delay) => error.with_detail(RETRY_AFTER_DETAIL, delay.to_string()),
+        None => error,
+    }
+}
+
+/// Trims a response body to a length that is safe to show in one error line.
+fn compact_detail(body: &str) -> String {
+    const MAX: usize = 400;
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    match compact.char_indices().nth(MAX) {
+        Some((index, _)) => format!("{}…", &compact[..index]),
+        None => compact,
     }
 }
 

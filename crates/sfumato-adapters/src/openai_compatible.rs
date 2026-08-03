@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use reqwest::{Client, RequestBuilder};
+use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -15,10 +15,14 @@ use sfumato_core::{
         TextGenerationProvider, TextModel, TextModelRequest, TextModelResponse, ToolCall,
         ToolDefinition,
     },
+    retry::RETRY_AFTER_DETAIL,
     secrets::SecretResolver,
 };
 
-use crate::runtime::await_operation;
+use crate::{
+    retry::{RetryingImageProvider, RetryingTextModel},
+    runtime::await_operation,
+};
 
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -117,8 +121,12 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
                 profile.clone(),
                 Arc::clone(&self.secrets),
             )?;
-            Ok(Box::new(AgentRunner::new(std::sync::Arc::new(model)))
-                as Box<dyn TextGenerationProvider>)
+            // The retry sits between the agent and the transport, so a rate limit
+            // repeats one model turn instead of replaying the tool calls the turn
+            // already made.
+            Ok(Box::new(AgentRunner::new(std::sync::Arc::new(
+                RetryingTextModel::new(std::sync::Arc::new(model)),
+            ))) as Box<dyn TextGenerationProvider>)
         })();
         result.map_err(|error| SfumatoError::config(format_args!("{error:#}")))
     }
@@ -140,12 +148,14 @@ impl ProviderFactory for OpenAiCompatibleProviderFactory {
                 .with_context(|| {
                     format!("Connector '{}' is not OpenAI-compatible", profile.connector)
                 })?;
-            Ok(Box::new(OpenAiCompatibleImageProvider::new(
-                profile.connector.clone(),
-                connector.clone(),
-                profile.clone(),
-                Arc::clone(&self.secrets),
-            )?) as Box<dyn ImageGenerationProvider>)
+            Ok(Box::new(RetryingImageProvider::new(Box::new(
+                OpenAiCompatibleImageProvider::new(
+                    profile.connector.clone(),
+                    connector.clone(),
+                    profile.clone(),
+                    Arc::clone(&self.secrets),
+                )?,
+            ))) as Box<dyn ImageGenerationProvider>)
         })();
         result.map_err(|error| SfumatoError::config(format_args!("{error:#}")))
     }
@@ -348,16 +358,18 @@ impl ImageGenerationProvider for OpenAiCompatibleImageProvider {
                 )
             })?;
             let status = response.status();
+            let retry_after = retry_after_header(response.headers());
             let text = await_operation(operation, stage, response.text())
                 .await
                 .context("Could not read image generation response body")?;
             if !status.is_success() {
-                bail!(
-                    "OpenAI-compatible connector '{}' returned HTTP {}: {}",
-                    self.connector.name,
+                return Err(classify_status(
+                    &self.connector.name,
                     status,
-                    text
-                );
+                    &text,
+                    retry_after.as_deref(),
+                )
+                .into());
             }
             let parsed: ImageResponse =
                 serde_json::from_str(&text).context("Could not parse image generation response")?;
@@ -382,6 +394,61 @@ impl ImageGenerationProvider for OpenAiCompatibleImageProvider {
     }
 }
 
+/// Reads a `Retry-After` delay so the backoff can honour the provider's own number.
+fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
+}
+
+/// Maps an unsuccessful HTTP response onto a typed recovery class.
+///
+/// Classifying from the [`StatusCode`] rather than from the formatted message:
+/// matching on `"HTTP 429"` inside prose reads the right answer only for the
+/// codes someone remembered to list, and silently calls every other transient
+/// status permanent. Modelled on the Anthropic connector, which already does this.
+fn classify_status(
+    connector: &str,
+    status: StatusCode,
+    body: &str,
+    retry_after: Option<&str>,
+) -> SfumatoError {
+    let detail = compact_error_detail(body);
+    let error = match status.as_u16() {
+        401 | 403 => SfumatoError::provider(
+            ErrorClass::Permanent,
+            format_args!(
+                "Connector '{connector}' rejected the credential: {detail}. Run `sfumato connector login {connector}`."
+            ),
+        ),
+        // 408 request timeout and 409 conflict are both "try that again": the
+        // request never ran, so nothing was billed and nothing was changed.
+        408 | 409 | 429 => SfumatoError::provider(
+            ErrorClass::Retry,
+            format_args!("Connector '{connector}' returned HTTP {status}: {detail}"),
+        ),
+        // 529 is not in any RFC; several providers, Anthropic included, use it for
+        // an overloaded upstream, and it clears the same way a 503 does.
+        503 | 529 => SfumatoError::provider(
+            ErrorClass::Unavailable,
+            format_args!("Connector '{connector}' is unavailable: {detail}"),
+        ),
+        500..=504 => SfumatoError::provider(
+            ErrorClass::Retry,
+            format_args!("Connector '{connector}' returned HTTP {status}: {detail}"),
+        ),
+        _ => SfumatoError::provider(
+            ErrorClass::Permanent,
+            format_args!("Connector '{connector}' returned HTTP {status}: {detail}"),
+        ),
+    };
+    match retry_after {
+        Some(delay) => error.with_detail(RETRY_AFTER_DETAIL, delay.to_string()),
+        None => error,
+    }
+}
+
 fn provider_error(error: anyhow::Error, stage: OperationStage) -> SfumatoError {
     if let Some(error) = error.downcast_ref::<SfumatoError>() {
         let mut error = error.clone();
@@ -394,15 +461,13 @@ fn provider_error(error: anyhow::Error, stage: OperationStage) -> SfumatoError {
         return SfumatoError::from(limit.clone()).at_stage(stage);
     }
 
+    // Only transport phrases are matched here. Every HTTP status now arrives as a
+    // typed `SfumatoError` from `classify_status` and is returned above, so this
+    // is left with the failures that never produced a response at all.
     let message = format!("{error:#}");
     let class = if message.contains("Could not reach")
         || message.contains("operation timed out")
         || message.contains("timed out")
-        || message.contains("HTTP 429")
-        || message.contains("HTTP 500")
-        || message.contains("HTTP 502")
-        || message.contains("HTTP 503")
-        || message.contains("HTTP 504")
     {
         ErrorClass::Retry
     } else {
@@ -456,6 +521,7 @@ impl OpenAiCompatibleTextProvider {
             )
         })?;
         let status = response.status();
+        let retry_after = retry_after_header(response.headers());
         let text = await_operation(operation, stage, response.text())
             .await
             .context("Could not read connector response body")?;
@@ -468,12 +534,13 @@ impl OpenAiCompatibleTextProvider {
                 )
                 .into());
             }
-            bail!(
-                "OpenAI-compatible connector '{}' returned HTTP {}: {}",
-                self.connector.name,
+            return Err(classify_status(
+                &self.connector.name,
                 status,
-                text
-            );
+                &text,
+                retry_after.as_deref(),
+            )
+            .into());
         }
         serde_json::from_str(&text).context("Could not parse chat completions response")
     }

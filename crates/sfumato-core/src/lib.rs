@@ -42,6 +42,7 @@ pub mod repositories;
 /// Resource-specific application workflows.
 #[allow(missing_docs)]
 pub mod resources;
+pub mod retry;
 pub mod review;
 pub mod secrets;
 /// User initialization use case.
