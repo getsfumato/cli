@@ -943,6 +943,11 @@ pub(crate) async fn generate_video(
                 video.duration_seconds = film.duration_seconds;
                 context.duration_seconds = film.duration_seconds;
             }
+            // Reported separately from the branch above, which only fires when the
+            // total changed. A script shorter than `--duration` leaves the total
+            // exactly as requested, so that branch stays silent — which is how the
+            // held final beat went unreported.
+            warnings.extend(film.warnings.iter().cloned());
             narrated = Some(film);
         }
     }
@@ -1888,6 +1893,8 @@ struct NarratedFilm {
     captions: Vec<CaptionGroup>,
     /// The film's length once every beat holds the words spoken over it.
     duration_seconds: u32,
+    /// Retiming the caller should be told about, such as a held final beat.
+    warnings: Vec<String>,
 }
 
 struct NarrateFilmRequest<'a> {
@@ -1962,12 +1969,34 @@ async fn narrate_film(request: NarrateFilmRequest<'_>) -> Result<NarratedFilm> {
     // Rounded up so the last word is never clipped by a timeline that ends mid
     // syllable, and floored at the request so a short script still fills the
     // film the caller asked for.
-    let duration_seconds = cursor.ceil().max(1.0) as u32;
-    let duration_seconds = duration_seconds.max(requested_duration);
+    let spoken_ceiling = cursor.ceil().max(1.0) as u32;
+    let duration_seconds = spoken_ceiling.max(requested_duration);
     if duration_seconds > MAX_NARRATED_SECONDS {
         return Err(SfumatoError::validation(format!(
             "Narration would make this film {duration_seconds}s, past the {MAX_NARRATED_SECONDS}s limit; shorten the script or split the video"
         )));
+    }
+    // The scenes above cover `0..cursor`, but the film is at least as long as the
+    // request. Nothing else stretches that gap, and the domain only checks that
+    // scenes do not *overrun* the total, so the remainder used to render as a
+    // frozen final frame. The last beat holds it instead.
+    let mut warnings = Vec::new();
+    let total_seconds = duration_seconds as f32;
+    if let Some(last) = scenes.last_mut() {
+        let covered = last.start_seconds + last.duration_seconds;
+        if total_seconds > covered {
+            last.duration_seconds += total_seconds - covered;
+        }
+    }
+    // Reported only when the *request* is what stretched the film. Rounding up to
+    // a whole second always leaves a fraction uncovered, and blaming `--duration`
+    // for that would be both noise and wrong: the caller may have asked for less
+    // than the narration needed.
+    if duration_seconds > spoken_ceiling {
+        warnings.push(format!(
+            "Narration runs {cursor:.1}s but the film was asked for {duration_seconds}s, so the final beat holds for {:.1}s longer; pass --duration {spoken_ceiling} to end on the last word",
+            total_seconds - cursor
+        ));
     }
     plan.set_timeline(scenes, duration_seconds)
         .map_err(review_error)?;
@@ -1979,6 +2008,7 @@ async fn narrate_film(request: NarrateFilmRequest<'_>) -> Result<NarratedFilm> {
         captions,
         track,
         duration_seconds,
+        warnings,
     })
 }
 

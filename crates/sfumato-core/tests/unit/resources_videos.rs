@@ -513,7 +513,7 @@ fn timed_plan() -> VideoPlanDocument {
         r#"{{"title":"Fibre","objective":"teach","workflow":"explainer","message":"m","narrative_arc":"hook","design_direction":"d","scenes":[{},{},{}],"artifacts":[],"visual_direction":"vd","remote_prompt":""}}"#,
         r#"{"id":"scene-1","start_seconds":0,"duration_seconds":4,"content":"c","visual":"v","artifacts":[],"production":{"narrative_role":"hook"}}"#,
         r#"{"id":"scene-2","start_seconds":4,"duration_seconds":9,"content":"c","visual":"v","artifacts":[],"production":{"narrative_role":"body"}}"#,
-        r#"{"id":"scene-3","start_seconds":13,"duration_seconds":10,"content":"c","visual":"v","artifacts":[],"production":{"narrative_role":"payoff"}}"#,
+        r#"{"id":"scene-3","start_seconds":13,"duration_seconds":10,"content":"c","visual":"v","artifacts":[],"production":{"narrative_role":"payoff"}}"#
     );
     parse_plan(
         &response,
@@ -924,4 +924,185 @@ fn repairing_one_scene_and_uncovering_another_counts_as_progress() {
     assert!(repair_advanced(2, 5, Some("scene-2"), "scene-2"));
     // A failure naming no scene cannot be shown to have advanced.
     assert!(!repair_advanced(1, 1, None, "scene-2"));
+}
+
+/// A synthesiser that reports a fixed spoken length, so timing is deterministic.
+struct FixedLengthSpeech {
+    seconds: f32,
+}
+
+#[async_trait::async_trait]
+impl crate::providers::SpeechGenerationProvider for FixedLengthSpeech {
+    async fn generate_speech(
+        &self,
+        _: crate::providers::SpeechGenerationRequest,
+        _: &OperationContext,
+        _: OperationStage,
+    ) -> crate::errors::SfumatoResult<crate::providers::SpeechGenerationResponse> {
+        Ok(crate::providers::SpeechGenerationResponse {
+            bytes: vec![1, 2, 3, 4],
+            media_type: "audio/mpeg".into(),
+            duration_seconds: Some(self.seconds),
+            words: vec![crate::providers::SpeechWordTiming {
+                text: "luz".into(),
+                start_seconds: 0.0,
+                end_seconds: self.seconds,
+            }],
+        })
+    }
+}
+
+/// A workspace that accepts writes and remembers nothing else.
+struct NarrationWorkspace;
+
+impl crate::filesystem::WorkspaceFileSystem for NarrationWorkspace {
+    fn temporary_directory(
+        &self,
+        _: &str,
+    ) -> crate::errors::SfumatoResult<Box<dyn crate::filesystem::TemporaryWorkspace>> {
+        unreachable!()
+    }
+    fn canonicalize(&self, path: &Path) -> crate::errors::SfumatoResult<PathBuf> {
+        Ok(path.to_path_buf())
+    }
+    fn read_text(&self, _: &Path) -> crate::errors::SfumatoResult<String> {
+        unreachable!()
+    }
+    fn create_dir_all(&self, _: &Path) -> crate::errors::SfumatoResult<()> {
+        Ok(())
+    }
+    fn write(&self, _: &Path, _: &[u8]) -> crate::errors::SfumatoResult<()> {
+        Ok(())
+    }
+    fn copy_file(&self, _: &Path, _: &Path) -> crate::errors::SfumatoResult<()> {
+        unreachable!()
+    }
+    fn is_file(&self, _: &Path) -> bool {
+        false
+    }
+    fn read_dir(
+        &self,
+        _: &Path,
+    ) -> crate::errors::SfumatoResult<Vec<crate::filesystem::WorkspaceEntry>> {
+        unreachable!()
+    }
+    fn copy_tree(&self, _: &Path, _: &Path, _: &[&str]) -> crate::errors::SfumatoResult<()> {
+        unreachable!()
+    }
+    fn list_files(&self, _: &Path, _: &[&str]) -> crate::errors::SfumatoResult<Vec<PathBuf>> {
+        unreachable!()
+    }
+    fn remove_file(&self, _: &Path) -> crate::errors::SfumatoResult<()> {
+        unreachable!()
+    }
+    fn publish_atomic(&self, _: &Path, _: &Path) -> crate::errors::SfumatoResult<PathBuf> {
+        unreachable!()
+    }
+    fn publish_tree_atomic(&self, _: &Path, _: &Path) -> crate::errors::SfumatoResult<PathBuf> {
+        unreachable!()
+    }
+    fn remove_tree(&self, _: &Path) -> crate::errors::SfumatoResult<()> {
+        unreachable!()
+    }
+}
+
+/// Narrates a one-scene plan whose script is spoken in `spoken_seconds`.
+async fn narrated_film(spoken_seconds: f32, requested_duration: u32) -> NarratedFilm {
+    let response = r#"{"title":"Fibre","objective":"teach","workflow":"explainer","message":"m","narrative_arc":"hook","design_direction":"d","scenes":[{"id":"scene-1","start_seconds":0,"duration_seconds":2,"content":"c","visual":"v","narration":"La luz rebota","artifacts":[],"production":{"narrative_role":"hook"}}],"artifacts":[],"visual_direction":"vd","remote_prompt":""}"#;
+    let mut plan = parse_plan(
+        response,
+        VideoEngine::Hyperframe,
+        requested_duration,
+        Some("Fibre"),
+        VideoWorkflow::Explainer,
+        None,
+    )
+    .expect("plan parses")
+    .0;
+    let provider = FixedLengthSpeech {
+        seconds: spoken_seconds,
+    };
+    let options = crate::config::SpeechModelOptions {
+        segment_gap_seconds: Some(0.0),
+        ..Default::default()
+    };
+    narrate_film(NarrateFilmRequest {
+        plan: &mut plan,
+        requested_duration,
+        provider: &provider,
+        options: &options,
+        output_dir: Path::new("/staging/assets/audio"),
+        workspace: &NarrationWorkspace,
+        operation: &OperationContext::detached(),
+    })
+    .await
+    .expect("narration succeeds")
+}
+
+#[tokio::test]
+async fn a_script_shorter_than_the_requested_duration_holds_its_final_beat() {
+    // The defect: scenes covered only the spoken time while the film total was
+    // raised to the request, and nothing stretched the last scene. `--duration 10`
+    // with a 4.2s script rendered ~5.8s of frozen frame, and the existing warning
+    // never fired because the total matched the request exactly.
+    let film = narrated_film(4.2, 10).await;
+
+    assert_eq!(
+        film.duration_seconds, 10,
+        "the requested length is honoured"
+    );
+    assert!(
+        film.warnings
+            .iter()
+            .any(|warning| warning.contains("final beat holds")),
+        "a held beat has to be reported: {:?}",
+        film.warnings
+    );
+}
+
+#[tokio::test]
+async fn the_held_beat_covers_the_whole_timeline_with_no_dead_tail() {
+    let film = narrated_film(4.2, 10).await;
+
+    // Asserted through the layer the renderer actually reads, so a passing test
+    // means the composition has no uncovered seconds.
+    assert_eq!(film.layer.clips.len(), 1);
+    assert!(
+        (film.layer.clips[0].duration_seconds - 4.2).abs() < 0.01,
+        "the audio keeps its real length; only the scene stretches"
+    );
+}
+
+#[tokio::test]
+async fn a_script_longer_than_the_requested_duration_still_wins() {
+    // The opposite direction must not regress: the voice decides the timeline when
+    // it needs more room than the caller asked for.
+    let film = narrated_film(12.4, 6).await;
+
+    assert_eq!(
+        film.duration_seconds, 13,
+        "rounded up off the spoken length"
+    );
+    assert!(
+        !film
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("final beat holds")),
+        "nothing was held, so nothing should be reported: {:?}",
+        film.warnings
+    );
+}
+
+#[tokio::test]
+async fn a_script_that_matches_the_request_reports_nothing() {
+    // Only the `ceil` rounding separates these, which is below the reporting
+    // threshold: a warning on every narrated film would be noise.
+    let film = narrated_film(6.0, 6).await;
+
+    assert_eq!(film.duration_seconds, 6);
+    assert!(
+        film.warnings.is_empty(),
+        "an exact fit is not worth a warning: {:?}",
+        film.warnings
+    );
 }
