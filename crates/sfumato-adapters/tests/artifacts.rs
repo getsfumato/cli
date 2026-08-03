@@ -1,10 +1,11 @@
-use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use sfumato_adapters::artifacts::FilesystemArtifactStore;
 use sfumato_core::artifacts::ArtifactKind;
 use sfumato_core::{
     artifacts::{
-        ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
+        ArtifactResourceKind, ArtifactStore, ArtifactStoreError, ResourceArtifactFile,
+        ResourceArtifactManifest,
     },
     prompts::PromptProvenance,
 };
@@ -187,34 +188,69 @@ fn rejects_symlinked_artifacts_even_when_the_target_is_a_file() {
 }
 
 #[test]
-fn concurrent_transactions_commit_distinct_immutable_revisions() {
+fn a_second_concurrent_generation_is_refused_instead_of_blocking() {
+    // The project lock is exclusive and held for the whole generation. It used to
+    // be taken with a blocking `lock_exclusive` from async code, which parked a
+    // tokio worker for minutes and left the second caller with no output at all.
+    // Refusing immediately, with a sentence naming the project, is the contract.
     let temp = tempfile::tempdir().unwrap();
-    let store = Arc::new(FilesystemArtifactStore::new(temp.path().to_path_buf()));
+    let store = FilesystemArtifactStore::new(temp.path().to_path_buf());
+    let _held = store
+        .begin("University", ArtifactResourceKind::Slides)
+        .expect("the first generation takes the lock");
 
-    std::thread::scope(|scope| {
-        for index in 0..2 {
-            let store = Arc::clone(&store);
-            scope.spawn(move || {
-                let transaction = store
-                    .begin("University", ArtifactResourceKind::Slides)
-                    .unwrap();
-                fs::write(
-                    transaction.staging_root().join("deck.md"),
-                    format!("# Fourier {index}"),
-                )
-                .unwrap();
-                let manifest = manifest(
-                    transaction.as_ref(),
-                    vec![ResourceArtifactFile {
-                        path: PathBuf::from("deck.md"),
-                        kind: ArtifactKind::Markdown,
-                        media_type: None,
-                    }],
-                );
-                transaction.commit(manifest).unwrap();
-            });
-        }
-    });
+    let Err(error) = store.begin("University", ArtifactResourceKind::Slides) else {
+        panic!("a second generation cannot run in the same project");
+    };
+    assert!(
+        matches!(error, ArtifactStoreError::Busy(_)),
+        "a held lock is a distinct, self-resolving condition: {error:?}"
+    );
+    assert!(
+        error.to_string().contains("University"),
+        "the message has to name the project: {error}"
+    );
+}
+
+#[test]
+fn a_different_project_is_not_blocked_by_a_held_lock() {
+    // The lock is per project, and sharpening it into a hard failure must not turn
+    // it into a global one.
+    let temp = tempfile::tempdir().unwrap();
+    let store = FilesystemArtifactStore::new(temp.path().to_path_buf());
+    let _held = store
+        .begin("University", ArtifactResourceKind::Slides)
+        .expect("the first project takes its own lock");
+    assert!(
+        store.begin("College", ArtifactResourceKind::Slides).is_ok(),
+        "an unrelated project has its own lock"
+    );
+}
+
+#[test]
+fn sequential_transactions_commit_distinct_immutable_revisions() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FilesystemArtifactStore::new(temp.path().to_path_buf());
+
+    for index in 0..2 {
+        let transaction = store
+            .begin("University", ArtifactResourceKind::Slides)
+            .unwrap();
+        fs::write(
+            transaction.staging_root().join("deck.md"),
+            format!("# Fourier {index}"),
+        )
+        .unwrap();
+        let manifest = manifest(
+            transaction.as_ref(),
+            vec![ResourceArtifactFile {
+                path: PathBuf::from("deck.md"),
+                kind: ArtifactKind::Markdown,
+                media_type: None,
+            }],
+        );
+        transaction.commit(manifest).unwrap();
+    }
 
     let revisions = fs::read_dir(
         temp.path()
@@ -234,4 +270,62 @@ fn concurrent_transactions_commit_distinct_immutable_revisions() {
             .join("University/resources/slides/fourier-series/current.json")
             .is_file()
     );
+}
+
+#[test]
+fn an_abandoned_staging_directory_is_swept_on_the_next_generation() {
+    // `Drop` is the only other cleanup and it does not run on SIGINT, SIGTERM, or
+    // a crash, so an interrupted run left its snapshots, assets, and partial
+    // renders behind forever. Nothing swept `.staging`.
+    let temp = tempfile::tempdir().unwrap();
+    let store = FilesystemArtifactStore::new(temp.path().to_path_buf());
+    let abandoned = temp.path().join("University/.staging/job-999-deadbeef");
+    fs::create_dir_all(abandoned.join("snapshots")).unwrap();
+    fs::write(abandoned.join("snapshots/frame-1.png"), [0_u8; 64]).unwrap();
+    fs::write(abandoned.join("partial.mp4"), [0_u8; 64]).unwrap();
+
+    let transaction = store
+        .begin("University", ArtifactResourceKind::Videos)
+        .expect("a killed run leaves no lock behind");
+
+    assert!(
+        !abandoned.exists(),
+        "the abandoned staging directory should be gone"
+    );
+    assert!(
+        transaction.staging_root().is_dir(),
+        "sweeping must not remove the directory this generation just created"
+    );
+}
+
+#[test]
+fn sweeping_leaves_committed_revisions_untouched() {
+    // The sweep runs inside the project root, so it has to be aimed at `.staging`
+    // and nothing else: a revision is immutable published evidence.
+    let temp = tempfile::tempdir().unwrap();
+    let store = FilesystemArtifactStore::new(temp.path().to_path_buf());
+    let transaction = store
+        .begin("University", ArtifactResourceKind::Slides)
+        .unwrap();
+    fs::write(transaction.staging_root().join("deck.md"), "# Fourier").unwrap();
+    let manifest = manifest(
+        transaction.as_ref(),
+        vec![ResourceArtifactFile {
+            path: PathBuf::from("deck.md"),
+            kind: ArtifactKind::Markdown,
+            media_type: None,
+        }],
+    );
+    let committed = transaction.commit(manifest).unwrap();
+    assert!(committed.manifest_path.is_file());
+
+    let next = store
+        .begin("University", ArtifactResourceKind::Slides)
+        .unwrap();
+    assert!(
+        committed.manifest_path.is_file(),
+        "the sweep must not reach committed revisions"
+    );
+    assert!(committed.current_path.is_file());
+    drop(next);
 }

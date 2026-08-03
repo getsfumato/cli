@@ -61,7 +61,24 @@ impl ArtifactStore for FilesystemArtifactStore {
             .truncate(false)
             .open(lock_path)
             .map_err(persistence)?;
-        lock.lock_exclusive().map_err(persistence)?;
+        // `try_lock_exclusive`, not `lock_exclusive`. This runs on an async worker
+        // and the lock is held for the whole generation, so a blocking wait parks
+        // a tokio worker for minutes and gives the second caller no output at all.
+        // Failing immediately with a sentence they can act on is the honest answer.
+        if let Err(error) = lock.try_lock_exclusive() {
+            if error.kind() == fs2::lock_contended_error().kind() {
+                return Err(ArtifactStoreError::Busy(format!(
+                    "another generation is already running in project '{project}'; wait for it to finish or cancel it"
+                )));
+            }
+            return Err(persistence(error));
+        }
+
+        // Safe here and nowhere else: the lock above is exclusive and is held for
+        // the whole of every generation, so reaching this line proves no other
+        // transaction is live and every existing staging directory was abandoned
+        // by a run that was killed before its `Drop` could remove it.
+        sweep_abandoned_staging(&project_root);
 
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -85,6 +102,32 @@ impl ArtifactStore for FilesystemArtifactStore {
             lock,
             committed: false,
         }))
+    }
+}
+
+/// Removes staging directories left behind by interrupted generations.
+///
+/// `Drop` is the only other cleanup, and it does not run on SIGINT, SIGTERM, or a
+/// crash. Nothing else swept `.staging`, so every interrupted run leaked its
+/// snapshots, assets, and partial renders — hundreds of megabytes per attempt for
+/// video, accumulating with no upper bound.
+///
+/// Best-effort by design: a directory that cannot be removed must not stop the
+/// generation the caller actually asked for. It is retried on the next `begin`.
+///
+/// Callers must hold the project lock; see the call site for why that matters.
+fn sweep_abandoned_staging(project_root: &Path) {
+    let staging_root = project_root.join(".staging");
+    let Ok(entries) = fs::read_dir(&staging_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = fs::remove_dir_all(&path);
+        } else {
+            let _ = fs::remove_file(&path);
+        }
     }
 }
 

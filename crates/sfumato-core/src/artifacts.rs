@@ -140,4 +140,11 @@ pub enum ArtifactStoreError {
     /// Filesystem persistence failed.
     #[error("artifact persistence failed: {0}")]
     Persistence(String),
+    /// Another process holds this project's artifact lock.
+    ///
+    /// Separate from [`ArtifactStoreError::Persistence`] because it is the one
+    /// artifact failure that resolves on its own: the other generation finishes
+    /// and the same command then succeeds unchanged.
+    #[error("{0}")]
+    Busy(String),
 }

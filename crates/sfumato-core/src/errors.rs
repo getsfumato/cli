@@ -316,7 +316,13 @@ impl Error for SfumatoError {}
 
 impl From<crate::artifacts::ArtifactStoreError> for SfumatoError {
     fn from(error: crate::artifacts::ArtifactStoreError) -> Self {
-        Self::artifact(ErrorClass::Permanent, error).at_stage(OperationStage::CommitArtifacts)
+        // A held project lock is the one artifact failure that clears on its own,
+        // so it is classified as such rather than told to the caller as permanent.
+        let class = match error {
+            crate::artifacts::ArtifactStoreError::Busy(_) => ErrorClass::Retry,
+            _ => ErrorClass::Permanent,
+        };
+        Self::artifact(class, error).at_stage(OperationStage::CommitArtifacts)
     }
 }
 
