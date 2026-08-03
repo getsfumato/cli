@@ -6,6 +6,13 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(name = "sfumato")]
 #[command(about = "Generate Obsidian-friendly learning resources with local or cloud models.")]
 pub struct Cli {
+    /// Abandon the operation after this many seconds; unbounded when omitted.
+    ///
+    /// Global rather than per-command because it bounds any operation that waits
+    /// on something outside the process — a provider request, a renderer, or
+    /// generated Python — and those are reached from most subcommands.
+    #[arg(long, global = true, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

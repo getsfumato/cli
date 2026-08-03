@@ -17,6 +17,7 @@ use crate::{
         TemplateKindArg, ThemeCommands, ThemeUseArgs, ToolCommands, VideoArgs, VideoAudioArg,
         VideoCommands, VideoEngineArg, VideoWorkflowArg,
     },
+    commands::operation::interruptible,
     init::InitService,
     presentation::{Cell, print_table},
 };
@@ -40,6 +41,8 @@ use sfumato_core::{
     secrets::SecretValue,
     templates::TemplateKind,
 };
+
+pub(crate) mod operation;
 
 #[async_trait]
 pub trait RunnableCommand {
@@ -93,7 +96,7 @@ impl RunnableCommand for VideoCommands {
             Self::Approve(args) => {
                 let result = application
                     .approve_video_review(ApproveVideoReviewCommand {
-                        operation: OperationContext::detached(),
+                        operation: interruptible(),
                         config: ConfigOverrides {
                             project: args.project,
                             publish_dir: args.out,
@@ -284,7 +287,7 @@ impl RunnableCommand for PluginCommands {
         match self {
             Self::List(args) => {
                 let statuses = application
-                    .list_page_plugins(args.project.as_deref(), &OperationContext::detached())
+                    .list_page_plugins(args.project.as_deref(), &interruptible())
                     .await?;
                 print_table(
                     &["ID", "PLUGIN", "LATEST", "INSTALLED", "PROJECT"],
@@ -312,7 +315,7 @@ impl RunnableCommand for PluginCommands {
             }
             Self::Show(args) => {
                 let status = application
-                    .show_page_plugin_status(&args.id, None, &OperationContext::detached())
+                    .show_page_plugin_status(&args.id, None, &interruptible())
                     .await?;
                 println!(
                     "{}\nID: {}\nLatest: {}\nInstalled: {}\nEnabled: {}\n\n{}",
@@ -341,11 +344,7 @@ impl RunnableCommand for PluginCommands {
             }
             Self::Install(args) => {
                 let result = application
-                    .install_page_plugin(
-                        &args.id,
-                        args.version.as_deref(),
-                        &OperationContext::detached(),
-                    )
+                    .install_page_plugin(&args.id, args.version.as_deref(), &interruptible())
                     .await?;
                 for package in result.packages {
                     println!("Installed {} {}", package.id, package.version);
@@ -354,7 +353,7 @@ impl RunnableCommand for PluginCommands {
             }
             Self::Update(args) => {
                 let result = application
-                    .update_page_plugin(&args.id, &OperationContext::detached())
+                    .update_page_plugin(&args.id, &interruptible())
                     .await?;
                 for package in result.packages {
                     println!("Updated {} to {}", package.id, package.version);
@@ -426,7 +425,7 @@ impl RunnableCommand for ToolCommands {
 #[async_trait]
 impl RunnableCommand for RendererCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
-        let operation = OperationContext::detached();
+        let operation = interruptible();
         let statuses = match self {
             Self::List => application.list_renderers(&operation).await?,
             Self::Install(args) => vec![
@@ -800,7 +799,7 @@ impl RunnableCommand for ConnectorCommands {
             }
             Self::Models(args) => {
                 let models = application
-                    .list_connector_models(&args.name, OperationContext::detached())
+                    .list_connector_models(&args.name, interruptible())
                     .await?;
                 print_table(
                     &["DEFAULT", "MODEL", "NAME", "INPUTS", "OUTPUTS", "CONTEXT"],
@@ -832,7 +831,7 @@ impl RunnableCommand for ConnectorCommands {
             }
             Self::Status(args) => {
                 let status = application
-                    .connector_status(&args.name, OperationContext::detached())
+                    .connector_status(&args.name, interruptible())
                     .await?;
                 print_table(
                     &["CONNECTOR", "KIND", "FIELD", "VALUE"],
@@ -1081,7 +1080,7 @@ impl RunnableCommand for PageArgs {
         let event_sink = (!json && !dry_run)
             .then_some(std::sync::Arc::new(render_generation_event)
                 as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
-        match execute_page(&application, self, event_sink, OperationContext::detached()).await {
+        match execute_page(&application, self, event_sink, interruptible()).await {
             Ok(result) => render_page_result(result, json, dry_run),
             Err(error) if json => {
                 println!("{}", json_operation_error(&error));
@@ -1152,7 +1151,7 @@ impl RunnableCommand for VideoArgs {
             (!json && !dry_run)
                 .then_some(Arc::new(render_generation_event)
                     as Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
-        match execute_video(&application, self, event_sink, OperationContext::detached()).await {
+        match execute_video(&application, self, event_sink, interruptible()).await {
             Ok(result) => render_video_result(result, json, dry_run),
             Err(error) if json => {
                 println!("{}", json_operation_error(&error));
@@ -1380,9 +1379,7 @@ impl RunnableCommand for EditSlidesArgs {
         let json = self.json;
         let event_sink = (!json).then_some(std::sync::Arc::new(render_generation_event)
             as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
-        match execute_edit_slides(&application, self, event_sink, OperationContext::detached())
-            .await
-        {
+        match execute_edit_slides(&application, self, event_sink, interruptible()).await {
             Ok(result) => render_edit_slides_result(result, json),
             Err(error) if json => {
                 println!("{}", json_operation_error(&error));
@@ -1462,7 +1459,7 @@ impl RunnableCommand for SlidesArgs {
         let event_sink = (!json && !dry_run)
             .then_some(std::sync::Arc::new(render_generation_event)
                 as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
-        match execute_slides(&application, self, event_sink, OperationContext::detached()).await {
+        match execute_slides(&application, self, event_sink, interruptible()).await {
             Ok(result) => {
                 render_slides_result(result, json, dry_run)?;
                 Ok(())
@@ -1484,7 +1481,7 @@ impl RunnableCommand for DocumentArgs {
         let event_sink = (!json && !dry_run)
             .then_some(std::sync::Arc::new(render_generation_event)
                 as std::sync::Arc<dyn Fn(TextGenerationEvent) + Send + Sync>);
-        match execute_document(&application, self, event_sink, OperationContext::detached()).await {
+        match execute_document(&application, self, event_sink, interruptible()).await {
             Ok(result) => {
                 render_document_result(result, json, dry_run)?;
                 Ok(())
