@@ -419,7 +419,13 @@ pub async fn approve_video_review(
         .iter()
         .map(|path| artifact_file(&staging_root, path))
         .collect::<Result<Vec<_>>>()?;
-    let mut warnings = vec![format!("Rendered approved review session {review_id}")];
+    // Split deliberately. The manifest records how this revision was produced,
+    // and it is sealed by `commit`; publication happens afterwards and outside the
+    // revision, so its outcome cannot be written back without mutating something
+    // ADR-0006 makes immutable. Building the manifest from a list that is still
+    // being appended to read as though it captured everything, which is what made
+    // the on-disk provenance and the printed warnings disagree.
+    let production_warnings = vec![format!("Rendered approved review session {review_id}")];
     let manifest = ResourceArtifactManifest {
         schema_version: 1,
         job_id: transaction.job_id().clone(),
@@ -434,17 +440,13 @@ pub async fn approve_video_review(
         prompts: Vec::new(),
         plugins: Vec::new(),
         runtimes: Vec::new(),
-        warnings: warnings.clone(),
+        warnings: production_warnings.clone(),
     };
     let committed = transaction.commit(manifest)?;
-    let video_path = committed.root.join(format!("{slug}.mp4"));
-    let published_paths = publish_video(
-        workspace.as_ref(),
-        publish_root.as_deref(),
-        &video_path,
-        &slug,
-        &mut warnings,
-    )?;
+    // Marked approved as soon as the revision exists, and before publishing:
+    // publication is allowed to fail without invalidating the revision, and
+    // leaving this write until afterwards meant a failure there left a session
+    // that was already rendered and published still open for re-approval.
     workspace.write(
         &review_root.join("review.json"),
         serde_json::to_vec_pretty(&ReviewSessionRecord {
@@ -452,6 +454,15 @@ pub async fn approve_video_review(
             ..record
         })?
         .as_slice(),
+    )?;
+    let mut warnings = production_warnings;
+    let video_path = committed.root.join(format!("{slug}.mp4"));
+    let published_paths = publish_video(
+        workspace.as_ref(),
+        publish_root.as_deref(),
+        &video_path,
+        &slug,
+        &mut warnings,
     )?;
     let artifacts = workspace.list_files(&committed.root, &[])?;
     Ok(GenerateVideoResult {
@@ -1510,6 +1521,9 @@ pub(crate) async fn generate_video(
         prompts: prompts.clone(),
         plugins: Vec::new(),
         runtimes: Vec::new(),
+        // Everything appended to `warnings` after this point describes the
+        // publication, which happens outside the sealed revision; see the note in
+        // `approve_video_review`.
         warnings: warnings.clone(),
     };
     let staging = transaction.staging_root().to_path_buf();
