@@ -56,3 +56,65 @@ fn atomically_replaces_a_published_page_tree() {
     );
     assert!(!published.join("stale.png").exists());
 }
+
+#[test]
+fn a_failed_publish_names_where_the_previous_output_went() {
+    // The restore error used to be discarded, so the only thing the user was
+    // told was the destination name — while their previous publication sat in a
+    // hidden dotfile beside it.
+    let context = publish_failure_context(
+        Path::new("/site/fourier"),
+        PreviousPublication::Stranded {
+            backup: Path::new("/site/.fourier.sfumato-backup-4321"),
+            cause: "Permission denied (os error 13)".to_string(),
+        },
+    );
+
+    assert!(
+        context.contains("/site/.fourier.sfumato-backup-4321"),
+        "{context}"
+    );
+    assert!(context.contains("Permission denied"), "{context}");
+    assert!(context.contains("recover"), "{context}");
+}
+
+#[test]
+fn a_failed_publish_says_the_previous_output_is_still_there_when_it_is() {
+    let context =
+        publish_failure_context(Path::new("/site/fourier"), PreviousPublication::Restored);
+
+    assert!(context.contains("restored"), "{context}");
+    assert!(context.contains("unchanged"), "{context}");
+    // Nothing to recover by hand, so no backup path should be suggested.
+    assert!(!context.contains("sfumato-backup"), "{context}");
+}
+
+#[test]
+fn a_first_publish_failure_mentions_no_previous_output() {
+    let context = publish_failure_context(Path::new("/site/fourier"), PreviousPublication::Absent);
+
+    assert_eq!(context, "Could not atomically publish /site/fourier");
+}
+
+#[test]
+fn a_successful_republish_leaves_no_backup_behind() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let published = temp.path().join("published");
+    let destination = published.join("fourier");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(source.join("index.html"), "new page").unwrap();
+    fs::write(destination.join("index.html"), "old page").unwrap();
+
+    LocalWorkspaceFileSystem
+        .publish_tree_atomic(&source, &destination)
+        .unwrap();
+
+    let leftovers = fs::read_dir(&published)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("sfumato-backup"))
+        .collect::<Vec<_>>();
+    assert!(leftovers.is_empty(), "left behind {leftovers:?}");
+}

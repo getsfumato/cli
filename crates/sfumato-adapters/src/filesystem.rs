@@ -259,12 +259,22 @@ impl WorkspaceFileSystem for LocalWorkspaceFileSystem {
                 })?;
             }
             if let Err(error) = fs::rename(&staged, destination) {
-                if had_destination {
-                    let _ = fs::rename(&backup, destination);
-                }
-                return Err(error).with_context(|| {
-                    format!("Could not atomically publish {}", destination.display())
-                });
+                // The two failures are correlated: if publishing failed because
+                // of the parent directory, restoring is a rename inside that
+                // same parent and fails the same way. Discarding the restore
+                // error left the previous publication in a dotfile with nothing
+                // saying where it went.
+                let previous = if !had_destination {
+                    PreviousPublication::Absent
+                } else if let Err(restore_error) = fs::rename(&backup, destination) {
+                    PreviousPublication::Stranded {
+                        backup: &backup,
+                        cause: restore_error.to_string(),
+                    }
+                } else {
+                    PreviousPublication::Restored
+                };
+                return Err(error).context(publish_failure_context(destination, previous));
             }
             if had_destination {
                 fs::remove_dir_all(&backup)
@@ -294,6 +304,41 @@ impl WorkspaceFileSystem for LocalWorkspaceFileSystem {
 
 fn workspace_result<T>(result: Result<T>) -> SfumatoResult<T> {
     result.map_err(|error| SfumatoError::artifact(ErrorClass::Permanent, format_args!("{error:#}")))
+}
+
+/// State of an already-published output after a failed publication.
+///
+/// ADR-0006 covers the committed workspace revision, which a failed publish
+/// leaves valid. It says nothing about the output already sitting at the
+/// destination, and that is what this reports on.
+enum PreviousPublication<'a> {
+    /// Nothing was published at the destination.
+    Absent,
+    /// The previous publication was renamed back into place.
+    Restored,
+    /// The restore failed too, leaving the previous publication set aside.
+    Stranded { backup: &'a Path, cause: String },
+}
+
+/// Describes what a failed publication did to the previous output.
+///
+/// The destination name alone is not enough: whether the user still has their
+/// previous publication, and where, is the part they need.
+fn publish_failure_context(destination: &Path, previous: PreviousPublication<'_>) -> String {
+    let destination = destination.display();
+    match previous {
+        PreviousPublication::Absent => format!("Could not atomically publish {destination}"),
+        PreviousPublication::Restored => format!(
+            "Could not atomically publish {destination}; the previous publication was restored \
+             and is unchanged"
+        ),
+        PreviousPublication::Stranded { backup, cause } => format!(
+            "Could not atomically publish {destination}, and the previous publication could not \
+             be restored ({cause}). It is intact at {} — move it back to {destination} to \
+             recover it",
+            backup.display()
+        ),
+    }
 }
 
 #[cfg(test)]
