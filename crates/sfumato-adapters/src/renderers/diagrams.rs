@@ -13,7 +13,7 @@ use sfumato_core::{
 };
 use tokio::process::Command;
 
-use crate::runtime::run_command;
+use crate::{renderers::marp::resolved_browser_path, runtime::run_command};
 
 /// Mermaid CLI adapter producing transparent themed SVG files.
 #[derive(Clone, Copy, Debug, Default)]
@@ -26,11 +26,12 @@ impl DiagramRenderer for MermaidCliRenderer {
         input_path: &Path,
         output_path: &Path,
         theme: &MermaidThemeConfig,
+        browser_path: Option<&Path>,
         operation: &OperationContext,
         stage: OperationStage,
     ) -> SfumatoResult<String> {
         let result: Result<String> = async {
-            let puppeteer_config = write_puppeteer_config(output_path)?;
+            let puppeteer_config = write_puppeteer_config(output_path, browser_path)?;
             let mermaid_config = write_mermaid_config(output_path, theme)?;
             let mut command = Command::new("mmdc");
             command.args(mermaid_cli_args(
@@ -137,8 +138,15 @@ struct PuppeteerConfig<'a> {
     args: Vec<&'static str>,
 }
 
-fn write_puppeteer_config(output_path: &Path) -> Result<Option<PathBuf>> {
-    let Some(browser_path) = detected_browser_path() else {
+fn write_puppeteer_config(
+    output_path: &Path,
+    configured: Option<&Path>,
+) -> Result<Option<PathBuf>> {
+    // Shares `resolved_browser_path` with the slide and page renderers rather than
+    // scanning `/Applications` alone: `marp.browser_path` exists for a browser that
+    // is not in the default location, and a configured path that does not exist is
+    // an error worth reporting instead of silently falling back to a scan.
+    let Some(browser_path) = resolved_browser_path(configured)? else {
         return Ok(None);
     };
     let path = output_path.with_extension("puppeteer.json");
@@ -183,17 +191,6 @@ fn remove_config(path: Option<&Path>) {
     if let Some(path) = path {
         let _ = std::fs::remove_file(path);
     }
-}
-
-fn detected_browser_path() -> Option<PathBuf> {
-    [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file())
 }
 
 fn format_stream(label: &str, value: &str) -> String {

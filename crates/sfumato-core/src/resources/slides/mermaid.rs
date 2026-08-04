@@ -14,6 +14,8 @@ pub(crate) struct MermaidRenderRequest<'a> {
     pub(crate) theme: &'a ThemePackage,
     /// Mermaid CLI adapter.
     pub(crate) renderer: &'a dyn DiagramRenderer,
+    /// Configured browser, when the project pins one.
+    pub(crate) browser_path: Option<&'a Path>,
     /// Filesystem the artifacts are written through.
     pub(crate) workspace: &'a dyn WorkspaceFileSystem,
     /// Cancellation and progress context.
@@ -36,6 +38,7 @@ pub(crate) async fn render_mermaid_diagrams(
         diagrams_dir,
         theme,
         renderer,
+        browser_path,
         workspace,
         operation,
         stage,
@@ -66,6 +69,7 @@ pub(crate) async fn render_mermaid_diagrams(
                 &source_path,
                 &artifact_path,
                 &mermaid_theme,
+                browser_path,
                 operation,
                 stage,
             )

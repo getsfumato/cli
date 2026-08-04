@@ -572,6 +572,7 @@ pub(crate) async fn generate_slides(
                                 &reviewed,
                                 &theme,
                                 diagram_renderer.as_ref(),
+                                config.marp.browser_path.as_deref(),
                                 workspace.as_ref(),
                                 &operation,
                             )
@@ -802,6 +803,7 @@ pub(crate) async fn generate_slides(
                                     &candidate_markdown,
                                     &theme,
                                     diagram_renderer.as_ref(),
+                                    config.marp.browser_path.as_deref(),
                                     workspace.as_ref(),
                                     &operation,
                                 )
@@ -923,6 +925,7 @@ pub(crate) async fn generate_slides(
         diagrams_dir: &diagrams_dir,
         theme: &theme,
         renderer: diagram_renderer.as_ref(),
+        browser_path: config.marp.browser_path.as_deref(),
         workspace: workspace.as_ref(),
         operation: &operation,
         stage: OperationStage::Render,
@@ -1371,11 +1374,16 @@ async fn repair_mermaid_once(
                 prompts: Vec::new(),
             });
         }
-        Ok(_) => {
-            validate_mermaid_candidate(markdown, theme, diagram_renderer, workspace, operation)
-                .await
-                .err()
-        }
+        Ok(_) => validate_mermaid_candidate(
+            markdown,
+            theme,
+            diagram_renderer,
+            config.marp.browser_path.as_deref(),
+            workspace,
+            operation,
+        )
+        .await
+        .err(),
         Err(error) => Some(error),
     };
     let Some(validation_error) = validation_error else {
@@ -1417,9 +1425,16 @@ async fn repair_mermaid_once(
         .context("Mermaid repair request failed")?;
     let candidate = apply_mermaid_repair_response(markdown, title, &response.text, config)?;
     validate_normalized_deck(&candidate, title)?;
-    validate_mermaid_candidate(&candidate, theme, diagram_renderer, workspace, operation)
-        .await
-        .context("Mermaid repair remained invalid after one focused attempt")?;
+    validate_mermaid_candidate(
+        &candidate,
+        theme,
+        diagram_renderer,
+        config.marp.browser_path.as_deref(),
+        workspace,
+        operation,
+    )
+    .await
+    .context("Mermaid repair remained invalid after one focused attempt")?;
     operation.emit(
         OperationStage::Repair,
         OperationEventKind::Completed,
@@ -1449,6 +1464,7 @@ async fn validate_mermaid_candidate(
     markdown: &str,
     theme: &ThemePackage,
     diagram_renderer: &dyn DiagramRenderer,
+    browser_path: Option<&Path>,
     workspace: &dyn WorkspaceFileSystem,
     operation: &OperationContext,
 ) -> Result<()> {
@@ -1459,6 +1475,7 @@ async fn validate_mermaid_candidate(
         diagrams_dir: &diagrams_dir,
         theme,
         renderer: diagram_renderer,
+        browser_path,
         workspace,
         operation,
         stage: OperationStage::Repair,
@@ -1513,6 +1530,7 @@ async fn inspect_candidate_layout(
         diagrams_dir: &diagrams_dir,
         theme,
         renderer: context.diagram_renderer,
+        browser_path: context.browser_path,
         workspace: context.workspace,
         operation: context.operation,
         stage: OperationStage::InspectLayout,

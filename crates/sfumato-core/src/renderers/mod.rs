@@ -281,11 +281,17 @@ impl VideoCatalog {
 #[async_trait]
 pub trait DiagramRenderer: Send + Sync {
     /// Renders one Mermaid input file into an SVG output file.
+    ///
+    /// Takes `browser_path` for the same reason `SlideRenderer` and `PageRenderer`
+    /// do: `marp.browser_path` exists so a user whose browser is not in the default
+    /// location can still render, and without a parameter the value had nowhere to
+    /// go for diagrams.
     async fn render_svg(
         &self,
         input_path: &Path,
         output_path: &Path,
         theme: &MermaidThemeConfig,
+        browser_path: Option<&Path>,
         operation: &OperationContext,
         stage: OperationStage,
     ) -> SfumatoResult<String>;

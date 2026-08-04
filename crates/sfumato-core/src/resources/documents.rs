@@ -492,6 +492,7 @@ pub(crate) async fn generate_document(
         &document,
         &theme,
         diagram_renderer.as_ref(),
+        config.marp.browser_path.as_deref(),
         workspace.as_ref(),
         &operation,
     )
@@ -527,6 +528,7 @@ pub(crate) async fn generate_document(
                     &candidate,
                     &theme,
                     diagram_renderer.as_ref(),
+                    config.marp.browser_path.as_deref(),
                     workspace.as_ref(),
                     &operation,
                 )
@@ -589,6 +591,7 @@ pub(crate) async fn generate_document(
                                     &candidate,
                                     &theme,
                                     diagram_renderer.as_ref(),
+                                    config.marp.browser_path.as_deref(),
                                     workspace.as_ref(),
                                     &operation,
                                 )
@@ -644,6 +647,7 @@ pub(crate) async fn generate_document(
                         assembler: document_assembler.as_ref(),
                         renderer: document_renderer.as_ref(),
                         diagram_renderer: diagram_renderer.as_ref(),
+                        browser_path: config.marp.browser_path.as_deref(),
                         workspace: workspace.as_ref(),
                         prepared_assets: &prepared_assets,
                         generated_assets: &generated_tool_assets,
@@ -715,6 +719,7 @@ pub(crate) async fn generate_document(
                                         assembler: document_assembler.as_ref(),
                                         renderer: document_renderer.as_ref(),
                                         diagram_renderer: diagram_renderer.as_ref(),
+                                        browser_path: config.marp.browser_path.as_deref(),
                                         workspace: workspace.as_ref(),
                                         prepared_assets: &prepared_assets,
                                         generated_assets: &generated_tool_assets,
@@ -786,6 +791,7 @@ pub(crate) async fn generate_document(
         diagrams_dir: &diagrams_dir,
         theme: &theme,
         renderer: diagram_renderer.as_ref(),
+        browser_path: config.marp.browser_path.as_deref(),
         workspace: workspace.as_ref(),
         operation: &operation,
         stage: OperationStage::Render,

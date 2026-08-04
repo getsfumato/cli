@@ -89,3 +89,38 @@ fn an_unrecognised_opt_out_value_leaves_the_sandbox_on() {
         assert!(sandbox_args(Some(value)).is_empty(), "value {value:?}");
     }
 }
+
+#[test]
+fn the_configured_browser_path_reaches_the_diagram_renderer() {
+    // `marp.browser_path` reached the slide and page renderers but had nowhere to go
+    // for diagrams, because the port had no parameter for it — so a user whose
+    // browser is outside /Applications could render slides but not diagrams.
+    let temporary = tempfile::tempdir().unwrap();
+    let browser = temporary.path().join("my-chrome");
+    std::fs::write(&browser, "#!/bin/sh\n").unwrap();
+    let output = temporary.path().join("diagram.svg");
+
+    let config = write_puppeteer_config(&output, Some(&browser))
+        .expect("a configured browser is accepted")
+        .expect("a config is written");
+
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains(browser.to_str().unwrap()),
+        "the configured path is not in the config: {written}"
+    );
+}
+
+#[test]
+fn a_configured_browser_that_does_not_exist_is_reported() {
+    // Silently falling back to a scan would render with a browser the user did not
+    // choose, which is the failure `resolved_browser_path` already reports for the
+    // other renderers.
+    let temporary = tempfile::tempdir().unwrap();
+    let missing = temporary.path().join("nope");
+
+    let error = write_puppeteer_config(&temporary.path().join("d.svg"), Some(&missing))
+        .expect_err("a missing configured browser is refused");
+
+    assert!(format!("{error:#}").contains("does not exist"), "{error:#}");
+}
