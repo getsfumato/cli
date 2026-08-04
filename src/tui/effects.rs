@@ -127,16 +127,31 @@ pub(super) fn spawn_edit(
     })
 }
 
+/// Deadline for one native connector read started from the browse view.
+///
+/// Catalog and status reads answer in well under a second, and the view has
+/// nothing to show until they return. Matching the adapters' introspection
+/// timeout keeps the deadline from firing before the transport's own bound, so
+/// the user sees the transport's error rather than a bare deadline.
+const CONNECTOR_QUERY_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Starts a native connector read, returning its cancellation and task handles.
+///
+/// Both paths used to build `OperationContext::detached()` — no deadline and a
+/// token nobody signalled — and the task was dropped on the floor, so an
+/// unresponsive endpoint hung the view with `Esc` doing nothing.
 pub(super) fn spawn_connector_query(
     application: Arc<SfumatoApplication>,
     connector: String,
     models: bool,
     sender: Sender<UiMessage>,
-) {
-    tokio::spawn(async move {
+) -> ConnectorQuery {
+    let (cancellation, operation) =
+        OperationContext::create(Some(CONNECTOR_QUERY_DEADLINE), Arc::new(DiscardEvents));
+    let task = tokio::spawn(async move {
         let result = if models {
             application
-                .list_connector_models(&connector, OperationContext::detached())
+                .list_connector_models(&connector, operation)
                 .await
                 .map(|models| {
                     models
@@ -169,7 +184,7 @@ pub(super) fn spawn_connector_query(
                 })
         } else {
             application
-                .connector_status(&connector, OperationContext::detached())
+                .connector_status(&connector, operation)
                 .await
                 .map(|status| {
                     status
@@ -192,6 +207,7 @@ pub(super) fn spawn_connector_query(
             .send(UiMessage::ConnectorQueryFinished { connector, result })
             .await;
     });
+    ConnectorQuery::new(cancellation, task)
 }
 
 struct UiOperationEventSink {

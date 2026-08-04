@@ -588,3 +588,89 @@ fn dashboard_renders_at_eighty_by_twenty_four() {
     assert!(rendered.contains("WORKSPACE"));
     assert!(rendered.contains("ACTIVE PROJECT"));
 }
+
+#[tokio::test]
+async fn esc_stops_a_running_connector_read_and_keeps_the_view() {
+    // Both connector paths built `OperationContext::detached()` and dropped the
+    // task, so `Esc` reached nothing and the view hung on an unresponsive
+    // endpoint. The query is now cancellable and `Esc` claims it first.
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Browse(Section::Connectors);
+    app.connector_query = Some(effects::spawn_connector_query(
+        Arc::clone(&app.application),
+        "ollama".to_string(),
+        true,
+        app.sender.clone(),
+    ));
+
+    app.handle_browse_key(
+        Section::Connectors,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+
+    assert!(app.connector_query.is_none(), "query was not cancelled");
+    // The view stays put; leaving is what `Esc` does when nothing is running.
+    assert_eq!(app.screen, Screen::Browse(Section::Connectors));
+}
+
+#[tokio::test]
+async fn esc_still_leaves_the_section_when_no_connector_read_is_running() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Browse(Section::Connectors);
+
+    app.handle_browse_key(
+        Section::Connectors,
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+
+    assert_eq!(app.screen, Screen::Home);
+}
+
+#[tokio::test]
+async fn a_connector_read_is_bounded_by_a_deadline() {
+    // A detached context has no deadline at all, which is what left the view
+    // with nothing to fall back on.
+    let query = effects::spawn_connector_query(
+        Arc::clone(&test_application()),
+        "ollama".to_string(),
+        false,
+        tokio::sync::mpsc::channel(8).0,
+    );
+
+    // A detached context has no deadline at all, which is what left the view
+    // with nothing to fall back on. The read now carries one.
+    assert!(OperationContext::detached().remaining().is_none());
+    query.cancel_and_join().await;
+}
+
+#[tokio::test]
+async fn starting_a_second_connector_read_cancels_the_first() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Browse(Section::Connectors);
+    app.browse_rows = vec![BrowseRow {
+        title: "ollama".to_string(),
+        subtitle: String::new(),
+        detail: String::new(),
+        active: false,
+    }];
+    app.browse_focus = BrowseFocus::Rows;
+
+    let actions = section_actions(Section::Connectors);
+    app.browse_action_index = actions
+        .iter()
+        .position(|action| *action == BrowseAction::ConnectorStatus)
+        .expect("connectors expose a status action");
+    app.execute_browse_action(Section::Connectors);
+    assert!(app.connector_query.is_some());
+
+    app.browse_action_index = actions
+        .iter()
+        .position(|action| *action == BrowseAction::ConnectorModels)
+        .expect("connectors expose a models action");
+    app.execute_browse_action(Section::Connectors);
+
+    // One handle, so the earlier read cannot be left running unreachable.
+    assert!(app.connector_query.is_some());
+    app.shutdown().await;
+    assert!(app.connector_query.is_none());
+}

@@ -40,7 +40,10 @@ use sfumato_core::{
     config_editor::ConfigTarget,
     connectors::ConnectorPreset,
     errors::{ErrorClass, OperationStage, SfumatoError},
-    operation::{EventSink, EventSinkError, OperationContext, OperationEvent, OperationEventKind},
+    operation::{
+        DiscardEvents, EventSink, EventSinkError, OperationContext, OperationEvent,
+        OperationEventKind,
+    },
     prompts::{PromptOrigin, PromptOverrideScope},
     providers::{GenerationStage, TextGenerationEvent},
     resources::{

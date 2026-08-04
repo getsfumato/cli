@@ -76,6 +76,8 @@ pub(super) fn reduce_message(app: &mut App, message: UiMessage) {
             app.transition(Screen::Complete);
         }
         UiMessage::ConnectorQueryFinished { connector, result } => {
+            // The task has sent its result, so the handle is spent either way.
+            app.connector_query = None;
             if app.screen != Screen::Browse(Section::Connectors) {
                 return;
             }
@@ -141,6 +143,7 @@ impl App {
             messages,
             jobs: OperationLifecycle::default(),
             active_task: None,
+            connector_query: None,
             picker,
             image: None,
             effects: EffectManager::default(),
@@ -219,6 +222,8 @@ impl App {
                 self.browse_action_index = 0;
                 self.browse_detail_scroll = 0;
                 self.connector_query_source = None;
+                // Leaving the view abandons its result, so stop the work too.
+                self.cancel_connector_query();
                 self.status = None;
                 self.transition(Screen::Browse(section));
             }
@@ -228,6 +233,12 @@ impl App {
 
     pub(super) fn handle_browse_key(&mut self, section: Section, key: KeyEvent) {
         match key.code {
+            // A running connector read takes priority: `Esc` stops it and keeps
+            // the view, which is what the key was doing nothing about before.
+            // With nothing running it leaves the section, as it always did.
+            KeyCode::Esc | KeyCode::Backspace if self.cancel_connector_query() => {
+                self.status = Some(("Stopped the connector read".to_string(), false));
+            }
             KeyCode::Esc | KeyCode::Backspace => self.transition(Screen::Home),
             KeyCode::Tab | KeyCode::BackTab => {
                 self.browse_focus = match self.browse_focus {
@@ -295,13 +306,17 @@ impl App {
                 self.status = Some(("Select a configured connector first".into(), true));
                 return;
             };
-            self.status = Some((format!("Loading native data from {connector}..."), false));
-            spawn_connector_query(
+            self.status = Some((
+                format!("Loading native data from {connector}... press Esc to stop"),
+                false,
+            ));
+            self.cancel_connector_query();
+            self.connector_query = Some(spawn_connector_query(
                 Arc::clone(&self.application),
                 connector,
                 action == BrowseAction::ConnectorModels,
                 self.sender.clone(),
-            );
+            ));
             return;
         }
         match self.operation_for_action(action) {
@@ -952,8 +967,22 @@ impl App {
         self.jobs.cancel();
     }
 
+    /// Stops an in-flight native connector read, if there is one.
+    pub(super) fn cancel_connector_query(&mut self) -> bool {
+        match self.connector_query.take() {
+            Some(query) => {
+                query.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
     pub(super) async fn shutdown(&mut self) {
         self.cancel_active_job();
+        if let Some(query) = self.connector_query.take() {
+            query.cancel_and_join().await;
+        }
         if let Some(task) = self.active_task.take() {
             let _ = task.await;
         }

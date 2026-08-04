@@ -22,6 +22,34 @@ impl Default for OperationLifecycle {
     }
 }
 
+/// A running native connector read that the view can stop.
+pub(super) struct ConnectorQuery {
+    cancellation: CancellationHandle,
+    task: JoinHandle<()>,
+}
+
+impl ConnectorQuery {
+    pub(super) fn new(cancellation: CancellationHandle, task: JoinHandle<()>) -> Self {
+        Self { cancellation, task }
+    }
+
+    /// Signals cancellation and drops the task without waiting on it.
+    ///
+    /// `Esc` must return control immediately; the task observes the token at its
+    /// next checkpoint and its result is discarded because the view has moved on.
+    pub(super) fn cancel(self) {
+        self.cancellation.cancel();
+        self.task.abort();
+    }
+
+    /// Signals cancellation and awaits the task, for shutdown.
+    pub(super) async fn cancel_and_join(self) {
+        self.cancellation.cancel();
+        self.task.abort();
+        let _ = self.task.await;
+    }
+}
+
 impl OperationLifecycle {
     pub(super) fn next_job_id(&self) -> u64 {
         self.next_job_id
@@ -1379,6 +1407,12 @@ pub(super) struct App {
     pub(super) messages: Receiver<UiMessage>,
     pub(super) jobs: OperationLifecycle,
     pub(super) active_task: Option<JoinHandle<()>>,
+    /// In-flight native connector read, kept so it can be cancelled.
+    ///
+    /// Separate from `jobs`, which owns the generation job: browsing a connector
+    /// must not cancel a running generation, and `Esc` in the browse view must
+    /// not have to wait on one.
+    pub(super) connector_query: Option<ConnectorQuery>,
     pub(super) picker: Picker,
     pub(super) image: Option<StatefulProtocol>,
     pub(super) effects: EffectManager<&'static str>,
