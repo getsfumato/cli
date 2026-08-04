@@ -142,3 +142,35 @@ fn adapter_dependency_direction_points_inward() {
     assert!(!dependencies.contains("inquire"));
     assert!(!dependencies.contains("ratatui"));
 }
+
+/// Every HTTP client must carry its own request timeout.
+///
+/// The CLI and TUI both run catalog and status reads with a context that may
+/// carry no deadline, so a client without a timeout has no bound at all: a port
+/// that accepts the connection and never replies hangs the process forever. One
+/// of five clients was built with a bare `Client::new()`, so this guards the
+/// property across the tree rather than at the site that happened to be missing.
+#[test]
+fn every_http_client_declares_a_request_timeout() {
+    let mut violations = Vec::new();
+    for source in rust_sources(&workspace_root().join("crates")) {
+        let contents = fs::read_to_string(&source)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", source.display()));
+        // A bare constructor cannot carry a timeout, so it is always a violation.
+        if contents.contains("Client::new()") {
+            violations.push(format!("{}: Client::new()", source.display()));
+        }
+        // A builder can, but only if it says so somewhere in the same file.
+        if contents.contains("Client::builder()") && !contents.contains(".timeout(") {
+            violations.push(format!(
+                "{}: Client::builder() without .timeout()",
+                source.display()
+            ));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "HTTP clients without a request timeout:\n  {}",
+        violations.join("\n  ")
+    );
+}

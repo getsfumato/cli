@@ -253,7 +253,7 @@ impl ConnectorIntrospection for AdapterProviderFactory {
                     .await
             }
             NativeConnector::Ollama(config) => {
-                OllamaConnector::new(&config).list_models(operation).await
+                OllamaConnector::new(&config)?.list_models(operation).await
             }
             NativeConnector::LmStudio(config) => {
                 LmStudioConnector::new(connector_name, &config, self.secrets.clone())?
@@ -312,7 +312,7 @@ impl ConnectorIntrospection for AdapterProviderFactory {
                     .await
             }
             NativeConnector::Ollama(config) => {
-                OllamaConnector::new(&config)
+                OllamaConnector::new(&config)?
                     .status(connector_name, operation)
                     .await
             }

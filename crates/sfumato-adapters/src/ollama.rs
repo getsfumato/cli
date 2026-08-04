@@ -1,6 +1,6 @@
 //! Ollama-native local model catalog and runtime status adapter.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
@@ -14,6 +14,13 @@ use sfumato_core::{
 
 use crate::runtime::await_operation;
 
+/// `/api/tags`, `/api/version`, and `/api/ps` all answer in well under a second
+/// against a local daemon, and the CLI and TUI run them with a context that may
+/// carry no deadline, so this is the only bound on a hung introspection call. A
+/// port that accepts the connection and never replies — a wedged Ollama, or
+/// something else listening on 11434 — would otherwise hang the process forever.
+const INTROSPECTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Ollama adapter paired with the connector's shared OpenAI-compatible transport.
 pub struct OllamaConnector {
     client: Client,
@@ -22,11 +29,19 @@ pub struct OllamaConnector {
 
 impl OllamaConnector {
     /// Creates native Ollama operations.
-    pub fn new(config: &OllamaConnectorConfig) -> Self {
-        Self {
-            client: Client::new(),
-            native_base_url: config.native_base_url.trim_end_matches('/').to_string(),
-        }
+    pub fn new(config: &OllamaConnectorConfig) -> SfumatoResult<Self> {
+        Client::builder()
+            .timeout(INTROSPECTION_REQUEST_TIMEOUT)
+            .build()
+            .map(|client| Self {
+                client,
+                native_base_url: config.native_base_url.trim_end_matches('/').to_string(),
+            })
+            .map_err(|error| {
+                SfumatoError::config(format_args!(
+                    "Could not build the Ollama HTTP client: {error}"
+                ))
+            })
     }
 
     /// Lists locally installed models through `/api/tags`.
