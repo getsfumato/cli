@@ -897,3 +897,57 @@ fn review_summary_reports_context_compaction_for_json_callers() {
 
     assert_eq!(json["context_compaction"], "not_needed");
 }
+
+#[test]
+fn a_mermaid_example_inside_an_outer_fence_is_not_a_diagram() {
+    // A slide that teaches how to write Mermaid: the outer four-backtick fence
+    // makes its contents an example. Replacing it destroyed the lesson and put
+    // an image reference inside the code sample.
+    let markdown =
+        "# Teaching\n\n````\n```mermaid\ngraph TD; A-->B;\n```\n````\n\nThat is the syntax.\n";
+
+    let blocks = extract_mermaid_blocks(markdown).unwrap();
+
+    assert!(blocks.is_empty(), "extracted {} block(s)", blocks.len());
+}
+
+#[test]
+fn a_real_diagram_beside_an_example_is_still_found() {
+    // The example must be protected without making the feature stop working.
+    let markdown = "# Both\n\n````\n```mermaid\ngraph TD; X-->Y;\n```\n````\n\n```mermaid\ngraph LR\nA-->B\n```\n";
+
+    let blocks = extract_mermaid_blocks(markdown).unwrap();
+
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].source, "graph LR\nA-->B");
+    // The example's own source must not be what got picked up.
+    assert!(!blocks[0].source.contains("X-->Y"));
+}
+
+#[test]
+fn a_tilde_fence_does_not_close_a_backtick_fence() {
+    let markdown = "```mermaid\ngraph TD\n~~~\nA-->B\n```\n";
+
+    let blocks = extract_mermaid_blocks(markdown).unwrap();
+
+    assert_eq!(blocks.len(), 1);
+    assert!(blocks[0].source.contains("~~~"), "{:?}", blocks[0].source);
+}
+
+#[test]
+fn a_longer_closing_run_still_closes_the_fence() {
+    // CommonMark: a closing run may be longer than the opening one.
+    let markdown = "```mermaid\ngraph TD\nA-->B\n`````\n";
+
+    let blocks = extract_mermaid_blocks(markdown).unwrap();
+
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].source, "graph TD\nA-->B");
+}
+
+#[test]
+fn a_non_mermaid_fence_containing_mermaid_text_is_left_alone() {
+    let markdown = "```text\n```mermaid\ngraph TD; A-->B;\n```\n```\n";
+
+    assert!(extract_mermaid_blocks(markdown).unwrap().is_empty());
+}

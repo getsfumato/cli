@@ -258,42 +258,71 @@ pub(crate) struct MermaidBlock {
     pub(super) source: String,
 }
 
+/// Finds the Mermaid fences that are diagrams, not examples of diagrams.
+///
+/// Scans by line and tracks the open fence, so a ```` ```mermaid ```` nested
+/// inside a longer outer fence is content rather than a diagram to render. The
+/// previous scan searched for the next ```` ``` ```` with no notion of nesting,
+/// so a slide teaching how to write Mermaid had its example replaced by an image
+/// reference — silently, and inside the outer fence, so the deck then displayed
+/// a literal image-markdown string as its code sample.
+///
+/// A fence closes only on a run of the same marker at least as long as the one
+/// that opened it, matching `markdown_code_ranges`, which already protects code
+/// from math-delimiter normalization.
 pub(crate) fn extract_mermaid_blocks(markdown: &str) -> Result<Vec<MermaidBlock>> {
     let mut blocks = Vec::new();
+    let mut open: Option<OpenFence> = None;
     let mut cursor = 0;
 
-    while let Some(relative_start) = markdown[cursor..].find("```") {
-        let fence_start = cursor + relative_start;
-        let after_ticks = fence_start + 3;
-        let line_end = markdown[after_ticks..]
-            .find('\n')
-            .map(|offset| after_ticks + offset)
-            .unwrap_or(markdown.len());
-        let language = markdown[after_ticks..line_end].trim();
-
-        if !language.eq_ignore_ascii_case("mermaid") {
-            cursor = line_end;
-            continue;
+    for line in markdown.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        let fence = markdown_code_fence(trimmed.trim_start());
+        match (&open, fence) {
+            // Closing run: long enough, and the same marker.
+            (Some(current), Some((marker, length)))
+                if marker == current.marker && length >= current.length =>
+            {
+                let fence_end = cursor + trimmed.len();
+                if current.mermaid {
+                    blocks.push(MermaidBlock {
+                        start: current.start,
+                        end: fence_end,
+                        source: markdown[current.content_start..cursor].trim().to_string(),
+                    });
+                }
+                open = None;
+            }
+            // Any other fence inside an open one is just content.
+            (Some(_), _) => {}
+            (None, Some((marker, length))) => {
+                let language = trimmed.trim_start().trim_start_matches(marker).trim();
+                open = Some(OpenFence {
+                    marker,
+                    length,
+                    start: cursor,
+                    content_start: cursor + line.len(),
+                    mermaid: language.eq_ignore_ascii_case("mermaid"),
+                });
+            }
+            (None, None) => {}
         }
+        cursor += line.len();
+    }
 
-        let content_start = if line_end < markdown.len() {
-            line_end + 1
-        } else {
-            line_end
-        };
-        let Some(relative_end) = markdown[content_start..].find("\n```") else {
-            bail!("Generated Mermaid diagram fence is not closed");
-        };
-        let content_end = content_start + relative_end;
-        let fence_end = content_end + "\n```".len();
-
-        blocks.push(MermaidBlock {
-            start: fence_start,
-            end: fence_end,
-            source: markdown[content_start..content_end].trim().to_string(),
-        });
-        cursor = fence_end;
+    if let Some(current) = open
+        && current.mermaid
+    {
+        bail!("Generated Mermaid diagram fence is not closed");
     }
 
     Ok(blocks)
+}
+
+struct OpenFence {
+    marker: char,
+    length: usize,
+    start: usize,
+    content_start: usize,
+    mermaid: bool,
 }
