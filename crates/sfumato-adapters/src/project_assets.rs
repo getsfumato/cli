@@ -475,22 +475,17 @@ fn normalized_tags(tags: Vec<String>) -> Result<Vec<String>> {
     Ok(tags)
 }
 
+/// Derives an asset name from a filename.
+///
+/// `slug::slugify`, as the other six slug sites in the tree already use. The local
+/// implementation this replaces lowercased ASCII only and turned every other
+/// character into `-`, so `Café` became `caf`, `Diseño` became `dise-o`, and
+/// `Logotipo Ñandú` became `logotipo-and`. It also collided: `Diseño` and `Dise o`
+/// both produced `dise-o`. That name is the asset's identity — what `artifact show`
+/// and `artifact remove` take, and what generated resources reference — so a
+/// mangled one reads as a typo the user cannot correct.
 fn slug(value: &str) -> String {
-    let mut output = value
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    while output.contains("--") {
-        output = output.replace("--", "-");
-    }
-    output.trim_matches('-').to_string()
+    slug::slugify(value)
 }
 
 fn asset_result<T>(result: Result<T>) -> SfumatoResult<T> {

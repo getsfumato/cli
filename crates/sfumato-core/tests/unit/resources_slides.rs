@@ -951,3 +951,53 @@ fn a_non_mermaid_fence_containing_mermaid_text_is_left_alone() {
 
     assert!(extract_mermaid_blocks(markdown).unwrap().is_empty());
 }
+
+#[test]
+fn a_duplicated_title_slide_is_detected_for_an_accented_title() {
+    // `eq_ignore_ascii_case` does not fold accents, so `Fibra Óptica` never matched
+    // `fibra óptica` and the deck shipped with two title slides. Spanish decks are
+    // this project's own use case.
+    for (heading, title) in [
+        ("Fibra Óptica", "fibra óptica"),
+        ("ÍNDICE", "índice"),
+        ("Introducción", "INTRODUCCIÓN"),
+        ("Metodología", "metodología"),
+        // The ASCII cases that already worked must keep working.
+        ("Fibra Optica", "fibra optica"),
+        ("Fourier Series", "FOURIER SERIES"),
+    ] {
+        assert!(
+            title_matches(heading, title),
+            "{heading:?} should match {title:?}"
+        );
+    }
+}
+
+#[test]
+fn a_different_title_still_does_not_match() {
+    // Folding case must not become folding everything.
+    for (heading, title) in [
+        ("Introducción", "Conclusión"),
+        ("Óptica", "Optica"),
+        ("Índice", "Indice"),
+    ] {
+        assert!(
+            !title_matches(heading, title),
+            "{heading:?} should not match {title:?}"
+        );
+    }
+}
+
+#[test]
+fn an_accented_duplicate_title_slide_is_removed_from_the_deck() {
+    // The behaviour the comparison exists for, end to end.
+    let deck = normalize_marp_markdown(
+        "# Fibra Óptica\n\n---\n\n# fibra óptica\n\n---\n\n## Contenido\n\nCuerpo.",
+        &effective_config(),
+        "Fibra Óptica",
+    )
+    .unwrap();
+
+    let titles = deck.matches("Fibra Óptica").count() + deck.matches("fibra óptica").count();
+    assert_eq!(titles, 1, "the duplicate title slide survived: {deck}");
+}

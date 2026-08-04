@@ -134,3 +134,33 @@ content_hash = "{hash}"
             .contains("schema_version = 2")
     );
 }
+
+#[test]
+fn an_inferred_asset_name_transliterates_instead_of_mangling() {
+    // The local slug lowercased ASCII only and turned everything else into `-`, so
+    // an accented filename produced a name that reads as a typo — and that name is
+    // the asset's identity for `artifact show`, `artifact remove`, and references
+    // from generated resources.
+    for (name, expected) in [
+        ("Café", "cafe"),
+        ("Diseño", "diseno"),
+        ("Añejo", "anejo"),
+        ("Logotipo Ñandú", "logotipo-nandu"),
+        ("Ícono Público", "icono-publico"),
+    ] {
+        assert_eq!(slug(name), expected, "{name}");
+    }
+}
+
+#[test]
+fn two_different_names_no_longer_collide_on_one_slug() {
+    // `Diseño` and `Dise o` both produced `dise-o`, so one asset could silently
+    // take another's identity.
+    assert_ne!(slug("Diseño"), slug("Dise o"));
+}
+
+#[test]
+fn plain_ascii_names_are_unchanged() {
+    assert_eq!(slug("Fourier Series"), "fourier-series");
+    assert_eq!(slug("logo"), "logo");
+}

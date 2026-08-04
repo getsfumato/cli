@@ -695,10 +695,26 @@ pub(super) fn remove_duplicate_leading_title_slides(markdown: String, title: &st
     }
 }
 
+/// Compares a heading against the deck title, case-insensitively.
+///
+/// Unicode lowercasing, not ASCII. `eq_ignore_ascii_case` does not fold accented
+/// characters, so `Fibra Óptica` did not match `fibra óptica` and `ÍNDICE` did not
+/// match `índice` — while the unaccented spellings matched fine. That made
+/// duplicate-title detection fail for Spanish decks specifically, which is this
+/// project's own use case, and shipped the deck with two title slides.
+///
+/// Not normalized: a precomposed `ó` and `o` followed by a combining acute are
+/// still different strings. Folding those needs a normalization dependency the
+/// workspace does not carry, and a model emitting one form in the title and the
+/// other in the heading of the same response is not a failure seen in practice.
+pub(super) fn title_matches(heading: &str, title: &str) -> bool {
+    heading.trim().to_lowercase() == title.trim().to_lowercase()
+}
+
 pub(super) fn is_only_title_slide(slide: &str, title: &str) -> bool {
     slide
         .strip_prefix("# ")
-        .map(|heading| heading.trim().eq_ignore_ascii_case(title))
+        .map(|heading| title_matches(heading, title))
         .unwrap_or(false)
 }
 
@@ -707,11 +723,10 @@ pub(super) fn remaining_starts_with_title_slide(remaining: &str, title: &str) ->
         .split_once("\n---")
         .map(|(first, _)| first)
         .unwrap_or(remaining);
-    first_slide.lines().any(|line| {
-        line.trim_start_matches("# ")
-            .trim()
-            .eq_ignore_ascii_case(title)
-    }) || first_slide.contains("<!-- _class: title -->")
+    first_slide
+        .lines()
+        .any(|line| title_matches(line.trim_start_matches("# "), title))
+        || first_slide.contains("<!-- _class: title -->")
 }
 
 pub(super) fn sanitize_marp_markdown(markdown: &str) -> String {
