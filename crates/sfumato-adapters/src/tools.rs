@@ -398,8 +398,17 @@ impl ChartPalette {
 }
 
 /// Parses `#rgb` or `#rrggbb` into channels.
+///
+/// Rejects a non-ASCII value up front rather than byte-slicing it. `hex.len()`
+/// counts bytes, so `#abcñd` used to pass the length check and then panic on a
+/// slice landing inside the `ñ`. Theme colours are validated on load now, but
+/// this is called with values from several sources and must not be the thing
+/// that turns a bad colour into a crash.
 fn channels(colour: &str) -> Option<(f64, f64, f64)> {
     let hex = colour.trim().strip_prefix('#')?;
+    if !hex.chars().all(|character| character.is_ascii_hexdigit()) {
+        return None;
+    }
     let expand = |value: &str| u8::from_str_radix(value, 16).ok().map(f64::from);
     match hex.len() {
         3 => {

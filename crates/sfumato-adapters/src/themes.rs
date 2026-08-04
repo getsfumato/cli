@@ -248,13 +248,23 @@ fn reject_duplicate_design_sections(body: &str) -> Result<()> {
 }
 
 fn validate_design_color(name: &str, value: &str) -> Result<()> {
-    let hex = value.strip_prefix('#').with_context(|| {
-        format!("DESIGN.md color '{name}' must be an sRGB hex value beginning with #")
-    })?;
+    validate_hex_colour("DESIGN.md color", name, value)
+}
+
+/// Checks one sRGB hex colour token.
+///
+/// Shared by the DESIGN.md import and the theme manifest so a value that one
+/// path rejects cannot enter through the other. `is_ascii_hexdigit` is what
+/// makes this safe as well as correct: consumers parse these values by
+/// byte-slicing, which panics on a multi-byte character.
+fn validate_hex_colour(label: &str, name: &str, value: &str) -> Result<()> {
+    let hex = value
+        .strip_prefix('#')
+        .with_context(|| format!("{label} '{name}' must be an sRGB hex value beginning with #"))?;
     if !matches!(hex.len(), 3 | 4 | 6 | 8)
         || !hex.chars().all(|character| character.is_ascii_hexdigit())
     {
-        bail!("DESIGN.md color '{name}' has invalid hex value '{value}'");
+        bail!("{label} '{name}' has invalid hex value '{value}'");
     }
     Ok(())
 }
@@ -401,6 +411,14 @@ fn validate_manifest(root: &Path, requested_name: &str, manifest: &ThemeManifest
             "Theme directory '{requested_name}' does not match manifest name '{}'",
             manifest.name
         );
+    }
+    // `tokens.colors` is a free-form map that nothing validated, and consumers
+    // parse the values by byte-slicing: an accented typo — plausible when
+    // writing in Spanish — panicked the chart tool. Validating here also stops
+    // the quieter failure, where an unparseable colour was treated as light and
+    // silently turned a dark theme's chart light.
+    for (name, value) in &manifest.tokens.colors {
+        validate_hex_colour("Theme colour", name, value)?;
     }
     validate_adapter_file(root, &manifest.adapters.marp_css, "Marp CSS")?;
     let marp_css = fs::read_to_string(root.join(&manifest.adapters.marp_css))

@@ -270,3 +270,50 @@ fn never_repairs_a_document_path_that_escapes_the_theme_package() {
     );
     assert!(!temp.path().join("escaped.css").exists());
 }
+
+#[test]
+fn rejects_a_theme_whose_colour_token_is_not_hex() {
+    let temp = tempfile::tempdir().unwrap();
+    let themes = temp.path().join("themes");
+    let repository = FilesystemThemeRepository::new(themes.clone());
+    repository.install_default().unwrap();
+
+    // `tokens.colors` had no validation at all, and the chart tool parses these
+    // values by byte-slicing: an accented typo panicked it.
+    let path = themes.join("sfumato-default/theme.toml");
+    let manifest = fs::read_to_string(&path)
+        .unwrap()
+        .replace("primary = \"#315c8c\"", "primary = \"#abcñd\"");
+    fs::write(&path, manifest).unwrap();
+
+    let error = repository.load(DEFAULT_THEME).unwrap_err().to_string();
+    assert!(error.contains("Theme colour 'primary'"), "{error}");
+}
+
+#[test]
+fn rejects_a_theme_colour_that_is_a_css_name_rather_than_hex() {
+    let temp = tempfile::tempdir().unwrap();
+    let themes = temp.path().join("themes");
+    let repository = FilesystemThemeRepository::new(themes.clone());
+    repository.install_default().unwrap();
+
+    // Silent degradation, not a panic: an unparseable colour was read as light,
+    // so a dark theme quietly produced a light chart.
+    let path = themes.join("sfumato-default/theme.toml");
+    let manifest = fs::read_to_string(&path)
+        .unwrap()
+        .replace("background = \"#f7f7f5\"", "background = \"red\"");
+    fs::write(&path, manifest).unwrap();
+
+    assert!(repository.load(DEFAULT_THEME).is_err());
+}
+
+#[test]
+fn the_bundled_theme_colours_all_validate() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemThemeRepository::new(temp.path().join("themes"));
+
+    // The new validation must not reject what the project itself ships.
+    let package = repository.install_default().unwrap();
+    assert!(!package.manifest.tokens.colors.is_empty());
+}

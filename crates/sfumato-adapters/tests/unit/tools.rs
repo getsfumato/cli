@@ -797,3 +797,30 @@ fn emit_chart_program_fixtures() {
         }
     }
 }
+
+#[test]
+fn a_non_ascii_colour_is_rejected_rather_than_panicking() {
+    // `hex.len()` counts bytes, so these passed the 6-byte length check and then
+    // sliced inside a multi-byte character. `#abcñd` is the shape that reached
+    // the panic: `ab` parses as hex, so the first `?` did not short-circuit.
+    for colour in ["#abcñd", "#12ñ34", "#abñcd", "#ñññ", "#日本語色"] {
+        assert_eq!(channels(colour), None, "{colour} should not parse");
+    }
+}
+
+#[test]
+fn valid_colours_still_parse_after_the_ascii_guard() {
+    assert_eq!(channels("#ffffff"), Some((255.0, 255.0, 255.0)));
+    assert_eq!(channels("#000000"), Some((0.0, 0.0, 0.0)));
+    assert_eq!(channels("#abc"), Some((170.0, 187.0, 204.0)));
+    assert_eq!(channels("  #ABCDEF  "), Some((171.0, 205.0, 239.0)));
+    // Eight digits carry alpha, which the caller ignores.
+    assert_eq!(channels("#ffffff80"), Some((255.0, 255.0, 255.0)));
+}
+
+#[test]
+fn luminance_of_a_non_ascii_colour_does_not_panic() {
+    // The panic was reached through this path, from theme tokens.
+    let _ = luminance("#abcñd");
+    let _ = contrast_ratio("#abcñd", "#ffffff");
+}
