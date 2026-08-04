@@ -2717,6 +2717,17 @@ fn validate_video_options(config: &EffectiveConfig, video: &GenerateVideoRequest
     resolution_dimensions(&video.resolution, &video.aspect_ratio).map(|_| ())
 }
 
+/// Narrowest canvas a renderer will accept.
+///
+/// Below this the frame carries no legible content, and a ratio tall enough to
+/// round the width to zero produced a canvas the renderer rejected opaquely.
+const MIN_VIDEO_WIDTH: u32 = 128;
+
+/// Widest canvas a renderer will accept, matching 8K.
+///
+/// Every real format fits well inside it: 1080p at 21:9 is 2520px.
+const MAX_VIDEO_WIDTH: u32 = 7_680;
+
 fn resolution_dimensions(resolution: &str, aspect: &str) -> Result<(u32, u32)> {
     let height = match resolution {
         "480p" => 480,
@@ -2731,14 +2742,36 @@ fn resolution_dimensions(resolution: &str, aspect: &str) -> Result<(u32, u32)> {
     let (x, y) = aspect
         .split_once(':')
         .context("Aspect ratio must use WIDTH:HEIGHT")?;
-    let x: u32 = x.parse().map_err(SfumatoError::validation)?;
-    let y: u32 = y.parse().map_err(SfumatoError::validation)?;
+    // The bare `ParseIntError` said only "invalid digit found in string", with no
+    // field name and nothing to act on.
+    let parse = |value: &str, side: &str| -> Result<u32> {
+        value.trim().parse::<u32>().map_err(|_| {
+            SfumatoError::validation(format!(
+                "Aspect ratio {side} '{value}' is not a whole number; use WIDTH:HEIGHT, as in 16:9"
+            ))
+        })
+    };
+    let x = parse(x, "width")?;
+    let y = parse(y, "height")?;
     if x == 0 || y == 0 {
         return Err(SfumatoError::validation(
             "Aspect ratio values must be positive",
         ));
     }
     let width = ((height as f64 * x as f64 / y as f64) / 2.0).round() as u32 * 2;
+    // Bounded here because this runs from `validate_video_options`, before the
+    // plan and authoring calls are spent. `10000:1` used to compute a
+    // 4,800,000px canvas, hand it to the renderer, and fail 15 seconds later with
+    // `Hyperframe render failed with exit status: 1` — after two paid calls, and
+    // naming neither the width nor the ratio. An extreme tall ratio has the
+    // mirror problem: `1:10000` rounds the width down to zero.
+    if !(MIN_VIDEO_WIDTH..=MAX_VIDEO_WIDTH).contains(&width) {
+        return Err(SfumatoError::validation(format!(
+            "Aspect ratio {aspect} at {resolution} gives a width of {width}px, outside the \
+             supported {MIN_VIDEO_WIDTH}-{MAX_VIDEO_WIDTH}px range. Use a ratio closer to \
+             16:9, 9:16, or 1:1."
+        )));
+    }
     Ok((width, height))
 }
 

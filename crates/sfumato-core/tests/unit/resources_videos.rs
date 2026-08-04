@@ -1200,3 +1200,50 @@ fn the_rejection_names_the_file_it_found_the_problem_in() {
     assert!(error.contains("app.js"), "{error}");
     assert!(error.contains("fetch("), "{error}");
 }
+
+#[test]
+fn an_absurd_aspect_ratio_is_refused_before_any_model_call() {
+    // `10000:1` computed a 4,800,000px canvas, passed validation, and failed 15
+    // seconds later in the renderer — after the plan and authoring calls were
+    // already paid for — naming neither the width nor the ratio.
+    let error = resolution_dimensions("480p", "10000:1").unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("4800000px"), "{message}");
+    assert!(message.contains("10000:1"), "{message}");
+}
+
+#[test]
+fn an_aspect_ratio_that_rounds_the_width_to_zero_is_refused() {
+    // The mirror case: a very tall ratio rounded the width down to 0.
+    assert!(resolution_dimensions("480p", "1:10000").is_err());
+}
+
+#[test]
+fn the_shapes_people_actually_ask_for_still_resolve() {
+    for (resolution, aspect, expected) in [
+        ("1080p", "16:9", (1920, 1080)),
+        ("1080p", "9:16", (608, 1080)),
+        ("720p", "1:1", (720, 720)),
+        ("1080p", "21:9", (2520, 1080)),
+        ("480p", "4:5", (384, 480)),
+    ] {
+        assert_eq!(
+            resolution_dimensions(resolution, aspect).unwrap(),
+            expected,
+            "{resolution} {aspect}"
+        );
+    }
+}
+
+#[test]
+fn a_malformed_aspect_ratio_names_the_field_instead_of_the_parse_error() {
+    // The bare `ParseIntError` read "invalid digit found in string".
+    let error = resolution_dimensions("1080p", "abc:def")
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("Aspect ratio width"), "{error}");
+    assert!(error.contains("16:9"), "{error}");
+    assert!(!error.contains("invalid digit"), "{error}");
+}
