@@ -19,7 +19,12 @@ pub struct ConfigOverrides {
     pub model_overrides: BTreeMap<Capability, String>,
     pub reviewer_model: Option<String>,
     pub publish_dir: Option<PathBuf>,
-    pub pdf: bool,
+    /// PDF override for one run; the project decides when absent.
+    ///
+    /// `Option` rather than `bool` because an OR cannot express "off": with
+    /// `marp.pdf = true` in the config — which is the shipped default — no flag
+    /// combination could turn PDF off for a single run.
+    pub pdf: Option<bool>,
     pub tool_overrides: BTreeMap<GenerationToolKind, bool>,
 }
 
@@ -917,9 +922,12 @@ impl ProjectConfig {
                 bail!("Project contains duplicate page plugin '{plugin}'");
             }
         }
-        for tool in self.generation_tools.0.keys() {
-            let _ = tool.capability();
-        }
+        // No tool loop here on purpose. One existed and discarded its own result,
+        // validating nothing. The check it was reaching for — that each enabled
+        // tool has a model configured for its capability — cannot be made from a
+        // project config, which does not know the global model profiles; it belongs
+        // where capabilities are resolved. And the keys are a typed enum, so an
+        // unknown tool cannot reach this map: deserialization rejects it first.
         // Caught here rather than at install time: a malformed requirement in the
         // allowlist is a typo in the project's own trust decision, and reporting
         // it while editing the config beats reporting it mid-generation.
@@ -974,7 +982,7 @@ impl EffectiveConfig {
         let theme = resolve_theme_name(&project.theme, overrides.theme);
         let marp = project.marp.unwrap_or_else(|| global.marp.clone());
         let marp = MarpConfig {
-            pdf: marp.pdf || overrides.pdf,
+            pdf: overrides.pdf.unwrap_or(marp.pdf),
             browser_path: marp.browser_path,
         };
 

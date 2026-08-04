@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -910,7 +910,18 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
             let mut roots = vec![project_root];
             for source in sources {
                 if source.is_file() {
+                    // `Path::new("input.md").parent()` is `Some("")`, not `None`, so
+                    // a bare relative filename used to push an empty root that then
+                    // failed `canonicalize` — reporting `Could not resolve tool root
+                    // : No such file or directory` with nothing between the colons.
+                    // An empty parent means the file sits in the working directory,
+                    // which is what `.` names.
                     if let Some(parent) = source.parent() {
+                        let parent = if parent.as_os_str().is_empty() {
+                            Path::new(".")
+                        } else {
+                            parent
+                        };
                         roots.push(parent.to_path_buf());
                     }
                 } else {

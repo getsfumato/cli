@@ -728,8 +728,15 @@ pub struct SlidesArgs {
     )]
     pub out: Option<PathBuf>,
 
-    #[arg(long, hide = true)]
+    /// Paired with `--no-pdf` so a run can turn the project's setting off.
+    ///
+    /// The shipped default is `marp.pdf = true`, and the override used to be OR-ed
+    /// with it, so there was no way to skip the PDF for one run.
+    #[arg(long, hide = true, conflicts_with = "no_pdf")]
     pub pdf: bool,
+
+    #[arg(long = "no-pdf", hide = true)]
+    pub no_pdf: bool,
 
     #[arg(long)]
     pub dry_run: bool,

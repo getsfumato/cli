@@ -563,6 +563,7 @@ impl GenerateForm {
             template: optional(self.text(GenerateFieldId::Template)),
             out: optional(self.text(GenerateFieldId::Publish)).map(PathBuf::from),
             pdf: true,
+            no_pdf: false,
             dry_run: self.toggle(GenerateFieldId::DryRun),
             project,
             theme,

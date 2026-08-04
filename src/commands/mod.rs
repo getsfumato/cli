@@ -227,7 +227,7 @@ impl RunnableCommand for ArtifactCommands {
                             vec![
                                 Cell::primary(variant.theme),
                                 Cell::new(variant.media_type),
-                                Cell::muted(&variant.content_hash[..12]),
+                                Cell::muted(short_hash(&variant.content_hash)),
                                 Cell::new(variant.path.display()),
                             ]
                         })
@@ -297,6 +297,17 @@ impl RunnableCommand for TemplateCommands {
         }
         Ok(())
     }
+}
+
+/// Shortens a content hash for display without assuming it is long enough.
+///
+/// These values come from persisted records — project-asset manifests, prompt
+/// provenance — not from a digest just computed, so a hand-edited or corrupt file
+/// carrying a short hash used to panic on the slice rather than produce an error.
+fn short_hash(hash: &str) -> &str {
+    const DISPLAYED_HASH_CHARS: usize = 12;
+    // On a character boundary, so a non-hex value cannot panic here either.
+    hash.get(..DISPLAYED_HASH_CHARS).unwrap_or(hash)
 }
 
 /// Warns about catalog entries that were skipped, naming each one.
@@ -426,7 +437,7 @@ impl RunnableCommand for ToolCommands {
             Self::List(args) => {
                 let statuses = application.list_generation_tools(args.project)?;
                 print_table(
-                    &["TOOL", "PROJECT", "MODEL"],
+                    &["TOOL", "STATUS", "MODEL"],
                     statuses
                         .into_iter()
                         .map(|status| {
@@ -568,7 +579,7 @@ impl PromptProjectArgs {
                 "{}\t{}\t{}",
                 prompt.id,
                 prompt_origin_label(&prompt.origin),
-                &prompt.content_hash[..12]
+                short_hash(&prompt.content_hash)
             );
         }
         // Reporting success while an override sits unused is the whole defect:
@@ -1164,7 +1175,7 @@ pub(crate) async fn execute_page(
         model_overrides: model_overrides.clone(),
         reviewer_model: args.review_model,
         publish_dir: args.out,
-        pdf: false,
+        pdf: None,
         tool_overrides: parse_tool_overrides(&args.tools, &args.disabled_tools)?,
     };
     let request = GenerationRequest {
@@ -1281,7 +1292,7 @@ pub(crate) async fn execute_video(
         model_overrides: model_overrides.clone(),
         reviewer_model: args.review_model,
         publish_dir: args.out,
-        pdf: false,
+        pdf: None,
         tool_overrides: parse_tool_overrides(&args.tools, &args.disabled_tools)?,
     };
     let request = GenerationRequest {
@@ -1473,7 +1484,7 @@ pub(crate) async fn execute_edit_slides(
         model_overrides,
         reviewer_model: None,
         publish_dir: None,
-        pdf: true,
+        pdf: Some(true),
         tool_overrides: BTreeMap::new(),
     };
     Ok(application
@@ -1572,7 +1583,7 @@ pub(crate) async fn execute_document(
         model_overrides: model_overrides.clone(),
         reviewer_model: args.review_model,
         publish_dir: args.out,
-        pdf: false,
+        pdf: None,
         tool_overrides: parse_tool_overrides(&args.tools, &args.disabled_tools)?,
     };
     let request = GenerationRequest {
@@ -1714,7 +1725,7 @@ pub(crate) async fn execute_slides(
         model_overrides: model_overrides.clone(),
         reviewer_model: args.review_model,
         publish_dir: args.out,
-        pdf: args.pdf,
+        pdf: flag_override(args.pdf, args.no_pdf),
         tool_overrides: parse_tool_overrides(&args.tools, &args.disabled_tools)?,
     };
     let request = GenerationRequest {

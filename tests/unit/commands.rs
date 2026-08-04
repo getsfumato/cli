@@ -161,3 +161,53 @@ fn every_command_that_accepts_json_can_report_an_error_as_json() {
         anyhow_sites + typed_sites
     );
 }
+
+#[test]
+fn a_short_content_hash_is_displayed_rather_than_panicking() {
+    // These values come from persisted records, not a freshly computed digest, so a
+    // hand-edited or corrupt manifest carrying a short hash panicked on the slice.
+    assert_eq!(short_hash("abc"), "abc");
+    assert_eq!(short_hash(""), "");
+    assert_eq!(short_hash("0123456789ab"), "0123456789ab");
+    assert_eq!(short_hash("0123456789abcdef"), "0123456789ab");
+}
+
+#[test]
+fn a_hash_with_multibyte_characters_does_not_panic_on_the_boundary() {
+    // A corrupt record is not guaranteed to be hex, and slicing by byte index into
+    // a multibyte character is its own panic.
+    let hash = "ñ".repeat(20);
+    let shown = short_hash(&hash);
+
+    assert!(hash.starts_with(shown) || shown == hash, "{shown}");
+}
+
+#[test]
+fn no_pdf_can_turn_off_a_project_that_enables_pdf() {
+    // The override used to be OR-ed with `marp.pdf`, which ships as `true`, so no
+    // flag combination could skip the PDF for one run.
+    #[derive(clap::Parser)]
+    struct Harness {
+        #[command(flatten)]
+        args: crate::cli::SlidesArgs,
+    }
+    use clap::Parser;
+
+    let parse = |extra: &[&str]| {
+        let mut argv = vec!["sfumato", "--instruction", "x"];
+        argv.extend_from_slice(extra);
+        argv.push("in.md");
+        Harness::try_parse_from(argv).map(|harness| harness.args)
+    };
+
+    let with = parse(&["--pdf"]).expect("--pdf parses");
+    let without = parse(&["--no-pdf"]).expect("--no-pdf parses");
+    let neither = parse(&[]).expect("neither flag parses");
+
+    assert_eq!(flag_override(with.pdf, with.no_pdf), Some(true));
+    assert_eq!(flag_override(without.pdf, without.no_pdf), Some(false));
+    // Absent means the project decides, which is what the old `false` resolved to.
+    assert_eq!(flag_override(neither.pdf, neither.no_pdf), None);
+    // Contradictory flags are refused rather than silently resolved.
+    assert!(parse(&["--pdf", "--no-pdf"]).is_err());
+}

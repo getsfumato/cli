@@ -824,3 +824,35 @@ fn luminance_of_a_non_ascii_colour_does_not_panic() {
     let _ = luminance("#abcñd");
     let _ = contrast_ratio("#abcñd", "#ffffff");
 }
+
+#[test]
+fn a_bare_relative_source_resolves_its_working_directory_as_a_root() {
+    // `Path::new("input.md").parent()` is `Some("")`, not `None`, so a bare
+    // filename pushed an empty root that failed `canonicalize` — reporting
+    // `Could not resolve tool root : No such file or directory` with nothing
+    // between the colons, from inside a project, on a first run.
+    let temporary = tempfile::tempdir().unwrap();
+    std::fs::write(temporary.path().join("input.md"), "# Notas\n").unwrap();
+
+    let executor = FilesystemToolExecutor::new(vec![
+        temporary.path().to_path_buf(),
+        // What the factory derives for a bare relative filename.
+        std::path::PathBuf::from("."),
+    ])
+    .expect("an empty parent resolves rather than failing");
+
+    assert!(!executor.roots.is_empty());
+}
+
+#[test]
+fn an_unresolvable_root_is_still_reported_with_its_path() {
+    let error = FilesystemToolExecutor::new(vec![std::path::PathBuf::from(
+        "/definitely/not/here/at/all",
+    )])
+    .expect_err("a missing root is refused");
+
+    assert!(
+        format!("{error:#}").contains("/definitely/not/here/at/all"),
+        "the message must name the root: {error:#}"
+    );
+}
