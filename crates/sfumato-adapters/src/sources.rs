@@ -18,6 +18,11 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
     "md", "txt", "rs", "py", "js", "ts", "html", "css", "json", "toml", "yaml", "yml",
 ];
 const MAX_SOURCE_FILES: usize = 256;
+/// Longest a single UTF-8 character can be.
+///
+/// The byte cap can slice one character in half, so discarding up to this many
+/// bytes is the intended repair; more than that is not a cut character.
+const MAX_UTF8_CHARACTER_BYTES: usize = 4;
 const MAX_SOURCE_BYTES_PER_FILE: u64 = 1_048_576;
 const MAX_SOURCE_TOTAL_BYTES: u64 = 16_777_216;
 const PROJECT_INSTRUCTIONS_FILE: &str = "SFUMATO.md";
@@ -157,8 +162,29 @@ fn push_source_file(
         .with_context(|| format!("Could not read {}", canonical.display()))?;
     let truncated = raw.len() as u64 > MAX_SOURCE_BYTES_PER_FILE;
     raw.truncate(MAX_SOURCE_BYTES_PER_FILE as usize);
+    // Trimming here repairs one multibyte character that the byte cap cut in
+    // half, which is at most `MAX_UTF8_CHARACTER_BYTES - 1` bytes. It used to pop
+    // until the buffer parsed no matter how much that took, so a file with a text
+    // extension and binary content had everything after the first invalid byte
+    // discarded — 96% of a 52 KB file in the reported case — and handed to the
+    // model as though it were the whole file. `truncated` is computed before this
+    // loop and only tracks the size cap, so the marker never covered these losses.
+    let capped = raw.len();
     while std::str::from_utf8(&raw).is_err() && !raw.is_empty() {
         raw.pop();
+    }
+    let discarded = capped - raw.len();
+    if discarded >= MAX_UTF8_CHARACTER_BYTES {
+        // The error the original code drafted on the next line, which the pop loop
+        // had made unreachable by guaranteeing the conversion would succeed.
+        // Refused rather than marked: this runs in preflight, before any model call
+        // is spent, and a text-extensioned file that is mostly binary is not what
+        // the caller meant to include.
+        bail!(
+            "Source {} is not valid UTF-8: {discarded} of {capped} bytes are not text. \
+             Exclude the file or convert it before generating.",
+            canonical.display()
+        );
     }
     let mut content = String::from_utf8(raw)
         .with_context(|| format!("Source {} is not valid UTF-8", canonical.display()))?;
