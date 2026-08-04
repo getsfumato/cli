@@ -9,6 +9,7 @@ use sfumato_domain::ArtifactKind;
 use sha2::{Digest, Sha256};
 use slug::slugify;
 
+use crate::resources::excerpt;
 use crate::sfumato_bail as bail;
 use crate::{
     artifacts::{

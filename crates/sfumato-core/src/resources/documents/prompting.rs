@@ -265,13 +265,6 @@ pub(super) fn build_source_bundle(
     }
 }
 
-pub(super) fn excerpt(content: &str, max_chars: usize) -> String {
-    if content.chars().count() <= max_chars {
-        return content.to_owned();
-    }
-    content.chars().take(max_chars).collect()
-}
-
 pub(super) fn summarize_tools(
     tools: &[crate::providers::ToolDefinition],
 ) -> Vec<GenerationToolSummary> {

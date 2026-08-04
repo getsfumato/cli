@@ -16,6 +16,7 @@ use serde::Serialize;
 use sfumato_domain::ArtifactKind;
 use slug::slugify;
 
+use crate::resources::excerpt;
 use crate::sfumato_bail as bail;
 use crate::{
     artifacts::{

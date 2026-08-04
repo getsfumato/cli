@@ -171,14 +171,6 @@ pub(super) fn compact_retry_failed(error: &SfumatoError) -> bool {
         .is_some_and(|value| value == "true")
 }
 
-pub(super) fn excerpt(content: &str, max_chars: usize) -> String {
-    let mut excerpt = content.chars().take(max_chars).collect::<String>();
-    if content.chars().count() > max_chars {
-        excerpt.push_str("\n[...truncated by sfumato...]");
-    }
-    excerpt
-}
-
 pub(super) fn normalize_marp_markdown(
     generated: &str,
     config: &EffectiveConfig,
