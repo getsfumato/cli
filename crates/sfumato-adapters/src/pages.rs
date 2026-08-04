@@ -1,6 +1,6 @@
 //! Static page assembly and browser-backed inspection adapters.
 
-use std::{collections::BTreeSet, path::Path};
+use std::{collections::BTreeSet, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -20,7 +20,7 @@ use sfumato_core::{
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use crate::{renderers::resolved_browser_path, runtime::run_command};
+use crate::{renderers::resolved_browser_path, runtime::run_command_within};
 
 const CONTENT_SLOT: &str = "<!-- SFUMATO_CONTENT -->";
 const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
@@ -467,6 +467,13 @@ struct BrowserReport {
     unrendered_math: Vec<String>,
 }
 
+/// Wall-clock bound for one headless browser inspection run.
+///
+/// Generous next to the 2 seconds a healthy run takes, because the point is to
+/// stop an unbounded hang rather than to enforce a performance budget. Layout
+/// inspection is optional, so expiry degrades to a warning.
+const BROWSER_INSPECTION_TIMEOUT: Duration = Duration::from_secs(60);
+
 async fn inspect_page(
     html_path: &Path,
     browser_path: Option<&Path>,
@@ -484,12 +491,26 @@ async fn inspect_page(
             "--allow-file-access-from-files",
             "--dump-dom",
             "--virtual-time-budget=5000",
+            // Deliberately no `--user-data-dir`. It looks like the right way to
+            // stop depending on the user's Chrome profile, but measured against
+            // Chrome 150 any explicit profile directory — fresh or reused —
+            // dumps the DOM and then never exits, because a non-default profile
+            // starts background services (GCM registration) that outlive the
+            // dump. Omitting it exits in ~4s. Adding it would turn an occasional
+            // hang into one on every run, so profile isolation needs a different
+            // mechanism: read the report from stdout instead of waiting for the
+            // process to exit.
             &format!("--window-size={width},{height}"),
             &url,
         ]);
-        let output = run_command(&mut command, operation, OperationStage::InspectLayout)
-            .await
-            .context("Could not run browser page inspection")?;
+        let output = run_command_within(
+            &mut command,
+            operation,
+            OperationStage::InspectLayout,
+            BROWSER_INSPECTION_TIMEOUT,
+        )
+        .await
+        .context("Could not run browser page inspection")?;
         if !output.status.success() {
             bail!(
                 "Browser page inspection exited with status {}: {}",

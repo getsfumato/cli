@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Result;
 use sfumato_core::{
-    errors::{OperationStage, SfumatoError},
+    errors::{ErrorClass, OperationStage, SfumatoError},
     operation::{CancellationToken, OperationContext},
 };
 use tokio::process::Command;
@@ -50,6 +50,37 @@ pub(crate) async fn run_command(
         .stderr(Stdio::piped());
     let child = command.spawn()?;
     await_operation(operation, stage, child.wait_with_output()).await
+}
+
+/// Runs a child process with its own wall-clock bound.
+///
+/// [`run_command`] is bounded only by the operation deadline, which is absent
+/// unless the caller passed `--timeout`. A subprocess that can hang on external
+/// state needs a bound of its own, and expiry is reported as
+/// [`ErrorClass::Unavailable`] so an optional step can degrade to a warning
+/// instead of failing the whole operation.
+///
+/// `kill_on_drop` is already set by [`run_command`], so dropping the future on
+/// expiry reaps the child.
+pub(crate) async fn run_command_within(
+    command: &mut Command,
+    operation: &OperationContext,
+    stage: OperationStage,
+    bound: Duration,
+) -> Result<Output> {
+    let program = command.as_std().get_program().to_string_lossy().to_string();
+    match tokio::time::timeout(bound, run_command(command, operation, stage)).await {
+        Ok(result) => result,
+        Err(_) => Err(SfumatoError::render(
+            ErrorClass::Unavailable,
+            format!(
+                "{program} did not finish within {} seconds and was stopped",
+                bound.as_secs()
+            ),
+        )
+        .at_stage(stage)
+        .into()),
+    }
 }
 
 async fn wait_for_cancellation(token: CancellationToken) {
