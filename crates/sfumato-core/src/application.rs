@@ -520,15 +520,12 @@ impl SfumatoApplication {
             .prompts
             .for_project(&config.project_root)
             .map_err(|error| error.at_stage(OperationStage::RenderPrompt))?;
-        let mut plugins = config.page.plugins.clone();
-        plugins.retain(|id| !command.disabled_plugins.contains(id));
-        plugins.extend(command.plugins);
-        plugins.sort();
-        plugins.dedup();
-        let ui = command.ui.or(config.page.ui.clone());
-        if let Some(ui) = ui.filter(|value| !value.is_empty()) {
-            plugins.push(ui);
-        }
+        let plugins = resolve_page_plugins(
+            &config.page.plugins,
+            command.plugins,
+            &command.disabled_plugins,
+            command.ui.or(config.page.ui.clone()),
+        );
         generate_page(
             config,
             command.request,
@@ -1388,6 +1385,31 @@ impl SfumatoApplication {
 
 fn public_result<T>(result: SfumatoResult<T>, _fallback_code: ErrorCode) -> SfumatoResult<T> {
     result
+}
+
+/// Resolves which page plugins one request loads.
+///
+/// `disabled` is applied after the UI is added, not before. The UI plugin used to be
+/// pushed past the filter, so `--disable-plugin <ui-name>` silently did nothing and
+/// `--ui ""` was the only documented way to turn it off.
+///
+/// Extracted from `generate_page` so the precedence is testable without standing up
+/// every port that function needs.
+fn resolve_page_plugins(
+    configured: &[String],
+    requested: Vec<String>,
+    disabled: &[String],
+    ui: Option<String>,
+) -> Vec<String> {
+    let mut plugins = configured.to_vec();
+    plugins.extend(requested);
+    if let Some(ui) = ui.filter(|value| !value.is_empty()) {
+        plugins.push(ui);
+    }
+    plugins.retain(|id| !disabled.contains(id));
+    plugins.sort();
+    plugins.dedup();
+    plugins
 }
 
 fn public_prompt_error(error: PromptError) -> SfumatoError {

@@ -239,6 +239,12 @@ pub(super) enum GenerateFieldId {
     Narration,
     Voice,
     Engine,
+    /// Creative direction for the film, which the TUI could not reach at all.
+    Workflow,
+    /// Websites captured as managed Hyperframe sources.
+    Urls,
+    /// Pause after contact-sheet review for human approval.
+    VisualReview,
     Duration,
     Resolution,
     AspectRatio,
@@ -654,13 +660,39 @@ impl GenerateForm {
                 _ => VideoAudioArg::Auto,
             });
         let (tools, disabled_tools) = self.tool_flags();
+        let workflow = match self.select_index(GenerateFieldId::Workflow).unwrap_or(0) {
+            1 => VideoWorkflowArg::Explainer,
+            2 => VideoWorkflowArg::MotionGraphics,
+            3 => VideoWorkflowArg::ProductLaunch,
+            4 => VideoWorkflowArg::TalkingHead,
+            5 => VideoWorkflowArg::Slideshow,
+            6 => VideoWorkflowArg::General,
+            _ => VideoWorkflowArg::Auto,
+        };
+        // Validated here rather than left to the workflow, so the form reports a bad
+        // URL while the user is still looking at the field. Same rule the CLI applies.
+        let urls = self
+            .text(GenerateFieldId::Urls)
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                if value.starts_with("https://") || value.starts_with("http://") {
+                    Ok(value.to_owned())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Capture URL '{value}' must be an absolute http(s) URL"
+                    ))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(VideoArgs {
             inputs,
-            urls: Vec::new(),
+            urls,
             instruction,
             title,
             engine,
-            workflow: VideoWorkflowArg::Auto,
+            workflow,
             duration,
             out: optional(self.text(GenerateFieldId::Publish)).map(PathBuf::from),
             dry_run: self.toggle(GenerateFieldId::DryRun),
@@ -669,7 +701,7 @@ impl GenerateForm {
             model_overrides,
             review_model: optional(self.text(GenerateFieldId::Reviewer)),
             no_review: !self.toggle(GenerateFieldId::Review),
-            visual_review: false,
+            visual_review: self.toggle(GenerateFieldId::VisualReview),
             json: false,
             resolution: optional(self.text(GenerateFieldId::Resolution)),
             aspect_ratio: optional(self.text(GenerateFieldId::AspectRatio)),
@@ -802,6 +834,22 @@ fn build_generation_fields(
                 },
             ),
             (
+                GenerateFieldId::Workflow,
+                FormField::Select {
+                    label: "Workflow",
+                    options: vec![
+                        "Auto".into(),
+                        "Explainer".into(),
+                        "Motion graphics".into(),
+                        "Product launch".into(),
+                        "Talking head".into(),
+                        "Slideshow".into(),
+                        "General".into(),
+                    ],
+                    selected: 0,
+                },
+            ),
+            (
                 GenerateFieldId::Duration,
                 text_generate_value("Duration (seconds)", "required", "15"),
             ),
@@ -832,6 +880,17 @@ fn build_generation_fields(
                 (
                     GenerateFieldId::Voice,
                     text_generate_field("Voice", "speech profile default"),
+                ),
+                (
+                    GenerateFieldId::Urls,
+                    text_generate_field("Capture URLs", "comma separated, https only"),
+                ),
+                (
+                    GenerateFieldId::VisualReview,
+                    FormField::Toggle {
+                        label: "Visual review",
+                        value: false,
+                    },
                 ),
             ]),
             VideoEngineArg::Manim => pairs.extend([
@@ -1320,7 +1379,13 @@ pub(super) fn operation_stage_label(stage: OperationStage) -> &'static str {
         OperationStage::Render => "Rendering artifacts",
         OperationStage::CommitArtifacts => "Committing revision",
         OperationStage::Publish => "Publishing output",
-        _ => "Running operation",
+        // `OperationStage` is `#[non_exhaustive]`, so a downstream match cannot be
+        // exhaustive and a new variant cannot produce a compile error here — unlike
+        // `stage_label` in `view.rs`, which covers `GenerationStage` from this crate.
+        // Falling back to the stage's own stable name means an unlabelled stage still
+        // says which one it is, instead of every one of them reading as the same
+        // opaque "Running operation" in the activity list.
+        other => other.as_str(),
     }
 }
 

@@ -674,3 +674,144 @@ async fn starting_a_second_connector_read_cancels_the_first() {
     app.shutdown().await;
     assert!(app.connector_query.is_none());
 }
+
+/// Builds the video form with Hyperframe selected, the way the TUI does.
+fn hyperframe_video_form() -> GenerateForm {
+    let mut form = GenerateForm::default();
+    if let FormField::Select { selected, .. } = &mut form.fields[0] {
+        // The resource selector: index of Video.
+        *selected = 2;
+    }
+    form.switch_resource_from_selector();
+    form
+}
+
+#[test]
+fn the_video_form_exposes_the_workflow_the_cli_offers() {
+    // `to_video_args` hardcoded `workflow: Auto` and there was no field for it, so a
+    // TUI user always got `auto` — while the same form exposed fps, quality, aspect
+    // ratio and voice. ADR-0001 says the CLI and TUI execute the same use cases.
+    let form = hyperframe_video_form();
+
+    let workflow = form
+        .fields
+        .iter()
+        .find(|field| field.label() == "Workflow")
+        .expect("the video form offers a workflow");
+    match workflow {
+        FormField::Select { options, .. } => {
+            // Every CLI value is reachable.
+            assert_eq!(options.len(), 7, "{options:?}");
+        }
+        other => panic!("workflow should be a select: {other:?}"),
+    }
+}
+
+#[test]
+fn the_video_form_reaches_capture_urls_and_visual_review() {
+    let form = hyperframe_video_form();
+    let labels: Vec<&str> = form.fields.iter().map(|field| field.label()).collect();
+
+    assert!(labels.contains(&"Capture URLs"), "{labels:?}");
+    assert!(labels.contains(&"Visual review"), "{labels:?}");
+}
+
+#[test]
+fn a_selected_workflow_reaches_the_built_arguments() {
+    let mut form = hyperframe_video_form();
+    for field in &mut form.fields {
+        match field {
+            FormField::Text {
+                label: "Instruction",
+                value,
+                ..
+            } => *value = "Explica la fibra".into(),
+            FormField::Select {
+                label: "Workflow",
+                selected,
+                ..
+            } => *selected = 3,
+            _ => {}
+        }
+    }
+
+    let args = form.to_video_args().expect("the form builds arguments");
+
+    assert!(matches!(args.workflow, VideoWorkflowArg::ProductLaunch));
+}
+
+#[test]
+fn a_capture_url_without_a_scheme_is_refused_by_the_form() {
+    // The CLI applies this rule; the form applies it too, so a bad value is
+    // reported while the user is still looking at the field.
+    let mut form = hyperframe_video_form();
+    for field in &mut form.fields {
+        match field {
+            FormField::Text {
+                label: "Instruction",
+                value,
+                ..
+            } => *value = "x".into(),
+            FormField::Text {
+                label: "Capture URLs",
+                value,
+                ..
+            } => *value = "sfumato.dev".into(),
+            _ => {}
+        }
+    }
+
+    let error = form.to_video_args().expect_err("a bare host is refused");
+    assert!(
+        format!("{error:#}").contains("absolute http(s)"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn several_capture_urls_are_split_and_kept() {
+    let mut form = hyperframe_video_form();
+    for field in &mut form.fields {
+        match field {
+            FormField::Text {
+                label: "Instruction",
+                value,
+                ..
+            } => *value = "x".into(),
+            FormField::Text {
+                label: "Capture URLs",
+                value,
+                ..
+            } => *value = "https://a.test, https://b.test".into(),
+            _ => {}
+        }
+    }
+
+    let args = form.to_video_args().expect("the form builds arguments");
+
+    assert_eq!(args.urls, vec!["https://a.test", "https://b.test"]);
+}
+
+#[test]
+fn an_unlabelled_operation_stage_names_itself() {
+    // `OperationStage` is `#[non_exhaustive]`, so a new variant cannot force a
+    // compile error here; the fallback used to render every one of them as the same
+    // opaque "Running operation".
+    assert_eq!(
+        operation_stage_label(OperationStage::Publish),
+        "Publishing output"
+    );
+    // The labelled stages all read as prose rather than as their stable code.
+    for stage in [
+        OperationStage::Resolve,
+        OperationStage::ReadSources,
+        OperationStage::Draft,
+        OperationStage::Render,
+    ] {
+        assert_ne!(
+            operation_stage_label(stage),
+            stage.as_str(),
+            "{stage:?} should have a human label"
+        );
+    }
+}

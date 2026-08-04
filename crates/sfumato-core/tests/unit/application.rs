@@ -70,3 +70,50 @@ fn prompt_rendering_failures_stay_configuration_errors() {
     assert_eq!(error.code, ErrorCode::Config);
     assert_eq!(error.stage, Some(OperationStage::RenderPrompt));
 }
+
+#[test]
+fn disabling_a_plugin_also_reaches_the_project_ui_library() {
+    // The UI plugin was pushed after the `retain`, so `--disable-plugin <ui-name>`
+    // silently did nothing and `--ui ""` was the only way to turn it off.
+    let plugins = resolve_page_plugins(
+        &["katex".to_string()],
+        Vec::new(),
+        &["shadcn".to_string()],
+        Some("shadcn".to_string()),
+    );
+
+    assert_eq!(plugins, vec!["katex".to_string()]);
+}
+
+#[test]
+fn the_ui_library_is_still_loaded_when_it_is_not_disabled() {
+    let plugins = resolve_page_plugins(
+        &["katex".to_string()],
+        Vec::new(),
+        &[],
+        Some("shadcn".to_string()),
+    );
+
+    assert_eq!(plugins, vec!["katex".to_string(), "shadcn".to_string()]);
+}
+
+#[test]
+fn an_empty_ui_override_disables_the_project_library() {
+    // The documented escape hatch keeps working.
+    let plugins =
+        resolve_page_plugins(&["katex".to_string()], Vec::new(), &[], Some(String::new()));
+
+    assert_eq!(plugins, vec!["katex".to_string()]);
+}
+
+#[test]
+fn a_requested_plugin_can_also_be_disabled_and_the_list_stays_unique() {
+    let plugins = resolve_page_plugins(
+        &["katex".to_string()],
+        vec!["mermaid".to_string(), "katex".to_string()],
+        &["mermaid".to_string()],
+        None,
+    );
+
+    assert_eq!(plugins, vec!["katex".to_string()]);
+}
