@@ -260,3 +260,70 @@ fn an_unclosed_code_fence_in_a_section_is_rejected() {
 
     assert!(format!("{error}").contains("unclosed `rust`"), "{error}");
 }
+
+#[test]
+fn a_patch_cannot_give_the_subtitle_a_newline() {
+    // `/subtitle` is patchable and `render` interpolates it into YAML
+    // frontmatter, so a newline closed the block early and injected a second
+    // one. The rendered document then no longer parsed, and the failure appeared
+    // downstream with nothing pointing at the subtitle.
+    let mut document = sample();
+    let revision = document.revision().as_str().to_owned();
+    let patch = parse_json_patch(&format!(
+        r#"[{{"op":"test","path":"/revision","value":"{revision}"}},{{"op":"replace","path":"/subtitle","value":"malo\n---\ntitle: inyectado"}}]"#
+    ))
+    .expect("the patch parses");
+
+    let error = document
+        .apply_patch(&patch)
+        .expect_err("a multi-line subtitle is rejected");
+
+    assert!(format!("{error}").contains("subtitle"), "{error}");
+}
+
+#[test]
+fn a_plain_multi_line_subtitle_is_rejected_too() {
+    // Not only the injection shape: any second line breaks the frontmatter.
+    let mut document = sample();
+    let revision = document.revision().as_str().to_owned();
+    let patch = parse_json_patch(&format!(
+        r#"[{{"op":"test","path":"/revision","value":"{revision}"}},{{"op":"replace","path":"/subtitle","value":"linea1\nlinea2"}}]"#
+    ))
+    .expect("the patch parses");
+
+    assert!(document.apply_patch(&patch).is_err());
+}
+
+#[test]
+fn frontmatter_values_reject_line_breaks_and_control_characters() {
+    // The rule the subtitle and title both go through, stated once.
+    for bad in [
+        "uno\ndos",
+        "uno\r\ndos",
+        "uno\rdos",
+        "uno\u{0}dos",
+        "a\u{7}b",
+    ] {
+        assert!(
+            validate_single_line("field", bad).is_err(),
+            "{bad:?} should be rejected"
+        );
+    }
+    // A tab is not a line break and appears in ordinary prose.
+    for good in ["Repaso rápido", "uno\tdos", "a — b", "日本語"] {
+        assert!(
+            validate_single_line("field", good).is_ok(),
+            "{good:?} should be accepted"
+        );
+    }
+}
+
+#[test]
+fn a_single_line_subtitle_with_accents_still_round_trips() {
+    // The rule must not reject ordinary content: the sample subtitle is Spanish.
+    let document = sample();
+    let rendered = document.render().expect("a valid document renders");
+    let reparsed = SectionedDocument::from_markdown(&rendered).expect("it reparses");
+
+    assert_eq!(reparsed.subtitle(), Some("Repaso rápido"));
+}

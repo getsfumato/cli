@@ -485,6 +485,7 @@ impl SectionedDocument {
         if self.title.trim().is_empty() {
             return invalid_document("document title cannot be empty".into());
         }
+        validate_single_line("document title", &self.title)?;
         if self
             .subtitle
             .as_ref()
@@ -493,6 +494,9 @@ impl SectionedDocument {
             return invalid_document(
                 "document subtitle must carry text or be absent entirely".into(),
             );
+        }
+        if let Some(subtitle) = &self.subtitle {
+            validate_single_line("document subtitle", subtitle)?;
         }
         if self.order.is_empty() {
             return invalid_document("document must contain at least one section".into());
@@ -658,6 +662,31 @@ fn invalid_patch<T>(message: String) -> Result<T, ReviewError> {
 
 fn invalid_document<T>(message: String) -> Result<T, ReviewError> {
     Err(ReviewError::InvalidDeck(message))
+}
+
+/// Rejects a value that cannot survive a single line of YAML frontmatter.
+///
+/// `render` interpolates the subtitle into `---\nsubtitle: {value}\n---`, and
+/// `/subtitle` is patchable by the reviewer, so a newline closed the block early
+/// and could inject a second one — the rendered document then no longer parsed.
+/// `ReviewableDocument::render` documents itself as producing a lossless source
+/// representation, so this is enforced at validation rather than escaped at
+/// render time: the invariant stays in one place, and a reviewer's patch fails
+/// with a message naming the field instead of a parse error downstream.
+fn validate_single_line(field: &str, value: &str) -> Result<(), ReviewError> {
+    if let Some(character) = value.chars().find(|character| {
+        *character == '\n' || *character == '\r' || (character.is_control() && *character != '\t')
+    }) {
+        return invalid_document(format!(
+            "{field} must be a single line; it contains {}",
+            match character {
+                '\n' => "a line feed".to_string(),
+                '\r' => "a carriage return".to_string(),
+                other => format!("the control character U+{:04X}", other as u32),
+            }
+        ));
+    }
+    Ok(())
 }
 
 struct Heading {
