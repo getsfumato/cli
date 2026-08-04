@@ -274,7 +274,10 @@ pub(super) fn validate_scene_module(scene_id: &str, source: &str) -> Result<(), 
     if let Some(complaint) = unicode_in_math(source) {
         return Err(complaint);
     }
-    screen_python_source(source).map_err(|error| error.to_string())?;
+    // No extra modules: the Manim environment installs exactly `manim`, and
+    // unlike the chart tool this path never layers project packages on top, so
+    // there is nothing beyond the base allowlist to permit.
+    screen_python_source(source, &[]).map_err(|error| error.to_string())?;
     Ok(())
 }
 

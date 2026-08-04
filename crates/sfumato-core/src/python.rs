@@ -112,10 +112,7 @@ pub trait PythonRuntime: Send + Sync {
 /// keeps a careless script from touching the machine on the way to the real
 /// isolation the run directory provides. Anything genuinely hostile needs the
 /// project-level `allow_python` gate to have been opened first.
-const FORBIDDEN_OPERATIONS: [&str; 12] = [
-    "import os",
-    "import sys",
-    "import shutil",
+const FORBIDDEN_OPERATIONS: [&str; 10] = [
     "subprocess",
     "socket",
     "requests",
@@ -125,10 +122,55 @@ const FORBIDDEN_OPERATIONS: [&str; 12] = [
     "eval(",
     "__import__",
     "environ",
+    "breakpoint(",
+];
+
+/// Modules generated code has a reason to import.
+///
+/// An allowlist rather than a denylist, because a denylist of module names loses:
+/// `import os` was refused while `from os import path` — the same import, spelled
+/// the other way — passed, and `pathlib` reached the filesystem without ever
+/// writing `open(`. Naming what is permitted makes a paraphrase fail by default.
+///
+/// The plotting and animation packages come from the bundled environment
+/// manifest; the rest are pure-computation parts of the standard library that
+/// chart and scene code genuinely uses.
+const PERMITTED_MODULES: &[&str] = &[
+    // Provisioned environments.
+    "matplotlib",
+    "mpl_toolkits",
+    "numpy",
+    "sympy",
+    "manim",
+    // Computation and formatting only: no filesystem, process, or network reach.
+    "cmath",
+    "colorsys",
+    "collections",
+    "dataclasses",
+    "datetime",
+    "decimal",
+    "enum",
+    "fractions",
+    "functools",
+    "itertools",
+    "json",
+    "math",
+    "operator",
+    "random",
+    "re",
+    "statistics",
+    "string",
+    "textwrap",
+    "typing",
+    "unicodedata",
 ];
 
 /// Rejects generated Python that reaches outside its run directory.
-pub fn screen_python_source(source: &str) -> SfumatoResult<()> {
+///
+/// `extra_modules` are packages the project has explicitly authorised through
+/// `security.python_packages`; without them a project that layers its own
+/// dependency could not import it.
+pub fn screen_python_source(source: &str, extra_modules: &[String]) -> SfumatoResult<()> {
     let lowercase = source.to_ascii_lowercase();
     for forbidden in FORBIDDEN_OPERATIONS {
         if lowercase.contains(forbidden) {
@@ -138,7 +180,63 @@ pub fn screen_python_source(source: &str) -> SfumatoResult<()> {
             ));
         }
     }
+    for module in imported_modules(source) {
+        if !is_permitted_module(&module, extra_modules) {
+            return Err(SfumatoError::render(
+                ErrorClass::InvalidOutput,
+                format!(
+                    "Generated Python imports '{module}', which is not permitted. \
+                     Allowed modules: {}.",
+                    PERMITTED_MODULES.join(", ")
+                ),
+            ));
+        }
+    }
     Ok(())
+}
+
+/// Reports whether a module, or the package it belongs to, is permitted.
+fn is_permitted_module(module: &str, extra_modules: &[String]) -> bool {
+    // `matplotlib.pyplot` is permitted by `matplotlib`; `os.path` is not
+    // permitted by anything, which is the case the denylist missed.
+    let root = module.split('.').next().unwrap_or(module);
+    PERMITTED_MODULES.contains(&root)
+        || extra_modules.iter().any(|allowed| {
+            let allowed = allowed
+                .split(['=', '>', '<', '!', '~', '['])
+                .next()
+                .unwrap_or(allowed)
+                .trim()
+                .replace('-', "_")
+                .to_ascii_lowercase();
+            allowed == root
+        })
+}
+
+/// Collects every module named by an `import` or `from ... import` statement.
+///
+/// Line-oriented and deliberately literal: this is a screen, so a construct it
+/// cannot read — a continuation, an import built at runtime — is not silently
+/// accepted, because `__import__` and `exec(` are refused outright above.
+fn imported_modules(source: &str) -> Vec<String> {
+    let mut modules = Vec::new();
+    for line in source.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("from ") {
+            if let Some(module) = rest.split_whitespace().next() {
+                modules.push(module.trim_start_matches('.').to_ascii_lowercase());
+            }
+        } else if let Some(rest) = line.strip_prefix("import ") {
+            // `import a.b, c as d` names two modules.
+            for part in rest.split(',') {
+                if let Some(module) = part.split_whitespace().next() {
+                    modules.push(module.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    modules.retain(|module| !module.is_empty());
+    modules
 }
 
 /// Rejects a requirement string that is not a plain pinned package name.

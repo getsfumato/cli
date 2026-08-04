@@ -550,8 +550,8 @@ plt.savefig("chart.png")
                 bail!("Remove `{statement}` from the chart code: {reason}.");
             }
         }
-        screen_python_source(&code).map_err(|error| anyhow::anyhow!("{error}"))?;
-
+        // Authorised first, so the screen can allow a package the project has
+        // deliberately layered in without letting an unauthorised one through.
         let packages = optional_string_list_arg(arguments, "packages")?;
         for requirement in &packages {
             self.config
@@ -559,6 +559,8 @@ plt.savefig("chart.png")
                 .authorize_python_package(requirement)
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
         }
+        screen_python_source(&code, &self.config.security.python_packages)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         let width = optional_f64_arg(arguments, "width_inches")?.unwrap_or(8.0);
         let height = optional_f64_arg(arguments, "height_inches")?.unwrap_or(4.5);
         for (name, value) in [("width_inches", width), ("height_inches", height)] {
