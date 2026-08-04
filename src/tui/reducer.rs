@@ -578,11 +578,7 @@ impl App {
                 kind: OperationKind::SetupUser,
                 target: None,
                 fields: vec![
-                    text_field(
-                        "Name",
-                        &env::var("USER").unwrap_or_else(|_| "Alex".to_string()),
-                        "your name",
-                    ),
+                    text_field("Name", &crate::init::default_user_name(), "your name"),
                     text_field(
                         "Learning styles",
                         "visual, step-by-step",

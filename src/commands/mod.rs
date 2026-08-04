@@ -1953,32 +1953,68 @@ const ANSI_YELLOW: &str = "\x1b[33m";
 const ANSI_RED: &str = "\x1b[31m";
 const ANSI_MAGENTA: &str = "\x1b[35m";
 
+/// Whether progress events may carry ANSI styling.
+///
+/// These helpers emitted escape sequences unconditionally, on the tool's most
+/// verbose output path, so `sfumato generate ... 2> build.log` filled the log with
+/// them and `NO_COLOR` — already honoured for tables — was ignored where it matters
+/// most.
+///
+/// Tested against `stderr`, not `stdout`: the events go to stderr, and a run with a
+/// piped stdout and a terminal stderr still wants colour on the terminal. The rest
+/// of the predicate matches `presentation::colors_enabled`.
+///
+/// Resolved once. The answer cannot change during a run, and this is called several
+/// times per event.
+fn event_colors_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::io::IsTerminal::is_terminal(&std::io::stderr())
+            && std::env::var_os("NO_COLOR").is_none()
+            && std::env::var("TERM").is_ok_and(|term| term != "dumb")
+    })
+}
+
+/// Wraps a value in ANSI codes, or returns it unchanged when colour is off.
+fn styled(value: &str, prefix: &str) -> String {
+    if event_colors_enabled() {
+        format!("{prefix}{value}{ANSI_RESET}")
+    } else {
+        value.to_owned()
+    }
+}
+
 fn styled_label(label: &str, color: &str) -> String {
-    format!("{ANSI_BOLD}{color}{label}:{ANSI_RESET}")
+    if event_colors_enabled() {
+        format!("{ANSI_BOLD}{color}{label}:{ANSI_RESET}")
+    } else {
+        format!("{label}:")
+    }
 }
 
 fn bold(value: &str) -> String {
-    format!("{ANSI_BOLD}{value}{ANSI_RESET}")
+    styled(value, ANSI_BOLD)
 }
 
 fn dim(value: &str) -> String {
-    format!("{ANSI_DIM}{value}{ANSI_RESET}")
+    styled(value, ANSI_DIM)
 }
 
 fn italic(value: &str) -> String {
-    format!("{ANSI_ITALIC}{value}{ANSI_RESET}")
+    styled(value, ANSI_ITALIC)
 }
 
 fn green(value: &str) -> String {
-    format!("{ANSI_GREEN}{value}{ANSI_RESET}")
+    styled(value, ANSI_GREEN)
 }
 
 fn red(value: &str) -> String {
-    format!("{ANSI_RED}{value}{ANSI_RESET}")
+    styled(value, ANSI_RED)
 }
 
 fn yellow(value: &str) -> String {
-    format!("{ANSI_YELLOW}{value}{ANSI_RESET}")
+    styled(value, ANSI_YELLOW)
 }
 
 fn format_tool_arguments(arguments: &Value) -> String {

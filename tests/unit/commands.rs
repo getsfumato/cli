@@ -211,3 +211,42 @@ fn no_pdf_can_turn_off_a_project_that_enables_pdf() {
     // Contradictory flags are refused rather than silently resolved.
     assert!(parse(&["--pdf", "--no-pdf"]).is_err());
 }
+
+#[test]
+fn progress_colour_is_suppressed_when_the_stream_is_not_a_terminal() {
+    // The seven helpers emitted raw ANSI unconditionally, on the tool's most verbose
+    // path, so `sfumato generate ... 2> build.log` filled the log with escape
+    // sequences and `NO_COLOR` was ignored where it matters most. Under `cargo test`
+    // stderr is captured, so the predicate must resolve to false here.
+    assert!(
+        !event_colors_enabled(),
+        "a captured stderr must not be treated as a terminal"
+    );
+    for styled in [
+        bold("x"),
+        dim("x"),
+        italic("x"),
+        green("x"),
+        red("x"),
+        yellow("x"),
+    ] {
+        assert!(!styled.contains('\u{1b}'), "escape sequence in {styled:?}");
+    }
+    assert_eq!(styled_label("stage", ANSI_YELLOW), "stage:");
+}
+
+#[test]
+fn the_setup_default_name_is_never_the_maintainers() {
+    // `USER` is set by a login shell, so the fallback was invisible in development —
+    // but it is absent on Windows, in most containers, and in several CI runners,
+    // where the wizard pre-filled the maintainer's own name.
+    let name = crate::init::default_user_name();
+
+    assert_ne!(name, "Alex", "the hardcoded personal name is gone");
+    // Whatever the environment provides is fine; nothing is invented.
+    let from_env = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default();
+    assert_eq!(name, from_env);
+}

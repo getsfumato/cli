@@ -53,9 +53,25 @@ impl InitService {
     }
 }
 
+/// The current user's name, as the setup wizard's default.
+///
+/// `USER` is set by a login shell on Unix, so a missing value is invisible during
+/// development — but it is absent on Windows, where the variable is `USERNAME`, in
+/// most containers, and in several CI runners. There the wizard used to pre-fill the
+/// maintainer's own name, presenting a stranger's name as the user's default.
+///
+/// Falls back to an empty string rather than another guess: an empty default asks
+/// the question, which is what a wizard is for.
+pub(crate) fn default_user_name() -> String {
+    env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .or_else(|_| env::var("LOGNAME"))
+        .unwrap_or_default()
+}
+
 fn ask_user_preferences() -> Result<GlobalConfig> {
     let mut config = GlobalConfig::default_config();
-    let default_name = env::var("USER").unwrap_or_else(|_| "Alex".to_string());
+    let default_name = default_user_name();
     let name = prompt("Name", &default_name)?;
     let learning_style = prompt("Learning styles", "visual, step-by-step")?
         .split(',')
