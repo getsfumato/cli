@@ -172,7 +172,10 @@ impl ConfigEditor for TomlConfigEditor {
     ) -> SfumatoResult<PathBuf> {
         config_result((|| {
             let path = self.editable_path(scope, project.as_deref())?;
-            reject_secret_key(key)?;
+            // Deliberately not guarded by `reject_secret_key`: the guard exists
+            // to keep credentials out of the config, and deleting one is the
+            // remediation. Rejecting it would leave a key written by an earlier
+            // release with no way out of the file but a hand edit.
             edit_toml(&path, |table| {
                 delete_dotted_value(table, key)?;
                 self.validate_table(scope, table)
@@ -186,11 +189,64 @@ fn config_result<T>(result: Result<T>) -> SfumatoResult<T> {
     result.map_err(|error| SfumatoError::config(format_args!("{error:#}")))
 }
 
+/// Names that hold a credential rather than a reference to one.
+///
+/// Matched as whole underscore-separated words so that a real header spelling
+/// (`x-api-key`, `xi-api-key`) is caught while a tuning knob that merely
+/// contains one of these words (`max_tokens`) is not.
+const SECRET_NAMES: &[&str] = &[
+    "api_key",
+    "apikey",
+    "authorization",
+    "access_key",
+    "auth_token",
+    "bearer",
+    "cookie",
+    "passwd",
+    "password",
+    "private_key",
+    "secret",
+    "session_key",
+    "token",
+];
+
+/// Folds a config key segment or header name to one spelling.
+///
+/// `x-api-key`, `X_API_KEY` and `x-Api-Key` are the same name written three
+/// ways; every secret decision is made on this form so the write guard and the
+/// read redactor cannot disagree about what a secret looks like.
+fn normalise_key_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase().replace('-', "_")
+}
+
+/// Reports whether a config key segment names a credential value.
+///
+/// The single source of truth behind both `reject_secret_key` (write) and
+/// `redact_sensitive_values` (read): a name added here is protected on both
+/// paths at once.
+fn is_secret_key_name(name: &str) -> bool {
+    let normalised = normalise_key_name(name);
+    // A credential *reference* (`credential = "stored:connector/x"`) is a
+    // pointer, not a secret, and has to stay readable and editable.
+    if normalised == "credential" {
+        return false;
+    }
+    let words: Vec<&str> = normalised
+        .split('_')
+        .filter(|word| !word.is_empty())
+        .collect();
+    // Match any contiguous run of whole words, so `x_api_key` contains the
+    // word pair `api_key` but `max_tokens` never yields the word `token`.
+    (0..words.len()).any(|start| {
+        (start..words.len()).any(|end| {
+            let phrase = words[start..=end].join("_");
+            SECRET_NAMES.contains(&phrase.as_str())
+        })
+    })
+}
+
 fn reject_secret_key(key: &str) -> Result<()> {
-    if split_key(key)
-        .iter()
-        .any(|part| matches!(*part, "api_key" | "secret" | "token"))
-    {
+    if split_key(key).iter().any(|part| is_secret_key_name(part)) {
         bail!(
             "Secrets cannot be edited through generic config commands; configure a credential reference instead"
         );
@@ -203,12 +259,7 @@ fn redact_sensitive_values(value: &mut Value) {
         return;
     };
     for (key, value) in table {
-        let key = key.to_ascii_lowercase();
-        let sensitive = key != "credential"
-            && ["authorization", "api_key", "secret", "token", "cookie"]
-                .iter()
-                .any(|fragment| key.contains(fragment));
-        if sensitive {
+        if is_secret_key_name(key) {
             *value = Value::String("[REDACTED]".to_string());
         } else {
             redact_sensitive_values(value);
