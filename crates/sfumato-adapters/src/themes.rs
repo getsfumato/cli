@@ -63,6 +63,7 @@ impl FilesystemThemeRepository {
             );
         }
         let manifest: ThemeManifest = read_toml(&manifest_path)?;
+        restore_missing_document_css(&root, &manifest)?;
         validate_manifest(&root, name, &manifest)?;
         Ok(ThemePackage { root, manifest })
     }
@@ -104,7 +105,9 @@ impl ThemeRepository for FilesystemThemeRepository {
     fn install_default(&self) -> SfumatoResult<ThemePackage> {
         theme_result((|| {
             let root = self.themes_dir.join(DEFAULT_THEME);
-            if !root.exists() {
+            if root.exists() {
+                repair_bundled_theme(&root)?;
+            } else {
                 write_bundled_theme(&root)?;
             }
             self.resolve(DEFAULT_THEME)
@@ -424,6 +427,15 @@ fn validate_manifest(root: &Path, requested_name: &str, manifest: &ThemeManifest
             );
         }
     }
+    // A theme with no `[adapters.document]` is valid: the document renderer
+    // falls back to a bundled stylesheet. Declaring one and not shipping it is
+    // not, and must surface here rather than mid-render, after a paid model call.
+    if let Some(document) = &manifest.adapters.document {
+        validate_adapter_file(root, &document.css, "Document print CSS")?;
+        if let Some(cover_image) = &document.cover_image {
+            validate_adapter_file(root, cover_image, "Document cover image")?;
+        }
+    }
     Ok(())
 }
 
@@ -450,35 +462,104 @@ fn validate_adapter_file(root: &Path, relative: &Path, label: &str) -> Result<()
     Ok(())
 }
 
+/// Every file the bundled default theme is made of.
+///
+/// This list must cover each path `assets/themes/sfumato-default/theme.toml`
+/// declares under `[adapters]`; a declared file that is missing here installs a
+/// theme that only fails once a renderer reaches for it.
+const BUNDLED_THEME_FILES: &[(&str, &str)] = &[
+    (
+        "theme.toml",
+        include_str!("../assets/themes/sfumato-default/theme.toml"),
+    ),
+    (
+        "marp/theme.css",
+        include_str!("../assets/themes/sfumato-default/marp/theme.css"),
+    ),
+    (
+        "html/page.html",
+        include_str!("../assets/themes/sfumato-default/html/page.html"),
+    ),
+    (
+        "html/style.css",
+        include_str!("../assets/themes/sfumato-default/html/style.css"),
+    ),
+    (
+        "html/script.js",
+        include_str!("../assets/themes/sfumato-default/html/script.js"),
+    ),
+    (
+        "document/print.css",
+        include_str!("../assets/themes/sfumato-default/document/print.css"),
+    ),
+];
+
 fn write_bundled_theme(root: &Path) -> Result<()> {
-    for (relative, contents) in [
-        (
-            "theme.toml",
-            include_str!("../assets/themes/sfumato-default/theme.toml"),
-        ),
-        (
-            "marp/theme.css",
-            include_str!("../assets/themes/sfumato-default/marp/theme.css"),
-        ),
-        (
-            "html/page.html",
-            include_str!("../assets/themes/sfumato-default/html/page.html"),
-        ),
-        (
-            "html/style.css",
-            include_str!("../assets/themes/sfumato-default/html/style.css"),
-        ),
-        (
-            "html/script.js",
-            include_str!("../assets/themes/sfumato-default/html/script.js"),
-        ),
-    ] {
-        let path = root.join(relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, contents)?;
+    for (relative, contents) in BUNDLED_THEME_FILES {
+        write_bundled_theme_file(root, relative, contents)?;
     }
+    Ok(())
+}
+
+/// Restores bundled files that are missing from an installed default theme.
+///
+/// An install from a release that shipped an incomplete file list leaves a
+/// default theme that declares adapters it does not contain. Writing only the
+/// absent files repairs it without discarding edits the user made to the rest.
+fn repair_bundled_theme(root: &Path) -> Result<()> {
+    for (relative, contents) in BUNDLED_THEME_FILES {
+        if !root.join(relative).is_file() {
+            write_bundled_theme_file(root, relative, contents)?;
+        }
+    }
+    Ok(())
+}
+
+/// Restores a declared-but-absent document stylesheet from the bundled one.
+///
+/// Every theme installed or created by a release whose bundled file list omitted
+/// `document/print.css` declares the adapter without shipping it — including
+/// custom themes, which are copied from the default. Without this, tightening
+/// validation would stop those themes loading at all, which is worse than the
+/// late render failure it replaces. Repairing is possible because the file is
+/// theme-independent: it styles print layout from the theme's own tokens.
+fn restore_missing_document_css(root: &Path, manifest: &ThemeManifest) -> Result<()> {
+    let Some(document) = &manifest.adapters.document else {
+        return Ok(());
+    };
+    // Leave an unsafe path to `validate_adapter_file`, which rejects it with a
+    // clear message rather than writing outside the package.
+    if document.css.is_absolute()
+        || document.css.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Ok(());
+    }
+    let path = root.join(&document.css);
+    if path.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &path,
+        include_str!("../assets/themes/sfumato-default/document/print.css"),
+    )
+    .with_context(|| format!("Could not restore theme print CSS {}", path.display()))?;
+    Ok(())
+}
+
+fn write_bundled_theme_file(root: &Path, relative: &str, contents: &str) -> Result<()> {
+    let path = root.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents)?;
     Ok(())
 }
 

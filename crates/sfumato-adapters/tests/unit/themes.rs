@@ -152,3 +152,121 @@ fn rejects_invalid_design_tokens_and_duplicate_sections() {
     let duplicate = "---\nversion: alpha\nname: Bad\ncolors:\n  primary: '#ffffff'\n---\n\n## Colors\n\n## Colors\n";
     assert!(parse_design_document(duplicate).is_err());
 }
+
+#[test]
+fn installs_every_file_the_default_theme_manifest_declares() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemThemeRepository::new(temp.path().join("themes"));
+
+    let package = repository.install_default().unwrap();
+
+    // `document/print.css` was declared by the manifest but never written, so
+    // `generate document` failed at the render stage on every fresh install.
+    let document_css = package
+        .document_css_path()
+        .expect("declares a document adapter");
+    assert!(document_css.is_file(), "missing {}", document_css.display());
+    assert!(package.marp_css_path().is_file());
+}
+
+#[test]
+fn repairs_a_default_theme_installed_without_its_document_stylesheet() {
+    let temp = tempfile::tempdir().unwrap();
+    let themes = temp.path().join("themes");
+    let repository = FilesystemThemeRepository::new(themes.clone());
+    repository.install_default().unwrap();
+
+    // Reproduce what an earlier release left on disk.
+    let document_css = themes.join("sfumato-default/document/print.css");
+    fs::remove_file(&document_css).unwrap();
+    assert!(!document_css.is_file());
+
+    repository.install_default().unwrap();
+
+    assert!(document_css.is_file(), "install did not restore the file");
+}
+
+#[test]
+fn keeps_user_edits_to_an_already_installed_default_theme() {
+    let temp = tempfile::tempdir().unwrap();
+    let themes = temp.path().join("themes");
+    let repository = FilesystemThemeRepository::new(themes.clone());
+    repository.install_default().unwrap();
+
+    let style = themes.join("sfumato-default/html/style.css");
+    fs::write(&style, "/* hand tuned */").unwrap();
+    repository.install_default().unwrap();
+
+    // Repair restores what is missing; it must not overwrite what is present.
+    assert_eq!(fs::read_to_string(&style).unwrap(), "/* hand tuned */");
+}
+
+#[test]
+fn repairs_a_custom_theme_copied_from_a_broken_default() {
+    let temp = tempfile::tempdir().unwrap();
+    let themes = temp.path().join("themes");
+    let repository = FilesystemThemeRepository::new(themes.clone());
+    repository.install_default().unwrap();
+    repository.create("gruvbox").unwrap();
+
+    // What `theme create` produced while the bundled list was incomplete.
+    let document_css = themes.join("gruvbox/document/print.css");
+    fs::remove_file(&document_css).unwrap();
+
+    // Loading must heal it, not refuse: refusing would break every command for
+    // a theme the user already had, instead of only `generate document`.
+    let package = repository.load("gruvbox").unwrap();
+
+    assert!(document_css.is_file());
+    assert_eq!(package.document_css_path().unwrap(), document_css);
+}
+
+#[test]
+fn accepts_a_theme_that_declares_no_document_adapter() {
+    let temp = tempfile::tempdir().unwrap();
+    let themes = temp.path().join("themes");
+    let repository = FilesystemThemeRepository::new(themes.clone());
+    repository.install_default().unwrap();
+    repository.create("marp-only").unwrap();
+
+    // Themes predating documents omit the section and fall back to a bundled
+    // stylesheet; validation must leave them alone.
+    let manifest_path = themes.join("marp-only/theme.toml");
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    let trimmed = manifest
+        .lines()
+        .take_while(|line| !line.starts_with("[adapters.document]"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&manifest_path, trimmed).unwrap();
+    fs::remove_dir_all(themes.join("marp-only/document")).unwrap();
+
+    let package = repository.load("marp-only").unwrap();
+    assert!(package.document_css_path().is_none());
+}
+
+#[test]
+fn never_repairs_a_document_path_that_escapes_the_theme_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let themes = temp.path().join("themes");
+    let repository = FilesystemThemeRepository::new(themes.clone());
+    repository.install_default().unwrap();
+    repository.create("escaping").unwrap();
+
+    let manifest_path = themes.join("escaping/theme.toml");
+    let manifest = fs::read_to_string(&manifest_path).unwrap().replace(
+        "css = \"document/print.css\"",
+        "css = \"../../escaped.css\"",
+    );
+    fs::write(&manifest_path, manifest).unwrap();
+    fs::remove_file(themes.join("escaping/document/print.css")).unwrap();
+
+    // Repair must defer to validation here rather than writing outside the
+    // package it is repairing.
+    let error = repository.load("escaping").unwrap_err().to_string();
+    assert!(
+        error.contains("must stay inside the theme package"),
+        "{error}"
+    );
+    assert!(!temp.path().join("escaped.css").exists());
+}
