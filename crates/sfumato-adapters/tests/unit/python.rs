@@ -171,3 +171,67 @@ async fn a_run_harvests_declared_outputs_and_leaves_no_generated_code_behind() {
         "generated code must never be harvested alongside the output"
     );
 }
+
+#[test]
+fn two_outputs_with_the_same_basename_do_not_overwrite_each_other() {
+    // Harvesting by basename sent `a/chart.png` and `b/chart.png` to the same
+    // destination: the second silently overwrote the first, and the returned
+    // list named that one path twice.
+    let run = tempfile::tempdir().expect("run directory");
+    let outputs = tempfile::tempdir().expect("output directory");
+    for (directory, contents) in [("a", "first"), ("b", "second")] {
+        fs::create_dir_all(run.path().join(directory)).unwrap();
+        fs::write(run.path().join(directory).join("chart.png"), contents).unwrap();
+    }
+
+    let harvested = harvest_outputs(
+        run.path(),
+        outputs.path(),
+        &["a/chart.png".to_string(), "b/chart.png".to_string()],
+    )
+    .expect("both outputs are harvested");
+
+    assert_eq!(harvested.len(), 2);
+    assert_ne!(harvested[0], harvested[1], "both landed on one path");
+    assert_eq!(fs::read_to_string(&harvested[0]).unwrap(), "first");
+    assert_eq!(fs::read_to_string(&harvested[1]).unwrap(), "second");
+}
+
+#[test]
+fn a_nested_output_keeps_the_path_the_generated_code_referenced() {
+    // `plots/chart.png` used to land as `chart.png`, so markup that linked to
+    // `plots/chart.png` pointed at nothing.
+    let run = tempfile::tempdir().expect("run directory");
+    let outputs = tempfile::tempdir().expect("output directory");
+    fs::create_dir_all(run.path().join("plots")).unwrap();
+    fs::write(run.path().join("plots/chart.png"), "png").unwrap();
+
+    let harvested = harvest_outputs(run.path(), outputs.path(), &["plots/chart.png".to_string()])
+        .expect("the output is harvested");
+
+    assert_eq!(harvested[0], outputs.path().join("plots/chart.png"));
+    assert!(harvested[0].is_file());
+}
+
+#[test]
+fn a_flat_output_still_lands_directly_in_the_output_directory() {
+    let run = tempfile::tempdir().expect("run directory");
+    let outputs = tempfile::tempdir().expect("output directory");
+    fs::write(run.path().join("chart.png"), "png").unwrap();
+
+    let harvested = harvest_outputs(run.path(), outputs.path(), &["chart.png".to_string()])
+        .expect("the output is harvested");
+
+    assert_eq!(harvested[0], outputs.path().join("chart.png"));
+}
+
+#[test]
+fn a_declared_output_the_script_never_produced_is_an_error() {
+    let run = tempfile::tempdir().expect("run directory");
+    let outputs = tempfile::tempdir().expect("output directory");
+
+    let error = harvest_outputs(run.path(), outputs.path(), &["missing.png".to_string()])
+        .expect_err("a missing output is refused");
+
+    assert!(format!("{error}").contains("missing.png"), "{error}");
+}

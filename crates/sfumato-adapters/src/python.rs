@@ -7,7 +7,11 @@
 //! into a temporary run directory, syntax-checked, executed there, and the
 //! directory is dropped once the declared outputs have been copied out.
 
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -305,25 +309,7 @@ impl PythonRuntime for UvPythonRuntime {
                 )
                 .await?;
 
-                fs::create_dir_all(&request.output_dir).with_context(|| {
-                    format!("Could not create {}", request.output_dir.display())
-                })?;
-                let mut outputs = Vec::new();
-                for relative in &request.outputs {
-                    let produced = run.path().join(relative);
-                    if !produced.is_file() {
-                        bail!("Generated Python did not produce '{relative}'");
-                    }
-                    let name = PathBuf::from(relative);
-                    let name = name
-                        .file_name()
-                        .context("Python output path has no file name")?;
-                    let destination = request.output_dir.join(name);
-                    fs::copy(&produced, &destination).with_context(|| {
-                        format!("Could not harvest {} from the run directory", relative)
-                    })?;
-                    outputs.push(destination);
-                }
+                let outputs = harvest_outputs(run.path(), &request.output_dir, &request.outputs)?;
                 Ok(PythonRunResult {
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                     stderr: String::from_utf8_lossy(&output.stderr).to_string(),
@@ -445,6 +431,37 @@ async fn checked_output(
 }
 
 /// Keeps the end of a failing run, where Python puts the reason.
+/// Copies declared outputs out of the run directory, preserving their paths.
+///
+/// The relative path is kept rather than reduced to its basename. Discarding the
+/// directory made `a/chart.png` and `b/chart.png` land on the same destination —
+/// the second silently overwriting the first, with the returned list naming that
+/// one path twice — and moved `plots/chart.png` to `chart.png`, breaking a link
+/// the generated markup had already written to it.
+///
+/// `validate_run_path` has refused an absolute path and any `..` before a request
+/// gets here, so joining the relative path cannot escape `output_dir`.
+fn harvest_outputs(run_dir: &Path, output_dir: &Path, declared: &[String]) -> Result<Vec<PathBuf>> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("Could not create {}", output_dir.display()))?;
+    let mut outputs = Vec::new();
+    for relative in declared {
+        let produced = run_dir.join(relative);
+        if !produced.is_file() {
+            bail!("Generated Python did not produce '{relative}'");
+        }
+        let destination = output_dir.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Could not create {}", parent.display()))?;
+        }
+        fs::copy(&produced, &destination)
+            .with_context(|| format!("Could not harvest {relative} from the run directory"))?;
+        outputs.push(destination);
+    }
+    Ok(outputs)
+}
+
 fn failure_tail(stdout: &str, stderr: &str) -> String {
     let combined = if stderr.trim().is_empty() {
         stdout
