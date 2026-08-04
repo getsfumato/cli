@@ -20,7 +20,10 @@ use sfumato_core::{
     secrets::SecretResolver,
 };
 
-use crate::{openai_compatible::OpenAiCompatibleConnector, runtime::await_operation};
+use crate::{
+    openai_compatible::{OpenAiCompatibleConnector, introspection_error},
+    runtime::await_operation,
+};
 
 /// LM Studio adapter over the connector's native REST root.
 pub struct LmStudioConnector {
@@ -172,7 +175,13 @@ impl LmStudioConnector {
             return Ok(None);
         }
         if !status.is_success() {
-            bail!("LM Studio endpoint '{path}' returned HTTP {status}: {body}");
+            return Err(introspection_error(
+                "LM Studio",
+                &format!("endpoint '{path}'"),
+                status,
+                &body,
+            )
+            .into());
         }
         if body.trim().is_empty() {
             return Ok(None);

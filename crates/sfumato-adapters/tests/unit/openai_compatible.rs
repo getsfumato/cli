@@ -258,3 +258,91 @@ fn an_assistant_reply_in_the_array_form_reads_back_as_text() {
         Some("{\"approved\": true\n, \"findings\": []}".to_string())
     );
 }
+
+#[test]
+fn a_rejected_credential_is_not_reported_as_retryable() {
+    // Three native connectors funnelled every non-typed failure into
+    // `Unavailable`, which `is_retryable` reports as `true`, so the public DTO
+    // told automation to retry a 401 that can never succeed.
+    let error = introspection_error(
+        "Ollama",
+        "endpoint '/api/tags'",
+        reqwest::StatusCode::UNAUTHORIZED,
+        "{\"error\":{\"message\":\"invalid key\"}}",
+    );
+
+    assert_eq!(error.class, ErrorClass::Permanent);
+    assert!(!error.retryable);
+    // The recovery is named, since a credential is what the caller must change.
+    assert!(
+        error.message.contains("connector login"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn a_permanent_client_error_is_not_reported_as_retryable() {
+    for status in [400_u16, 404, 422] {
+        let error = introspection_error(
+            "LM Studio",
+            "endpoint '/v1/models'",
+            reqwest::StatusCode::from_u16(status).unwrap(),
+            "nope",
+        );
+
+        assert!(!error.retryable, "HTTP {status} was reported retryable");
+        assert_eq!(error.class, ErrorClass::Permanent);
+    }
+}
+
+#[test]
+fn rate_limits_and_outages_stay_retryable() {
+    // The point is not to make everything permanent: transient statuses must
+    // keep advertising that a retry can help.
+    let throttled = introspection_error(
+        "OpenRouter",
+        "the model catalog",
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        "slow down",
+    );
+    assert_eq!(throttled.class, ErrorClass::Retry);
+    assert!(throttled.retryable);
+
+    let down = introspection_error(
+        "OpenRouter",
+        "the model catalog",
+        reqwest::StatusCode::BAD_GATEWAY,
+        "upstream",
+    );
+    assert_eq!(down.class, ErrorClass::Unavailable);
+    assert!(down.retryable);
+}
+
+#[test]
+fn an_unclassified_status_defaults_to_permanent() {
+    // Defaulting to retryable is what caused this; an unknown status is not
+    // evidence that repeating the request will help.
+    let error = introspection_error(
+        "Ollama",
+        "endpoint '/api/ps'",
+        reqwest::StatusCode::from_u16(418).unwrap(),
+        "teapot",
+    );
+
+    assert!(!error.retryable);
+}
+
+#[test]
+fn the_provider_and_subject_are_named_in_the_message() {
+    let error = introspection_error(
+        "LM Studio",
+        "endpoint '/v1/models'",
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "down",
+    );
+
+    assert!(error.message.contains("LM Studio"), "{}", error.message);
+    assert!(error.message.contains("/v1/models"), "{}", error.message);
+    assert_eq!(error.stage, Some(OperationStage::Resolve));
+}

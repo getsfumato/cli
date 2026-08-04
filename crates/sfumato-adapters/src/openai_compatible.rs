@@ -624,6 +624,51 @@ pub(crate) fn is_context_limit_response(body: &str) -> bool {
         || normalized.contains("too many tokens")
 }
 
+/// Classifies a failed native introspection response by HTTP status.
+///
+/// The native catalog and status paths used to funnel every non-`SfumatoError`
+/// into `ErrorClass::Unavailable`, which `is_retryable` reports as `true`. So the
+/// public DTO advertised a rejected credential, a 404, and a malformed request as
+/// retryable, and a caller that branches on `retryable` would repeat something
+/// that can never succeed.
+///
+/// The status split follows the one the ElevenLabs transport already uses, so the
+/// three native connectors that shared the blanket mapping cannot drift from it
+/// again.
+pub(crate) fn introspection_error(
+    provider: &str,
+    what: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> SfumatoError {
+    let detail = compact_error_detail(body);
+    match status.as_u16() {
+        401 | 403 => SfumatoError::provider(
+            ErrorClass::Permanent,
+            format_args!(
+                "{provider} rejected the credential for {what}: {detail}. Run `sfumato connector login <name>`."
+            ),
+        ),
+        400 | 404 | 422 => SfumatoError::provider(
+            ErrorClass::Permanent,
+            format_args!("{provider} rejected {what}: {detail}"),
+        ),
+        408 | 429 => SfumatoError::provider(
+            ErrorClass::Retry,
+            format_args!("{provider} rate limit reached for {what}: {detail}"),
+        ),
+        500..=504 | 529 => SfumatoError::provider(
+            ErrorClass::Unavailable,
+            format_args!("{provider} is unavailable for {what}: {detail}"),
+        ),
+        _ => SfumatoError::provider(
+            ErrorClass::Permanent,
+            format_args!("{provider} {what} returned HTTP {status}: {detail}"),
+        ),
+    }
+    .at_stage(OperationStage::Resolve)
+}
+
 pub(crate) fn compact_error_detail(body: &str) -> String {
     let detail = serde_json::from_str::<serde_json::Value>(body)
         .ok()

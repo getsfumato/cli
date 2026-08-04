@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use sfumato_core::{
@@ -12,7 +12,7 @@ use sfumato_core::{
     providers::{ConnectorModelSummary, ConnectorStatus, ConnectorStatusField},
 };
 
-use crate::runtime::await_operation;
+use crate::{openai_compatible::introspection_error, runtime::await_operation};
 
 /// `/api/tags`, `/api/version`, and `/api/ps` all answer in well under a second
 /// against a local daemon, and the CLI and TUI run them with a context that may
@@ -110,7 +110,13 @@ impl OllamaConnector {
         let status = response.status();
         let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
         if !status.is_success() {
-            bail!("Ollama endpoint '{path}' returned HTTP {status}: {body}");
+            return Err(introspection_error(
+                "Ollama",
+                &format!("endpoint '{path}'"),
+                status,
+                &body,
+            )
+            .into());
         }
         serde_json::from_str(&body)
             .with_context(|| format!("Ollama endpoint '{path}' returned invalid JSON"))

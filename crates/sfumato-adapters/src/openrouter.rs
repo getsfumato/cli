@@ -17,7 +17,10 @@ use sfumato_core::{
     secrets::SecretResolver,
 };
 
-use crate::{openai_compatible::OpenAiCompatibleConnector, runtime::await_operation};
+use crate::{
+    openai_compatible::{OpenAiCompatibleConnector, introspection_error},
+    runtime::await_operation,
+};
 
 /// OpenRouter adapter composed around the shared OpenAI-compatible transport.
 #[derive(Clone)]
@@ -49,7 +52,9 @@ impl OpenRouterConnector {
             let status = response.status();
             let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
             if !status.is_success() {
-                bail!("OpenRouter model catalog returned HTTP {status}: {body}");
+                return Err(
+                    introspection_error("OpenRouter", "the model catalog", status, &body).into(),
+                );
             }
             let response: ModelsResponse = serde_json::from_str(&body)
                 .context("OpenRouter model catalog returned invalid JSON")?;
@@ -72,7 +77,9 @@ impl OpenRouterConnector {
             let status = response.status();
             let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
             if !status.is_success() {
-                bail!("OpenRouter API-key status returned HTTP {status}: {body}");
+                return Err(
+                    introspection_error("OpenRouter", "API-key status", status, &body).into(),
+                );
             }
             let data: KeyResponse = serde_json::from_str(&body)
                 .context("OpenRouter API-key status returned invalid JSON")?;
