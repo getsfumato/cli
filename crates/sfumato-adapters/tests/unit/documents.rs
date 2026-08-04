@@ -287,3 +287,174 @@ fn assembly_is_deterministic() {
         assemble(MARKDOWN, setup(true, true)).html
     );
 }
+
+#[test]
+fn a_thematic_break_survives_whatever_the_title_looks_like() {
+    // The reported failure: `!removed` doubled as "am I still in the frontmatter?",
+    // so a title that failed to match deleted every `---` in the document and every
+    // `subtitle:` line, including inside a fenced code block, and left the H1 in the
+    // body to duplicate the cover.
+    let rendered = "---\nsubtitle: Repaso\n---\n\n# Guía\n\n## Metodología\n\nPrimer paso.\n\n---\n\nSegundo paso.\n\n## Notas\n\n```yaml\nsubtitle: ejemplo\n```\n";
+
+    let body = strip_title_heading(rendered);
+
+    assert_eq!(
+        body.matches("\n---\n").count(),
+        1,
+        "thematic break lost: {body}"
+    );
+    assert!(
+        body.contains("subtitle: ejemplo"),
+        "code fence gutted: {body}"
+    );
+    assert!(!body.contains("# Guía"), "H1 duplicated the cover: {body}");
+    assert!(
+        !body.contains("subtitle: Repaso"),
+        "frontmatter kept: {body}"
+    );
+}
+
+#[test]
+fn the_frontmatter_goes_even_when_the_title_has_stray_whitespace() {
+    // One trailing space used to be enough, because the expected heading was
+    // rebuilt from the title and compared against a trimmed line.
+    for heading in ["# Guía ", "#  Guía", "# Guía\t"] {
+        let rendered = format!("---\nsubtitle: S\n---\n\n{heading}\n\n## Uno\n\nA.\n\n---\n\nB.\n");
+
+        let body = strip_title_heading(&rendered);
+
+        assert!(!body.contains("subtitle: S"), "{heading:?} -> {body}");
+        assert!(!body.contains("Guía"), "{heading:?} -> {body}");
+        assert_eq!(body.matches("\n---\n").count(), 1, "{heading:?} -> {body}");
+    }
+}
+
+#[test]
+fn a_document_without_frontmatter_keeps_its_body_intact() {
+    let rendered = "# Título\n\n## Uno\n\nA.\n\n---\n\nB.\n";
+
+    let body = strip_title_heading(rendered);
+
+    assert!(!body.contains("# Título"));
+    assert_eq!(body.matches("\n---\n").count(), 1, "{body}");
+    assert!(body.contains("## Uno"));
+}
+
+#[test]
+fn only_the_first_level_one_heading_is_removed() {
+    // The domain permits exactly one, but a `#` inside the body must not be taken
+    // for the title if one ever slipped through.
+    let rendered = "# Uno\n\n## Sección\n\n# Dos\n";
+
+    let body = strip_title_heading(rendered);
+
+    assert!(!body.contains("# Uno"));
+    assert!(body.contains("# Dos"), "{body}");
+}
+
+#[test]
+fn a_hash_that_is_not_a_heading_is_left_alone() {
+    let rendered =
+        "# Título\n\n## Uno\n\nUse #hashtag y ## en prosa.\n\n    # indentado como código\n";
+
+    let body = strip_title_heading(rendered);
+
+    assert!(body.contains("#hashtag"), "{body}");
+    assert!(body.contains("# indentado como código"), "{body}");
+}
+
+#[test]
+fn an_unterminated_frontmatter_block_does_not_swallow_the_document() {
+    // Deleting to the end of the file is never the right reading of a malformed
+    // document.
+    let rendered = "---\nsubtitle: sin cerrar\n\n# Título\n\n## Uno\n\nA.\n";
+
+    let body = strip_title_heading(rendered);
+
+    assert!(body.contains("## Uno"), "{body}");
+    assert!(body.contains("A."), "{body}");
+}
+
+#[test]
+fn a_repeated_heading_gets_its_own_contents_entry_and_anchor() {
+    // The normal case in a study document: "Conclusión" once per chapter. The
+    // anchor was recomputed rather than read, and the reimplementation had no
+    // duplicate counter, so every later entry linked to the first section — and
+    // printed its page number, since the number comes from `target-counter()`
+    // resolved against the anchor. In a printed PDF the number *is* the affordance,
+    // so there is no way to tell it is wrong.
+    let markdown = "# Guía\n\n## Capítulo uno\n\nA.\n\n### Conclusión\n\nB.\n\n## Capítulo dos\n\nC.\n\n### Conclusión\n\nD.\n\n## Capítulo tres\n\nE.\n\n### Conclusión\n\nF.\n";
+
+    let assembled = assemble(markdown, setup(false, true));
+
+    // comrak disambiguates with `-1` and `-2`; the contents must follow.
+    for anchor in ["conclusión", "conclusión-1", "conclusión-2"] {
+        assert!(
+            assembled.html.contains(&format!("id=\"{anchor}\"")),
+            "body is missing #{anchor}"
+        );
+        assert!(
+            assembled.html.contains(&format!("href=\"#{anchor}\"")),
+            "contents is missing a link to #{anchor}"
+        );
+    }
+    // Exactly one contents entry per occurrence, so no entry points at another's
+    // section. Counted inside the nav, because comrak also emits a self-link in
+    // each body heading.
+    assert_eq!(
+        contents_of(&assembled.html)
+            .matches("href=\"#conclusión\"")
+            .count(),
+        1,
+        "the first anchor is linked more than once"
+    );
+}
+
+/// Returns just the generated contents block.
+fn contents_of(html: &str) -> &str {
+    let start = html
+        .find("<nav class=\"sfumato-contents\"")
+        .expect("the contents block is present");
+    let end = html[start..].find("</nav>").expect("the nav is closed") + start;
+    &html[start..end]
+}
+
+#[test]
+fn every_contents_entry_links_a_distinct_anchor() {
+    let markdown = "# Guía\n\n## Ejemplo\n\nA.\n\n## Ejemplo\n\nB.\n\n## Ejercicios\n\nC.\n\n## Ejercicios\n\nD.\n";
+
+    let assembled = assemble(markdown, setup(false, true));
+
+    let contents = contents_of(&assembled.html);
+    let links: Vec<&str> = contents
+        .match_indices("href=\"#")
+        .map(|(at, _)| {
+            let rest = &contents[at + 7..];
+            &rest[..rest.find('"').expect("the href is closed")]
+        })
+        .collect();
+    let unique: std::collections::BTreeSet<&&str> = links.iter().collect();
+    assert_eq!(links.len(), 4, "expected one entry per heading: {links:?}");
+    assert_eq!(unique.len(), links.len(), "duplicate anchors: {links:?}");
+}
+
+#[test]
+fn a_thematic_break_in_the_body_is_not_read_as_a_heading() {
+    // `heading_anchors` scans the rendered HTML, where `<hr />` sits next to
+    // `<h2 ...>`; matching `<h` loosely would have taken it for a heading and
+    // shifted every later contents entry onto the wrong anchor.
+    let markdown = "# Guía\n\n## Uno\n\nA.\n\n---\n\nB.\n\n## Dos\n\nC.\n";
+
+    let assembled = assemble(markdown, setup(false, true));
+
+    assert!(
+        assembled.html.contains("href=\"#uno\""),
+        "{}",
+        assembled.html
+    );
+    assert!(
+        assembled.html.contains("href=\"#dos\""),
+        "{}",
+        assembled.html
+    );
+}

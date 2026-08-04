@@ -218,17 +218,24 @@ pub(super) async fn inspect_document(
         .await
 }
 
+/// Normalises a document title to a single line of single-spaced words.
+///
+/// Collapsing whitespace rather than only trimming is what the slides path already
+/// does, and it matters for the same reason: the renderer strips the `# {title}`
+/// heading by matching it, and a title carrying a stray space or an embedded
+/// newline never matches the heading it produced. Trimming alone left internal
+/// whitespace and newlines intact.
 pub(super) fn validate_title(title: String) -> Result<String> {
-    let trimmed = title.trim();
-    if trimmed.is_empty() {
+    let normalized = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
         return Err(SfumatoError::validation("Document title cannot be empty"));
     }
-    if slug::slugify(trimmed).is_empty() {
+    if slug::slugify(&normalized).is_empty() {
         return Err(SfumatoError::validation(
             "Document title cannot produce an artifact name",
         ));
     }
-    Ok(trimmed.to_owned())
+    Ok(normalized)
 }
 
 /// Removes an outer Markdown code fence a model may wrap its answer in.

@@ -42,7 +42,7 @@ fn assemble_document(request: DocumentAssemblyRequest<'_>) -> Result<AssembledDo
         .render()
         .map_err(|error| anyhow::anyhow!("{error}"))
         .context("Could not render the document Markdown")?;
-    let body_markdown = strip_title_heading(&markdown, request.document.title());
+    let body_markdown = strip_title_heading(&markdown);
     let rendered = markdown_to_html(&body_markdown, &document_markdown_options());
     let uses_math = rendered.contains("data-math-style");
     let body = restore_math_delimiters(&rendered);
@@ -68,7 +68,7 @@ fn assemble_document(request: DocumentAssemblyRequest<'_>) -> Result<AssembledDo
         content.push_str(&cover_html(&request));
     }
     if request.setup.table_of_contents {
-        content.push_str(&table_of_contents_html(request.document));
+        content.push_str(&table_of_contents_html(request.document, &body));
     }
     content.push_str(&format!(
         "<main class=\"sfumato-document\">\n{body}</main>\n"
@@ -150,26 +150,71 @@ fn restore_math_delimiters(html: &str) -> String {
 }
 
 /// Removes the level-1 title, which the cover and running header already carry.
-fn strip_title_heading(markdown: &str, title: &str) -> String {
-    let heading = format!("# {title}");
-    let mut output = String::with_capacity(markdown.len());
+///
+/// The frontmatter is dropped by position rather than by pattern. It used to be
+/// removed by deleting any line that trimmed to `---` or started with `subtitle:`
+/// while a `removed` flag was still false — with that flag doubling as "am I still
+/// in the frontmatter?". It answers that wrongly the moment the title match fails,
+/// and the match compared a trimmed line against an untrimmed pattern, so one
+/// trailing space in the title was enough: every thematic break in the document was
+/// deleted, every `subtitle:` line was deleted including inside fenced code, and
+/// the H1 survived into the body to duplicate the cover.
+///
+/// Parsing the leading block instead makes that impossible rather than unlikely: a
+/// `---` or a `subtitle:` further down is never a candidate, whatever the title
+/// looks like.
+fn strip_title_heading(markdown: &str) -> String {
+    let body = strip_leading_frontmatter(markdown);
+    let mut output = String::with_capacity(body.len());
     let mut removed = false;
-    for line in markdown.lines() {
-        if !removed && line.trim() == heading {
+    for line in body.lines() {
+        // The document's first level-1 heading is its title, whatever the text
+        // says. Reconstructing `# {title}` and matching it was the fragility
+        // itself: it required the title and the heading to agree character for
+        // character, and the caller's title has been through the domain's heading
+        // cleaning while the line in the file has not.
+        if !removed && is_level_one_heading(line) {
             removed = true;
-            continue;
-        }
-        // The frontmatter is metadata for the domain model, never content.
-        if line.trim() == "---" && !removed {
-            continue;
-        }
-        if !removed && line.trim_start().starts_with("subtitle:") {
             continue;
         }
         output.push_str(line);
         output.push('\n');
     }
     output
+}
+
+/// Reports whether a line is an ATX level-1 heading.
+///
+/// `#` followed by whitespace, so `##` and a bare `#hashtag` are not headings.
+/// Indentation of four or more spaces is a code block rather than a heading.
+fn is_level_one_heading(line: &str) -> bool {
+    let indent = line.len() - line.trim_start().len();
+    if indent >= 4 {
+        return false;
+    }
+    line.trim_start()
+        .strip_prefix('#')
+        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+}
+
+/// Returns the document without its leading `---` delimited frontmatter block.
+///
+/// An unterminated opening block is left alone: deleting to the end of the file is
+/// never the right reading of a malformed document.
+fn strip_leading_frontmatter(markdown: &str) -> &str {
+    let trimmed = markdown.trim_start_matches(['\n', '\r', ' ', '\t']);
+    // The opening delimiter must be the first thing in the document.
+    let mut rest = match trimmed.split_once('\n') {
+        Some((first, rest)) if first.trim() == "---" => rest,
+        _ => return markdown,
+    };
+    loop {
+        match rest.split_once('\n') {
+            Some((line, after)) if line.trim() == "---" => return after,
+            Some((_, after)) => rest = after,
+            None => return markdown,
+        }
+    }
 }
 
 /// Emits the `@page` rules that give the sheet its real geometry.
@@ -254,14 +299,33 @@ fn cover_html(request: &DocumentAssemblyRequest<'_>) -> String {
 ///
 /// Page numbers come from CSS `target-counter()`, which Paged.js resolves after
 /// pagination, so the numbers cannot disagree with where the sections landed.
-fn table_of_contents_html(document: &SectionedDocument) -> String {
+/// Builds the contents from the anchors the renderer actually emitted.
+///
+/// The anchors are read out of the rendered body rather than recomputed. The
+/// previous version reimplemented comrak's rule and reproduced it faithfully
+/// except for the duplicate counter: comrak disambiguates a repeated heading with
+/// `-1`, `-2`, while the reimplementation emitted the same anchor every time. So
+/// the second "Conclusión" linked to the first — and because page numbers come from
+/// CSS `target-counter()` resolved against that anchor, printed the first one's
+/// page number too. Repeated headings are the normal case in a study document, and
+/// a printed contents page is not navigable, so the wrong number is undetectable
+/// from the PDF.
+///
+/// Reading the emitted ids removes the invariant rather than maintaining it.
+fn table_of_contents_html(document: &SectionedDocument, body: &str) -> String {
+    let mut anchors = heading_anchors(body).into_iter();
     let mut contents = String::from(
         "<nav class=\"sfumato-contents\" role=\"doc-toc\">\n<h2 class=\"sfumato-contents-title\">Contents</h2>\n<ol class=\"sfumato-contents-list\">\n",
     );
     for (level, heading) in document.outline() {
+        // Positional: the outline and the rendered headings are the same sequence,
+        // because the body is rendered from this document.
+        let Some(anchor) = anchors.next() else {
+            continue;
+        };
         contents.push_str(&format!(
             "<li class=\"sfumato-contents-entry\" data-level=\"{level}\"><a href=\"#{}\">{}</a></li>\n",
-            escape_attribute(&heading_anchor(heading)),
+            escape_attribute(&anchor),
             escape_text(heading)
         ));
     }
@@ -269,17 +333,36 @@ fn table_of_contents_html(document: &SectionedDocument) -> String {
     contents
 }
 
-/// Reproduces the anchor comrak derives from a heading.
-fn heading_anchor(heading: &str) -> String {
-    let mut anchor = String::with_capacity(heading.len());
-    for character in heading.chars() {
-        if character.is_alphanumeric() {
-            anchor.extend(character.to_lowercase());
-        } else if character == ' ' || character == '-' || character == '_' {
-            anchor.push('-');
+/// Collects the `id` of every heading in the rendered body, in document order.
+///
+/// The title heading is stripped before rendering, so what remains is exactly the
+/// document outline.
+fn heading_anchors(body: &str) -> Vec<String> {
+    let mut anchors = Vec::new();
+    let mut remainder = body;
+    while let Some(start) = remainder.find("<h") {
+        let tail = &remainder[start..];
+        // `<h2 ...>` and nothing else: `<hr`, `<header` and the like must not match.
+        let is_heading = tail
+            .as_bytes()
+            .get(2)
+            .is_some_and(|level| level.is_ascii_digit());
+        let Some(open_end) = tail.find('>') else {
+            break;
+        };
+        if is_heading && let Some(id) = attribute_value(&tail[..open_end], "id=\"") {
+            anchors.push(id);
         }
+        remainder = &tail[open_end + 1..];
     }
-    anchor
+    anchors
+}
+
+/// Reads one double-quoted attribute value out of an opening tag.
+fn attribute_value(tag: &str, attribute: &str) -> Option<String> {
+    let start = tag.find(attribute)? + attribute.len();
+    let end = tag[start..].find('"')? + start;
+    Some(tag[start..end].to_owned())
 }
 
 /// Rejects any reference a deterministic offline render could not resolve.
