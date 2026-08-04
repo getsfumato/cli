@@ -21,7 +21,7 @@ use sfumato_core::{
 };
 
 use crate::{
-    openai_compatible::{OpenAiCompatibleConnector, introspection_error},
+    openai_compatible::{OpenAiCompatibleConnector, provider_status_error},
     runtime::await_operation,
 };
 
@@ -175,7 +175,7 @@ impl LmStudioConnector {
             return Ok(None);
         }
         if !status.is_success() {
-            return Err(introspection_error(
+            return Err(provider_status_error(
                 "LM Studio",
                 &format!("endpoint '{path}'"),
                 status,

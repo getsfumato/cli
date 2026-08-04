@@ -141,8 +141,9 @@ impl ProviderFactory for AdapterProviderFactory {
             // Deliberately not wrapped in a retry, unlike text, image, and speech:
             // `generate_video` submits an asynchronous job and then polls it, so
             // repeating the whole call can submit a second billable job for a
-            // first one that already started. Recovering from a transient failure
-            // here means retrying the submit step alone, inside the connector.
+            // first one that already started. The connector retries the two steps
+            // that are safe on their own — the submit, which starts no job when it
+            // is rejected, and the status poll, which is idempotent.
             ConnectorConfig::OpenRouter(connector) => Ok(Box::new(
                 OpenRouterConnector::new(&profile.connector, connector, self.secrets.clone())?
                     .video_provider(profile.clone()),

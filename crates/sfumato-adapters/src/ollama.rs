@@ -12,7 +12,7 @@ use sfumato_core::{
     providers::{ConnectorModelSummary, ConnectorStatus, ConnectorStatusField},
 };
 
-use crate::{openai_compatible::introspection_error, runtime::await_operation};
+use crate::{openai_compatible::provider_status_error, runtime::await_operation};
 
 /// `/api/tags`, `/api/version`, and `/api/ps` all answer in well under a second
 /// against a local daemon, and the CLI and TUI run them with a context that may
@@ -110,7 +110,7 @@ impl OllamaConnector {
         let status = response.status();
         let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
         if !status.is_success() {
-            return Err(introspection_error(
+            return Err(provider_status_error(
                 "Ollama",
                 &format!("endpoint '{path}'"),
                 status,

@@ -14,11 +14,13 @@ use sfumato_core::{
         ConnectorModelSummary, ConnectorStatus, ConnectorStatusField, VideoGenerationProvider,
         VideoGenerationRequest, VideoGenerationResponse,
     },
+    retry::RetryPolicy,
     secrets::SecretResolver,
 };
 
 use crate::{
-    openai_compatible::{OpenAiCompatibleConnector, introspection_error},
+    openai_compatible::{OpenAiCompatibleConnector, provider_status_error},
+    retry::with_retry,
     runtime::await_operation,
 };
 
@@ -52,9 +54,13 @@ impl OpenRouterConnector {
             let status = response.status();
             let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
             if !status.is_success() {
-                return Err(
-                    introspection_error("OpenRouter", "the model catalog", status, &body).into(),
-                );
+                return Err(provider_status_error(
+                    "OpenRouter",
+                    "the model catalog",
+                    status,
+                    &body,
+                )
+                .into());
             }
             let response: ModelsResponse = serde_json::from_str(&body)
                 .context("OpenRouter model catalog returned invalid JSON")?;
@@ -78,7 +84,7 @@ impl OpenRouterConnector {
             let body = await_operation(operation, OperationStage::Resolve, response.text()).await?;
             if !status.is_success() {
                 return Err(
-                    introspection_error("OpenRouter", "API-key status", status, &body).into(),
+                    provider_status_error("OpenRouter", "API-key status", status, &body).into(),
                 );
             }
             let data: KeyResponse = serde_json::from_str(&body)
@@ -163,15 +169,50 @@ impl OpenRouterVideoProvider {
             seed: request.seed,
             input_references,
         };
-        let submit = self.transport.post("videos").await?.json(&payload).send();
-        let response = await_operation(operation, stage, submit).await?;
-        let status = response.status();
-        let body = await_operation(operation, stage, response.text()).await?;
-        if !status.is_success() {
-            bail!("OpenRouter video generation returned HTTP {status}: {body}");
-        }
-        let submitted: VideoJob = serde_json::from_str(&body)
-            .context("OpenRouter video generation returned invalid JSON")?;
+        // Retried here, around the submit alone, which is the step that can be
+        // repeated safely: a rejected submit started no job, so unlike wrapping
+        // `generate_video` this cannot bill a second render for one already
+        // running. A 429 or a 503 on submit used to abort the whole operation,
+        // which is exactly the failure the transport retries were added for.
+        let submitted: VideoJob = with_retry(
+            RetryPolicy::default(),
+            operation,
+            stage,
+            "video submission",
+            || async {
+                let submit = self
+                    .transport
+                    .post("videos")
+                    .await
+                    .map_err(|error| {
+                        SfumatoError::provider(ErrorClass::Permanent, format!("{error:#}"))
+                    })?
+                    .json(&payload)
+                    .send();
+                let response = await_operation(operation, stage, submit)
+                    .await
+                    .map_err(|error| transient_transport_error("video submission", error))?;
+                let status = response.status();
+                let body = await_operation(operation, stage, response.text())
+                    .await
+                    .map_err(|error| transient_transport_error("video submission", error))?;
+                if !status.is_success() {
+                    return Err(provider_status_error(
+                        "OpenRouter",
+                        "video generation",
+                        status,
+                        &body,
+                    ));
+                }
+                serde_json::from_str(&body).map_err(|error| {
+                    SfumatoError::provider(
+                        ErrorClass::InvalidOutput,
+                        format!("OpenRouter video generation returned invalid JSON: {error}"),
+                    )
+                })
+            },
+        )
+        .await?;
         let poll_seconds = self
             .profile
             .options
@@ -180,6 +221,7 @@ impl OpenRouterVideoProvider {
             .unwrap_or(10);
         let timeout_seconds = self.profile.options.video.timeout_seconds.unwrap_or(900);
         let started = std::time::Instant::now();
+        let mut transient_polls = 0_u32;
         let completed = loop {
             operation.checkpoint(stage)?;
             if started.elapsed() > Duration::from_secs(timeout_seconds) {
@@ -193,14 +235,51 @@ impl OpenRouterVideoProvider {
                 .get(&format!("videos/{}", submitted.id))
                 .await?
                 .send();
-            let response = await_operation(operation, stage, status_request).await?;
-            let status = response.status();
-            let body = await_operation(operation, stage, response.text()).await?;
-            if !status.is_success() {
-                bail!("OpenRouter video status returned HTTP {status}: {body}");
-            }
-            let job: VideoJob = serde_json::from_str(&body)
-                .context("OpenRouter video status returned invalid JSON")?;
+            // A status read is idempotent, and by this point the render is
+            // already running and already billed. Abandoning the job because one
+            // poll was rate limited threw away the thing that cost money, and on
+            // a long render a transient failure somewhere in the loop is the more
+            // likely case. Transient failures are tolerated up to a bound; a
+            // permanent one still stops immediately.
+            let poll = async {
+                let response = await_operation(operation, stage, status_request)
+                    .await
+                    .map_err(|error| transient_transport_error("video status", error))?;
+                let status = response.status();
+                let body = await_operation(operation, stage, response.text())
+                    .await
+                    .map_err(|error| transient_transport_error("video status", error))?;
+                if !status.is_success() {
+                    return Err(provider_status_error(
+                        "OpenRouter",
+                        "video status",
+                        status,
+                        &body,
+                    ));
+                }
+                serde_json::from_str::<VideoJob>(&body).map_err(|error| {
+                    SfumatoError::provider(
+                        ErrorClass::Retry,
+                        format_args!("OpenRouter video status returned invalid JSON: {error}"),
+                    )
+                })
+            };
+            let job = match poll.await {
+                Ok(job) => {
+                    transient_polls = 0;
+                    job
+                }
+                Err(error) if error.retryable && transient_polls < MAX_TRANSIENT_POLLS => {
+                    transient_polls += 1;
+                    await_operation(operation, stage, async move {
+                        tokio::time::sleep(Duration::from_secs(poll_seconds)).await;
+                        Ok::<(), anyhow::Error>(())
+                    })
+                    .await?;
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             match job.status.as_str() {
                 "completed" => break job,
                 "failed" | "cancelled" | "expired" => {
@@ -491,6 +570,28 @@ fn field(name: &str, value: impl ToString) -> ConnectorStatusField {
         name: name.into(),
         value: value.to_string(),
     }
+}
+
+/// Consecutive transient poll failures tolerated before the job is abandoned.
+///
+/// The loop is already bounded by the job timeout, so this only stops a permanent
+/// fault that keeps presenting as a retryable one from spinning until then.
+const MAX_TRANSIENT_POLLS: u32 = 5;
+
+/// Classifies a transport failure that never produced a response.
+///
+/// A request that did not reach the provider started no job, so repeating it
+/// cannot double-bill. An operation cancellation or deadline is already a typed
+/// error and is passed through so a retry does not outlive it.
+fn transient_transport_error(what: &str, error: anyhow::Error) -> SfumatoError {
+    if let Some(typed) = error.downcast_ref::<SfumatoError>() {
+        return typed.clone();
+    }
+    SfumatoError::provider(
+        ErrorClass::Retry,
+        format_args!("OpenRouter {what} could not reach the provider: {error:#}"),
+    )
+    .at_stage(OperationStage::Render)
 }
 
 fn native_result<T>(result: Result<T>) -> SfumatoResult<T> {

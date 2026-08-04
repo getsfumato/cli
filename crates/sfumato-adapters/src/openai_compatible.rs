@@ -624,7 +624,7 @@ pub(crate) fn is_context_limit_response(body: &str) -> bool {
         || normalized.contains("too many tokens")
 }
 
-/// Classifies a failed native introspection response by HTTP status.
+/// Classifies a failed provider response by HTTP status.
 ///
 /// The native catalog and status paths used to funnel every non-`SfumatoError`
 /// into `ErrorClass::Unavailable`, which `is_retryable` reports as `true`. So the
@@ -633,9 +633,10 @@ pub(crate) fn is_context_limit_response(body: &str) -> bool {
 /// that can never succeed.
 ///
 /// The status split follows the one the ElevenLabs transport already uses, so the
-/// three native connectors that shared the blanket mapping cannot drift from it
-/// again.
-pub(crate) fn introspection_error(
+/// connectors that shared the blanket mapping cannot drift from it again. The
+/// class it returns is also what decides whether a retry is attempted, so a
+/// permanent rejection is never repeated.
+pub(crate) fn provider_status_error(
     provider: &str,
     what: &str,
     status: reqwest::StatusCode,

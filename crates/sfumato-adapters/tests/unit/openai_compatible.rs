@@ -264,7 +264,7 @@ fn a_rejected_credential_is_not_reported_as_retryable() {
     // Three native connectors funnelled every non-typed failure into
     // `Unavailable`, which `is_retryable` reports as `true`, so the public DTO
     // told automation to retry a 401 that can never succeed.
-    let error = introspection_error(
+    let error = provider_status_error(
         "Ollama",
         "endpoint '/api/tags'",
         reqwest::StatusCode::UNAUTHORIZED,
@@ -284,7 +284,7 @@ fn a_rejected_credential_is_not_reported_as_retryable() {
 #[test]
 fn a_permanent_client_error_is_not_reported_as_retryable() {
     for status in [400_u16, 404, 422] {
-        let error = introspection_error(
+        let error = provider_status_error(
             "LM Studio",
             "endpoint '/v1/models'",
             reqwest::StatusCode::from_u16(status).unwrap(),
@@ -300,7 +300,7 @@ fn a_permanent_client_error_is_not_reported_as_retryable() {
 fn rate_limits_and_outages_stay_retryable() {
     // The point is not to make everything permanent: transient statuses must
     // keep advertising that a retry can help.
-    let throttled = introspection_error(
+    let throttled = provider_status_error(
         "OpenRouter",
         "the model catalog",
         reqwest::StatusCode::TOO_MANY_REQUESTS,
@@ -309,7 +309,7 @@ fn rate_limits_and_outages_stay_retryable() {
     assert_eq!(throttled.class, ErrorClass::Retry);
     assert!(throttled.retryable);
 
-    let down = introspection_error(
+    let down = provider_status_error(
         "OpenRouter",
         "the model catalog",
         reqwest::StatusCode::BAD_GATEWAY,
@@ -323,7 +323,7 @@ fn rate_limits_and_outages_stay_retryable() {
 fn an_unclassified_status_defaults_to_permanent() {
     // Defaulting to retryable is what caused this; an unknown status is not
     // evidence that repeating the request will help.
-    let error = introspection_error(
+    let error = provider_status_error(
         "Ollama",
         "endpoint '/api/ps'",
         reqwest::StatusCode::from_u16(418).unwrap(),
@@ -335,7 +335,7 @@ fn an_unclassified_status_defaults_to_permanent() {
 
 #[test]
 fn the_provider_and_subject_are_named_in_the_message() {
-    let error = introspection_error(
+    let error = provider_status_error(
         "LM Studio",
         "endpoint '/v1/models'",
         reqwest::StatusCode::SERVICE_UNAVAILABLE,
