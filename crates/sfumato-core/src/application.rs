@@ -6,6 +6,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 
@@ -1313,11 +1314,22 @@ impl SfumatoApplication {
     }
 
     /// Loads one unrendered prompt template for presentation.
+    /// Parses a prompt identifier into the typed error model.
+    ///
+    /// Parsing used to happen in the presentation layer, where a `PromptError`
+    /// propagated as an untyped error and reached the user with no code at all,
+    /// unlike every other "does not exist" failure.
+    pub fn parse_prompt_id(&self, id: &str) -> SfumatoResult<PromptId> {
+        PromptId::from_str(id).map_err(public_prompt_error)
+    }
+
+    /// Reads one resolved prompt template and its provenance.
     pub fn show_prompt(
         &self,
-        id: PromptId,
+        id: &str,
         project: Option<String>,
     ) -> SfumatoResult<PromptTemplateSource> {
+        let id = self.parse_prompt_id(id)?;
         let root = self.prompt_project_root(project)?;
         self.prompt_manager
             .source(&root, id)
@@ -1327,10 +1339,11 @@ impl SfumatoApplication {
     /// Creates one user or project prompt override.
     pub fn customize_prompt(
         &self,
-        id: PromptId,
+        id: &str,
         scope: PromptOverrideScope,
         project: Option<String>,
     ) -> SfumatoResult<PathBuf> {
+        let id = self.parse_prompt_id(id)?;
         let root = self.prompt_project_root(project)?;
         self.prompt_manager
             .customize(&root, id, scope)

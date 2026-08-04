@@ -105,13 +105,10 @@ impl ProjectRepository for MemoryProjects {
         Ok(name.to_string())
     }
 
-    fn remove(&self, name: &str) -> crate::errors::SfumatoResult<ProjectConfig> {
+    fn remove(&self, name: &str) -> crate::errors::SfumatoResult<String> {
         self.registry.lock().unwrap().projects.remove(name);
-        self.projects
-            .lock()
-            .unwrap()
-            .remove(name)
-            .ok_or_else(|| crate::errors::SfumatoError::not_found("Project not found"))
+        self.projects.lock().unwrap().remove(name);
+        Ok(name.to_string())
     }
 }
 

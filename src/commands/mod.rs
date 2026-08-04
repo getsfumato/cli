@@ -32,7 +32,7 @@ use sfumato_core::{
     connectors::ConnectorPreset as CoreConnectorPreset,
     generation::{DocumentPageSize, GenerationRequest, ResourceKind},
     operation::OperationContext,
-    prompts::{PromptId, PromptOrigin, PromptOverrideScope},
+    prompts::{PromptOrigin, PromptOverrideScope},
     providers::TextGenerationEvent,
     resources::documents::GenerateDocumentResult,
     resources::pages::GeneratePageResult,
@@ -536,8 +536,8 @@ impl PromptProjectArgs {
 #[async_trait]
 impl RunnableCommand for PromptShowArgs {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
-        let id = PromptId::from_str(&self.id)?;
-        let source = application.show_prompt(id, self.project)?;
+        let id = application.parse_prompt_id(&self.id)?;
+        let source = application.show_prompt(&self.id, self.project)?;
         println!(
             "# {}\n# origin: {}\n# sha256: {}\n\n{}",
             id,
@@ -552,12 +552,11 @@ impl RunnableCommand for PromptShowArgs {
 #[async_trait]
 impl RunnableCommand for PromptCustomizeArgs {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
-        let id = PromptId::from_str(&self.id)?;
         let scope = match self.scope {
             PromptScope::User => PromptOverrideScope::User,
             PromptScope::Project => PromptOverrideScope::Project,
         };
-        let path = application.customize_prompt(id, scope, self.project)?;
+        let path = application.customize_prompt(&self.id, scope, self.project)?;
         println!("Created prompt override at {}", path.display());
         Ok(())
     }
@@ -960,10 +959,13 @@ impl RunnableCommand for ProjectCommands {
                             .into_iter()
                             .map(|project| {
                                 vec![
-                                    if project.active {
-                                        Cell::success("active")
-                                    } else {
-                                        Cell::muted("")
+                                    match (project.available, project.active) {
+                                        // A missing path outranks active: it is
+                                        // the state that will break the next
+                                        // command run against this project.
+                                        (false, _) => Cell::warning("missing"),
+                                        (true, true) => Cell::success("active"),
+                                        (true, false) => Cell::muted(""),
                                     },
                                     Cell::primary(project.name),
                                     Cell::new(project.path.display()),

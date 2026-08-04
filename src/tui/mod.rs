@@ -41,7 +41,7 @@ use sfumato_core::{
     connectors::ConnectorPreset,
     errors::{ErrorClass, OperationStage, SfumatoError},
     operation::{EventSink, EventSinkError, OperationContext, OperationEvent, OperationEventKind},
-    prompts::{PromptId, PromptOrigin, PromptOverrideScope},
+    prompts::{PromptOrigin, PromptOverrideScope},
     providers::{GenerationStage, TextGenerationEvent},
     resources::{
         pages::GeneratePageResult,

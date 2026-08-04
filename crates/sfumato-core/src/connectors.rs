@@ -11,7 +11,7 @@ use crate::{
         ConnectorConfig, ElevenLabsConnectorConfig, GlobalConfig, LmStudioConnectorConfig,
         OllamaConnectorConfig, OpenAiCompatibleConnectorConfig, OpenRouterConnectorConfig,
     },
-    errors::{ResultContext as Context, SfumatoResult as Result},
+    errors::{NotFoundContext, ResultContext as Context, SfumatoResult as Result},
     repositories::GlobalConfigRepository,
     secrets::{SecretStore, SecretValue},
     sfumato_bail as bail,
@@ -346,7 +346,7 @@ impl ConnectorService {
             .config
             .connectors
             .get(name)
-            .with_context(|| format!("Connector '{name}' was not found"))?;
+            .or_not_found_with(|| format!("Connector '{name}' was not found"))?;
         let (base_url, executable, credential, headers) = match connector {
             ConnectorConfig::OpenAiCompatible(connector) => connector_details(connector),
             ConnectorConfig::OpenRouter(connector) => connector_details(&connector.transport),
@@ -411,7 +411,7 @@ impl ConnectorService {
             .config
             .connectors
             .get(name)
-            .with_context(|| format!("Connector '{name}' was not found"))?;
+            .or_not_found_with(|| format!("Connector '{name}' was not found"))?;
         if let ConnectorAuth::External {
             owner,
             login_command,
@@ -444,7 +444,7 @@ impl ConnectorService {
             .config
             .connectors
             .get(name)
-            .with_context(|| format!("Connector '{name}' was not found"))?;
+            .or_not_found_with(|| format!("Connector '{name}' was not found"))?;
         let (credential, available, managed_externally) = match connector.auth() {
             ConnectorAuth::External { .. } => (None, false, true),
             ConnectorAuth::Managed(credential) => {
@@ -468,7 +468,7 @@ impl ConnectorService {
             .config
             .connectors
             .get(name)
-            .with_context(|| format!("Connector '{name}' was not found"))?;
+            .or_not_found_with(|| format!("Connector '{name}' was not found"))?;
         let previous = match connector.auth() {
             ConnectorAuth::External {
                 owner,

@@ -9,6 +9,12 @@ pub struct ProjectSummary {
     pub name: String,
     pub path: PathBuf,
     pub active: bool,
+    /// Whether the registered path still holds a readable project config.
+    ///
+    /// A moved or deleted directory leaves the entry behind, and listing it as
+    /// if it were fine meant the state only surfaced when a later command
+    /// failed on it.
+    pub available: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -35,6 +41,7 @@ impl ProjectService {
             .list()?
             .into_iter()
             .map(|(name, project, active)| ProjectSummary {
+                available: self.repository.load(Some(&name)).is_ok(),
                 name,
                 path: project.path,
                 active,
@@ -51,7 +58,7 @@ impl ProjectService {
     }
 
     pub fn remove(&self, name: &str) -> Result<ProjectRemoved> {
-        let project = self.repository.remove(name)?;
-        Ok(ProjectRemoved { name: project.name })
+        let name = self.repository.remove(name)?;
+        Ok(ProjectRemoved { name })
     }
 }

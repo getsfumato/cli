@@ -93,13 +93,13 @@ impl ProjectRepository for MemoryProjects {
         Ok(name.to_string())
     }
 
-    fn remove(&self, name: &str) -> Result<ProjectConfig> {
+    fn remove(&self, name: &str) -> Result<String> {
         self.projects
             .lock()
             .unwrap()
             .remove(name)
-            .map(|(_, project)| project)
-            .context("Project not found")
+            .context("Project not found")?;
+        Ok(name.to_string())
     }
 }
 

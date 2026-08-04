@@ -49,9 +49,24 @@ fn facade_service_errors_receive_stable_public_codes() {
 
 #[test]
 fn prompt_management_errors_are_scoped_to_prompt_rendering() {
+    // ADR-0004 lists prompts among the entities `NotFound` covers, so an absent
+    // template reports the same code as an absent project, model, or theme.
     let error = public_prompt_error(PromptError::Missing(PromptId::SlidesDraftSystem));
 
-    assert_eq!(error.code, ErrorCode::Config);
+    assert_eq!(error.code, ErrorCode::NotFound);
     assert_eq!(error.class, ErrorClass::Permanent);
+    assert_eq!(error.stage, Some(OperationStage::RenderPrompt));
+}
+
+#[test]
+fn prompt_rendering_failures_stay_configuration_errors() {
+    // Only "does not exist" moved to `NotFound`; a template that exists but
+    // cannot be rendered is still a configuration problem.
+    let error = public_prompt_error(PromptError::Render {
+        id: PromptId::SlidesDraftSystem,
+        message: "undefined variable".to_string(),
+    });
+
+    assert_eq!(error.code, ErrorCode::Config);
     assert_eq!(error.stage, Some(OperationStage::RenderPrompt));
 }

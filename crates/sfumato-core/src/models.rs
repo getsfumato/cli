@@ -2,7 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use crate::{
     config::{Capability, GlobalConfig, ModelOptions, ModelProfile, ModelRole},
-    errors::{ResultContext as Context, SfumatoError, SfumatoResult as Result},
+    errors::{NotFoundContext, ResultContext as Context, SfumatoError, SfumatoResult as Result},
     repositories::{GlobalConfigRepository, ProjectRepository},
     sfumato_bail as bail,
 };
@@ -98,7 +98,7 @@ impl ModelService {
             .models
             .get(name)
             .cloned()
-            .with_context(|| format!("Model profile '{name}' was not found"))
+            .or_not_found_with(|| format!("Model profile '{name}' was not found"))
     }
 
     pub fn add(
@@ -114,7 +114,9 @@ impl ModelService {
             bail!("Model profile '{name}' already exists");
         }
         if !self.config.connectors.contains_key(&connector) {
-            bail!("Connector '{connector}' was not found");
+            return Err(SfumatoError::not_found(format!(
+                "Connector '{connector}' was not found"
+            )));
         }
         if model_id.trim().is_empty() {
             bail!("Model ID cannot be empty");
@@ -134,7 +136,9 @@ impl ModelService {
 
     pub fn remove(&mut self, name: &str) -> Result<String> {
         if !self.config.models.contains_key(name) {
-            bail!("Model profile '{name}' was not found");
+            return Err(SfumatoError::not_found(format!(
+                "Model profile '{name}' was not found"
+            )));
         }
         if let Some(capability) = self
             .config
@@ -160,7 +164,12 @@ impl ModelService {
             );
         }
         for (project_name, _, _) in self.project_repository.list()? {
-            let project = self.project_repository.load(Some(&project_name))?;
+            // A project whose config cannot be read holds no default that could
+            // block this removal, and refusing to remove a profile because of an
+            // unrelated broken project leaves no way forward.
+            let Ok(project) = self.project_repository.load(Some(&project_name)) else {
+                continue;
+            };
             if let Some(capability) = project
                 .model_defaults
                 .iter()
@@ -205,7 +214,9 @@ impl ModelService {
         if let Some(connector) = &connector
             && !self.config.connectors.contains_key(connector)
         {
-            bail!("Connector '{connector}' was not found");
+            return Err(SfumatoError::not_found(format!(
+                "Connector '{connector}' was not found"
+            )));
         }
         if model_id
             .as_ref()
@@ -222,7 +233,7 @@ impl ModelService {
             .models
             .get(name)
             .cloned()
-            .with_context(|| format!("Model profile '{name}' was not found"))?;
+            .or_not_found_with(|| format!("Model profile '{name}' was not found"))?;
         if let Some(connector) = connector {
             profile.connector = connector;
         }
@@ -253,7 +264,7 @@ impl ModelService {
             .config
             .models
             .get(profile_name)
-            .with_context(|| format!("Model profile '{profile_name}' was not found"))?;
+            .or_not_found_with(|| format!("Model profile '{profile_name}' was not found"))?;
         if !profile.capabilities.contains(&required) {
             bail!(
                 "Model profile '{profile_name}' does not support '{}' capability",
@@ -343,7 +354,13 @@ fn validate_selected_capabilities(
         }
     }
     for (project_name, _, _) in project_repository.list()? {
-        let project = project_repository.load(Some(&project_name))?;
+        // A project whose config cannot be read references no profile, so it
+        // cannot be the reason to reject this edit. Aborting here made every
+        // command that validates capabilities fail because of an unrelated
+        // project, including `project remove`, the way out of that state.
+        let Ok(project) = project_repository.load(Some(&project_name)) else {
+            continue;
+        };
         for (capability, selected_profile) in project.model_defaults {
             if selected_profile == profile_name && !profile.capabilities.contains(&capability) {
                 bail!(

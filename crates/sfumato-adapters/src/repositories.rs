@@ -161,9 +161,20 @@ impl ProjectRepository for FilesystemProjectRepository {
     fn load(&self, name: Option<&str>) -> SfumatoResult<ProjectConfig> {
         repository_result((|| {
             let registry = self.registry()?;
-            let (_, root) = registry.selected(name)?;
-            let persisted: ProjectConfigDto =
-                read_versioned(&project_config_path(&root), "project")?;
+            let (selected, root) = registry.selected(name)?;
+            let config_path = project_config_path(&root);
+            // Naming the missing file alone answers a question the user did not
+            // ask. A registered project whose directory is gone is repaired by
+            // dropping the entry, so the error says so.
+            if !config_path.exists() {
+                bail!(
+                    "Project '{selected}' is registered at {} but no project config is there. \
+                     Move the directory back, or run `sfumato project remove {selected}` to drop \
+                     the entry.",
+                    root.display()
+                );
+            }
+            let persisted: ProjectConfigDto = read_versioned(&config_path, "project")?;
             persisted.into_domain()
         })())
     }
@@ -267,19 +278,19 @@ impl ProjectRepository for FilesystemProjectRepository {
         }))
     }
 
-    fn remove(&self, name: &str) -> SfumatoResult<ProjectConfig> {
+    fn remove(&self, name: &str) -> SfumatoResult<String> {
         repository_result(self.edit_registry(|registry| {
-            let registered = registry
+            // Deliberately does not read the project config. A moved or deleted
+            // project directory is the main reason to remove an entry, and
+            // reading it first made the removal fail for that exact case.
+            registry
                 .projects
                 .remove(name)
                 .with_context(|| format!("Project '{name}' is not registered"))?;
-            let persisted: ProjectConfigDto =
-                read_versioned(&project_config_path(&registered.path), "project")?;
-            let project = persisted.into_domain()?;
             if registry.active.as_deref() == Some(name) {
                 registry.active = None;
             }
-            Ok(project)
+            Ok(name.to_string())
         }))
     }
 }

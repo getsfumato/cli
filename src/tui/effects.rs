@@ -363,11 +363,10 @@ pub(super) fn execute_operation(
             if !form.toggle("Confirm") {
                 anyhow::bail!("Confirm prompt customization before continuing");
             }
-            let id = PromptId::from_str(
-                form.target
-                    .as_deref()
-                    .context("Prompt identifier is missing")?,
-            )?;
+            let id = form
+                .target
+                .as_deref()
+                .context("Prompt identifier is missing")?;
             let path = application.customize_prompt(id, scope, None)?;
             Ok(format!("Created prompt override at {}", path.display()))
         }
@@ -574,7 +573,7 @@ pub(super) fn load_section(
             .list_prompts(None)?
             .into_iter()
             .map(|template| {
-                let source = application.show_prompt(template.id, None)?;
+                let source = application.show_prompt(template.id.as_str(), None)?;
                 let provenance = template.provenance;
                 let active = !matches!(provenance.origin, PromptOrigin::Bundled);
                 let origin = match &provenance.origin {

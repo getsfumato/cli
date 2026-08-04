@@ -188,6 +188,10 @@ pub struct SfumatoError {
 impl SfumatoError {
     /// Creates a typed public error.
     ///
+    /// The message is redacted and capped here rather than in the category
+    /// constructors, so no caller can reach the public `message` field with
+    /// unsanitized text.
+    ///
     /// Use [`SfumatoError::cancelled`] for cancellation so the cancellation
     /// code and class cannot diverge.
     pub fn new(code: ErrorCode, class: ErrorClass, message: impl Into<String>) -> Self {
@@ -201,14 +205,17 @@ impl SfumatoError {
             class,
             retryable: class.is_retryable(),
             stage: None,
-            message: message.into(),
+            message: sanitize_message(&message.into()),
             details: BTreeMap::new(),
         }
     }
 
     /// Creates a public error from adapter or workflow text after redaction.
+    ///
+    /// Redaction now lives in [`SfumatoError::new`]; this delegates so a
+    /// message is never sanitized (and so never truncated) twice.
     pub fn sanitized(code: ErrorCode, class: ErrorClass, message: impl fmt::Display) -> Self {
-        Self::new(code, class, sanitize_message(&message.to_string()))
+        Self::new(code, class, message.to_string())
     }
 
     /// Creates a permanent configuration error.
@@ -282,10 +289,15 @@ impl SfumatoError {
         self
     }
 
-    /// Adds one sanitized detail value.
+    /// Adds one detail value, redacted like the message.
+    ///
+    /// `details` is documented as sanitized context and is serialized into the
+    /// `--json` error object, so it is redacted here instead of relying on
+    /// every caller to pass only benign values.
     #[must_use]
     pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.details.insert(key.into(), value.into());
+        self.details
+            .insert(key.into(), sanitize_message(&value.into()));
         self
     }
 
@@ -338,7 +350,22 @@ impl From<sfumato_domain::ReviewError> for SfumatoError {
 
 impl From<crate::prompts::PromptError> for SfumatoError {
     fn from(error: crate::prompts::PromptError) -> Self {
-        Self::config(error).at_stage(OperationStage::RenderPrompt)
+        use crate::prompts::PromptError;
+        // An identifier that names no template, or a template that is not
+        // installed, is a missing entity rather than a broken configuration.
+        // ADR-0004 lists prompts under `NotFound`.
+        match &error {
+            // Resolving a name attempts no rendering, so attaching the render
+            // stage would report a stage the operation never reached.
+            PromptError::UnknownId(_) => {
+                Self::sanitized(ErrorCode::NotFound, ErrorClass::Permanent, error)
+            }
+            PromptError::Missing(_) => {
+                Self::sanitized(ErrorCode::NotFound, ErrorClass::Permanent, error)
+                    .at_stage(OperationStage::RenderPrompt)
+            }
+            _ => Self::config(error).at_stage(OperationStage::RenderPrompt),
+        }
     }
 }
 
@@ -387,6 +414,35 @@ where
     }
 }
 
+/// Turns an absent lookup into a [`ErrorCode::NotFound`] error.
+///
+/// [`ResultContext`] maps `Option::None` to `Validation`, which is right for a
+/// missing input but wrong for an entity that does not exist. ADR-0004 makes
+/// these codes a public contract, so "was not found" resolves to one code
+/// regardless of which service performed the lookup.
+pub trait NotFoundContext<T> {
+    /// Adds a context message describing the entity that was not found.
+    fn or_not_found(self, context: impl fmt::Display) -> SfumatoResult<T>;
+
+    /// Adds a lazily formatted not-found context message.
+    fn or_not_found_with<M>(self, context: impl FnOnce() -> M) -> SfumatoResult<T>
+    where
+        M: fmt::Display;
+}
+
+impl<T> NotFoundContext<T> for Option<T> {
+    fn or_not_found(self, context: impl fmt::Display) -> SfumatoResult<T> {
+        self.ok_or_else(|| SfumatoError::not_found(context))
+    }
+
+    fn or_not_found_with<M>(self, context: impl FnOnce() -> M) -> SfumatoResult<T>
+    where
+        M: fmt::Display,
+    {
+        self.ok_or_else(|| SfumatoError::not_found(context()))
+    }
+}
+
 fn contextualize_error(
     error: impl fmt::Display + 'static,
     context: impl fmt::Display,
@@ -425,11 +481,11 @@ macro_rules! sfumato_bail {
 }
 
 fn sanitize_message(message: &str) -> String {
-    let mut sanitized = message
-        .split_whitespace()
-        .map(redact_token)
-        .collect::<Vec<_>>()
-        .join(" ");
+    // Whitespace is collapsed first so a multi-line provider body stays a
+    // single presentable line, then credential-shaped runs inside it are
+    // redacted.
+    let collapsed = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut sanitized = redact_runs(&collapsed);
     const MAX_MESSAGE_CHARS: usize = 2_000;
     if sanitized.chars().count() > MAX_MESSAGE_CHARS {
         let boundary = sanitized
@@ -443,20 +499,173 @@ fn sanitize_message(message: &str) -> String {
     sanitized
 }
 
-fn redact_token(token: &str) -> String {
-    let normalized = token.trim_matches(|character: char| {
-        matches!(character, '"' | '\'' | ',' | ':' | '{' | '}' | '[' | ']')
-    });
-    if normalized.starts_with("sk-")
-        || normalized.starts_with("sk_or_")
-        || normalized.starts_with("sk-or-")
-        || normalized.len() > 80
-            && normalized
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric())
-    {
-        token.replace(normalized, "[REDACTED]")
-    } else {
-        token.to_string()
-    }
+/// Credential prefixes used by providers this project talks to, plus the
+/// common shapes users paste into a custom endpoint.
+///
+/// A prefix match is high confidence, so it needs no length or entropy test
+/// beyond `MIN_SECRET_CHARS`.
+const SECRET_PREFIXES: &[&str] = &[
+    "sk-",         // Anthropic, OpenAI, OpenRouter (`sk-or-`)
+    "sk_",         // ElevenLabs, OpenRouter (`sk_or_`)
+    "AIza",        // Google API key
+    "ya29.",       // Google OAuth access token
+    "gsk_",        // Groq
+    "hf_",         // Hugging Face
+    "r8_",         // Replicate
+    "ghp_",        // GitHub personal access token
+    "gho_",        // GitHub OAuth token
+    "github_pat_", // GitHub fine-grained token
+    "glpat-",      // GitLab
+    "xoxb-",       // Slack bot token
+    "xoxp-",       // Slack user token
+    "AKIA",        // AWS access key ID
+    "ASIA",        // AWS temporary access key ID
+];
+
+/// Shortest run treated as a credential.
+///
+/// Below this, a match is far more likely to be a model name or an identifier
+/// than a key, and mangling those makes errors harder to act on.
+const MIN_SECRET_CHARS: usize = 20;
+
+/// Length at which an undelimited hex run is treated as a credential.
+///
+/// Covers a 32-hex ElevenLabs key and a 64-hex key alike. Content digests are
+/// the same shape, but no error message in this project prints one — the
+/// integrity failure in `page_plugins` deliberately reports neither side.
+const MIN_SECRET_HEX_CHARS: usize = 32;
+
+/// Reports whether a character can appear inside a credential run.
+///
+/// Everything else — quotes, commas, colons, braces, `=`, whitespace — is a
+/// boundary. Splitting on these is what lets a key survive being echoed back
+/// inside a JSON error body, where it carries no surrounding whitespace.
+fn is_secret_run_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '/' | '\\' | '+')
 }
+
+/// Redacts every credential-shaped run in `message`, preserving the text around
+/// each one so the message still reads as an explanation.
+fn redact_runs(message: &str) -> String {
+    let mut output = String::with_capacity(message.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, output: &mut String| {
+        if !run.is_empty() {
+            if is_probable_secret(run) {
+                output.push_str("[REDACTED]");
+            } else {
+                output.push_str(run);
+            }
+            run.clear();
+        }
+    };
+    for character in message.chars() {
+        if is_secret_run_char(character) {
+            run.push(character);
+        } else {
+            flush(&mut run, &mut output);
+            output.push(character);
+        }
+    }
+    flush(&mut run, &mut output);
+    output
+}
+
+/// Reports whether a whitespace-delimited run looks like a credential.
+///
+/// Deliberately shape-based rather than a prefix allowlist: a provider that
+/// echoes a key back in an error body decides the shape, not this project.
+fn is_probable_secret(candidate: &str) -> bool {
+    if candidate.len() < MIN_SECRET_CHARS {
+        // A prefix match still counts below the generic floor, but only with
+        // enough trailing material to be a key rather than a bare word.
+        return SECRET_PREFIXES
+            .iter()
+            .any(|prefix| candidate.len() > prefix.len() + 8 && candidate.starts_with(prefix));
+    }
+    if SECRET_PREFIXES
+        .iter()
+        .any(|prefix| candidate.starts_with(prefix))
+    {
+        return true;
+    }
+    if is_jwt(candidate) {
+        return true;
+    }
+    // A filesystem path is the most common long run in these messages and must
+    // survive intact, so the generic shape rules below never see one.
+    if candidate.contains('/') || candidate.contains('\\') {
+        return false;
+    }
+    // A canonical UUID is how providers spell a request ID, which support asks
+    // for by name. It is an identifier format rather than a credential one, and
+    // both generic rules below would otherwise swallow it.
+    if is_canonical_uuid(candidate) {
+        return false;
+    }
+    if candidate.len() >= MIN_SECRET_HEX_CHARS
+        && candidate
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return true;
+    }
+    is_opaque_key_run(candidate)
+}
+
+/// Matches the canonical 8-4-4-4-12 hexadecimal UUID form.
+fn is_canonical_uuid(candidate: &str) -> bool {
+    let groups: Vec<&str> = candidate.split('-').collect();
+    groups.len() == 5
+        && [8usize, 4, 4, 4, 12]
+            .iter()
+            .zip(&groups)
+            .all(|(expected, group)| {
+                group.len() == *expected
+                    && group.chars().all(|character| character.is_ascii_hexdigit())
+            })
+}
+
+/// Matches a three-part JSON Web Token.
+///
+/// The `eyJ` opener is base64url for `{"`, which makes this precise enough to
+/// apply regardless of length: the dots defeat every alphanumeric rule.
+fn is_jwt(candidate: &str) -> bool {
+    let parts: Vec<&str> = candidate.split('.').collect();
+    parts.len() == 3
+        && parts[0].starts_with("eyJ")
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                })
+        })
+}
+
+/// Matches an unbroken opaque segment that mixes letters and digits.
+///
+/// Measured per delimiter-free segment rather than over the whole run, because
+/// that is what separates a key from an identifier. A dotted model ID such as
+/// `us.anthropic.claude-sonnet-4-20250514-v1` is long in total but made of
+/// short words, while a key carries one long random segment. Joining the
+/// segments first would redact the model ID, and an error that cannot name the
+/// model it failed on is not actionable.
+///
+/// The consequence is deliberate: a credential written with separators every
+/// few characters is indistinguishable from an identifier and is left to the
+/// prefix, hex, and JWT rules above.
+fn is_opaque_key_run(candidate: &str) -> bool {
+    candidate
+        .split(|character| !char::is_ascii_alphanumeric(&character))
+        .any(|segment| {
+            segment.len() >= MIN_SECRET_HEX_CHARS
+                && segment.chars().any(|character| character.is_ascii_digit())
+                && segment
+                    .chars()
+                    .any(|character| character.is_ascii_alphabetic())
+        })
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/errors.rs"]
+mod tests;

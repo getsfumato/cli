@@ -70,7 +70,11 @@ pub trait ProjectRepository: Send + Sync {
     /// Selects the named registered project as active.
     fn set_active(&self, name: &str) -> SfumatoResult<String>;
     /// Removes a registry entry without deleting project files.
-    fn remove(&self, name: &str) -> SfumatoResult<ProjectConfig>;
+    ///
+    /// Returns the removed name rather than the project config: removing a
+    /// broken entry is exactly the case where the config cannot be read, so
+    /// requiring it would make the registry unrepairable through the CLI.
+    fn remove(&self, name: &str) -> SfumatoResult<String>;
 }
 
 /// User-global reusable theme package persistence.

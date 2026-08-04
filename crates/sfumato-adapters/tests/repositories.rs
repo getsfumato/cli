@@ -34,3 +34,48 @@ fn filesystem_project_repository_registers_and_preserves_files_on_remove() {
     repository.remove("course").unwrap();
     assert!(project_root.join(".sfumato/project.toml").is_file());
 }
+
+#[test]
+fn removes_a_registry_entry_whose_project_directory_is_gone() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemProjectRepository::new(temp.path().join("registry.toml"));
+    let root = temp.path().join("doomed");
+    repository
+        .register("doomed".to_string(), root.clone(), true)
+        .unwrap();
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    // The documented recovery used to fail for the exact state it recovers
+    // from, because removal read the project config first.
+    assert_eq!(repository.remove("doomed").unwrap(), "doomed");
+    assert!(repository.registry().unwrap().projects.is_empty());
+}
+
+#[test]
+fn a_missing_project_directory_names_the_recovery_command() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemProjectRepository::new(temp.path().join("registry.toml"));
+    let root = temp.path().join("gone");
+    repository
+        .register("gone".to_string(), root.clone(), true)
+        .unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let error = repository.load(Some("gone")).unwrap_err().message;
+
+    assert!(error.contains("sfumato project remove gone"), "{error}");
+}
+
+#[test]
+fn removing_the_active_project_clears_the_active_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemProjectRepository::new(temp.path().join("registry.toml"));
+    repository
+        .register("only".to_string(), temp.path().join("only"), true)
+        .unwrap();
+
+    repository.remove("only").unwrap();
+
+    assert!(repository.registry().unwrap().active.is_none());
+}
