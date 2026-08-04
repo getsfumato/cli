@@ -1718,35 +1718,144 @@ fn apply_catalog_policy(scenes: &mut [VideoScene], catalog: Option<&VideoCatalog
     warnings
 }
 
-fn validate_source(source: &VideoSourceDocument) -> Result<()> {
-    let combined = source
-        .files()
-        .values()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n")
-        .replace("http://www.w3.org/2000/svg", "")
-        .replace("http://www.w3.org/1999/xlink", "")
-        .replace("http://www.w3.org/1999/xhtml", "")
-        .to_ascii_lowercase();
-    for forbidden in [
-        "http://",
-        "https://",
-        "file:",
-        "../",
-        "fetch(",
-        "xmlhttprequest",
-        "websocket(",
-        "@import",
-        "src=\"/",
-        "href=\"/",
-    ] {
-        if combined.contains(forbidden) {
+/// Namespace URLs that are declarations, not fetches.
+///
+/// An `xmlns` never causes a request; SVG markup is unusable without it.
+const XML_NAMESPACES: &[&str] = &[
+    "http://www.w3.org/2000/svg",
+    "http://www.w3.org/1999/xlink",
+    "http://www.w3.org/1999/xhtml",
+    "http://www.w3.org/1998/math/mathml",
+];
+
+/// Operations that pull a remote resource, wherever they appear.
+///
+/// These are code or CSS constructs rather than prose, so unlike a bare URL
+/// there is no position in which they are innocent.
+const FORBIDDEN_OPERATIONS: &[&str] = &[
+    "file:",
+    "../",
+    "fetch(",
+    "xmlhttprequest",
+    "websocket(",
+    "eventsource(",
+    "importscripts(",
+    "@import",
+    "src=\"/",
+    "href=\"/",
+];
+
+/// Screens one generated source file for remote access.
+///
+/// A URL is rejected by position rather than by presence. The previous check
+/// scanned every file concatenated together and refused any `http://` or
+/// `https://` anywhere, so a scene that *displays* a URL as on-screen text —
+/// "visit https://sfumato.dev", the central case of a launch video — failed the
+/// whole film, as did a URL in a comment.
+///
+/// The safe position is whitelisted rather than the dangerous ones blacklisted,
+/// so anything this cannot confidently place is refused: in HTML a URL is allowed
+/// only in a text node, outside every tag and outside `<script>` and `<style>`
+/// content; in any other file type it is refused outright, because a URL in CSS
+/// or JavaScript is a resource reference and never prose.
+fn validate_source_file(name: &str, contents: &str) -> Result<()> {
+    let mut scanned = contents.to_ascii_lowercase();
+    // Lowercase first: stripping namespaces before folding case meant
+    // `xmlns="http://www.w3.org/2000/SVG"` never matched, and was then rejected.
+    for namespace in XML_NAMESPACES {
+        scanned = scanned.replace(namespace, "");
+    }
+    for forbidden in FORBIDDEN_OPERATIONS {
+        if scanned.contains(forbidden) {
             return Err(SfumatoError::render(
                 ErrorClass::InvalidOutput,
-                format!("Video source contains forbidden operation '{forbidden}'"),
+                format!("Video source file '{name}' contains forbidden operation '{forbidden}'"),
             ));
         }
+    }
+    if let Some(position) = remote_url_outside_text(name, &scanned) {
+        return Err(SfumatoError::render(
+            ErrorClass::InvalidOutput,
+            format!(
+                "Video source file '{name}' references a remote URL at byte {position}. \
+                 A URL may only appear as on-screen text, never in markup, CSS, or script."
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the offset of the first remote URL that is not on-screen text.
+fn remote_url_outside_text(name: &str, lowercased: &str) -> Option<usize> {
+    let is_html = name.ends_with(".html") || name.ends_with(".htm") || name.ends_with(".svg");
+    let mut search = 0;
+    while let Some(offset) = find_remote_url(lowercased, search) {
+        if !is_html || !is_text_node_position(lowercased, offset) {
+            return Some(offset);
+        }
+        search = offset + 1;
+    }
+    None
+}
+
+fn find_remote_url(lowercased: &str, from: usize) -> Option<usize> {
+    let http = lowercased[from..].find("http://").map(|at| from + at);
+    let https = lowercased[from..].find("https://").map(|at| from + at);
+    match (http, https) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (found, None) | (None, found) => found,
+    }
+}
+
+/// Reports whether `offset` sits in HTML text, outside tags and raw-text elements.
+///
+/// Decided by scanning from the start of the file rather than by looking around
+/// the offset, so an unbalanced `<` cannot make a script body look like prose.
+fn is_text_node_position(lowercased: &str, offset: usize) -> bool {
+    let bytes = lowercased.as_bytes();
+    let mut position = 0;
+    while position < bytes.len() {
+        if bytes[position] != b'<' {
+            if position == offset {
+                return true;
+            }
+            position += 1;
+            continue;
+        }
+        // Raw-text elements hold code, so their content is never a text node.
+        for (open, close) in [("<script", "</script"), ("<style", "</style")] {
+            if lowercased[position..].starts_with(open) {
+                let end = lowercased[position..]
+                    .find(close)
+                    .map(|at| position + at + close.len())
+                    .unwrap_or(bytes.len());
+                if offset < end {
+                    return false;
+                }
+                position = end;
+                break;
+            }
+        }
+        if position >= bytes.len() || bytes[position] != b'<' {
+            continue;
+        }
+        // Ordinary tag: everything up to `>` is attribute territory. An unclosed
+        // tag swallows the rest of the file, which keeps the answer conservative.
+        let end = lowercased[position..]
+            .find('>')
+            .map(|at| position + at + 1)
+            .unwrap_or(bytes.len());
+        if offset < end {
+            return false;
+        }
+        position = end;
+    }
+    false
+}
+
+fn validate_source(source: &VideoSourceDocument) -> Result<()> {
+    for (name, contents) in source.files() {
+        validate_source_file(name, contents)?;
     }
     match source.engine() {
         VideoEngine::Hyperframe => {

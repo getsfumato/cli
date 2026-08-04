@@ -1106,3 +1106,94 @@ async fn a_script_that_matches_the_request_reports_nothing() {
         film.warnings
     );
 }
+
+#[test]
+fn accepts_a_url_shown_as_on_screen_text() {
+    // The central case of a launch video: the film displays the product URL.
+    // Rejecting any `https://` anywhere failed the whole film for it.
+    let source = hyperframe_source(
+        r#"<div id="root" data-composition-id="root" data-start="0" data-width="1920" data-height="1080"><!-- compositions/scene-1.html --><h1>Visit https://sfumato.dev today</h1><script src="./vendor/gsap.min.js"></script><script>const tl = gsap.timeline({paused:true}); window.__timelines = { root: tl };</script></div>"#,
+    );
+
+    validate_source(&source).unwrap();
+}
+
+#[test]
+fn accepts_an_svg_namespace_whatever_its_case() {
+    // The namespace strip ran before the lowercase fold, so an uppercase `SVG`
+    // never matched and was then rejected.
+    let source = hyperframe_source(
+        r#"<div id="root" data-composition-id="root" data-start="0" data-width="1920" data-height="1080"><!-- compositions/scene-1.html --><svg xmlns="http://www.w3.org/2000/SVG"><circle r="4"/></svg><script src="./vendor/gsap.min.js"></script><script>const tl = gsap.timeline({paused:true}); window.__timelines = { root: tl };</script></div>"#,
+    );
+
+    validate_source(&source).unwrap();
+}
+
+#[test]
+fn still_rejects_a_remote_resource_in_an_attribute() {
+    // The screen must stay closed where it matters: an attribute fetches.
+    let source = hyperframe_source(
+        r#"<div id="root" data-composition-id="root" data-start="0" data-width="1920" data-height="1080"><!-- compositions/scene-1.html --><img src="https://evil.test/pixel.png"><script src="./vendor/gsap.min.js"></script><script>const tl = gsap.timeline({paused:true}); window.__timelines = { root: tl };</script></div>"#,
+    );
+
+    let error = validate_source(&source).unwrap_err();
+    assert!(error.to_string().contains("remote URL"), "{error}");
+}
+
+#[test]
+fn still_rejects_a_remote_url_inside_a_script_body() {
+    let source = hyperframe_source(
+        r#"<div id="root" data-composition-id="root" data-start="0" data-width="1920" data-height="1080"><!-- compositions/scene-1.html --><script src="./vendor/gsap.min.js"></script><script>const tl = gsap.timeline({paused:true}); window.__timelines = { root: tl }; const u = "https://evil.test/x";</script></div>"#,
+    );
+
+    assert!(validate_source(&source).is_err());
+}
+
+#[test]
+fn still_rejects_a_remote_url_in_a_stylesheet_file() {
+    // No tags means no text nodes: a URL in CSS is always a resource reference.
+    let source = VideoSourceDocument::new(
+        VideoEngine::Hyperframe,
+        BTreeMap::from([
+            ("meta.json".into(), r#"{"name":"lesson"}"#.into()),
+            ("index.html".into(), r#"<!DOCTYPE html><html><body><div id="root" data-composition-id="root" data-start="0" data-width="1920" data-height="1080"><!-- compositions/scene-1.html --><script src="./vendor/gsap.min.js"></script><script>const tl = gsap.timeline({paused:true}); window.__timelines = { root: tl };</script></div></body></html>"#.into()),
+            ("compositions/scene-1.html".into(), "<div id=\"scene-1\">Local</div>".into()),
+            (
+                "style.css".into(),
+                "body { background: url(https://evil.test/bg.png); }".into(),
+            ),
+        ]),
+    )
+    .unwrap();
+
+    let error = validate_source(&source).unwrap_err();
+    assert!(error.to_string().contains("style.css"), "{error}");
+}
+
+#[test]
+fn still_rejects_a_remote_url_inside_a_style_block() {
+    let source = hyperframe_source(
+        r#"<div id="root" data-composition-id="root" data-start="0" data-width="1920" data-height="1080"><!-- compositions/scene-1.html --><style>body{background:url(https://evil.test/b.png)}</style><script src="./vendor/gsap.min.js"></script><script>const tl = gsap.timeline({paused:true}); window.__timelines = { root: tl };</script></div>"#,
+    );
+
+    assert!(validate_source(&source).is_err());
+}
+
+#[test]
+fn the_rejection_names_the_file_it_found_the_problem_in() {
+    // The old message named only the pattern, over every file concatenated.
+    let source = VideoSourceDocument::new(
+        VideoEngine::Hyperframe,
+        BTreeMap::from([
+            ("meta.json".into(), r#"{"name":"lesson"}"#.into()),
+            ("index.html".into(), r#"<!DOCTYPE html><html><body><div id="root" data-composition-id="root" data-start="0" data-width="1920" data-height="1080"><!-- compositions/scene-1.html --><script src="./vendor/gsap.min.js"></script><script>const tl = gsap.timeline({paused:true}); window.__timelines = { root: tl };</script></div></body></html>"#.into()),
+            ("compositions/scene-1.html".into(), "<div id=\"scene-1\">Local</div>".into()),
+            ("app.js".into(), "fetch('/data.json')".into()),
+        ]),
+    )
+    .unwrap();
+
+    let error = validate_source(&source).unwrap_err().to_string();
+    assert!(error.contains("app.js"), "{error}");
+    assert!(error.contains("fetch("), "{error}");
+}
