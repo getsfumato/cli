@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 pub use sfumato_domain::PageDocument;
-use sfumato_domain::{ArtifactKind, ReviewableDocument};
+use sfumato_domain::{ArtifactKind, ReviewableDocument, strip_json_fence};
 use slug::slugify;
 
 use crate::{
@@ -955,16 +955,6 @@ fn parse_page_document(
         draft.javascript,
     )
     .map_err(review_error)
-}
-
-fn strip_json_fence(value: &str) -> &str {
-    let value = value
-        .strip_prefix("```json")
-        .or_else(|| value.strip_prefix("```JSON"))
-        .or_else(|| value.strip_prefix("```"))
-        .unwrap_or(value)
-        .trim();
-    value.strip_suffix("```").unwrap_or(value).trim()
 }
 
 fn validate_page(

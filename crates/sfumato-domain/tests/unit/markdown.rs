@@ -52,3 +52,42 @@ fn revisions_are_stable_and_content_addressed() {
     assert_eq!(revision_for("same"), revision_for("same"));
     assert_ne!(revision_for("same"), revision_for("different"));
 }
+
+#[test]
+fn an_unterminated_json_fence_still_loses_its_opening_fence() {
+    // The shape a response truncated at the token limit takes. One of three
+    // copies chained `strip_suffix` onto `unwrap_or(value)`, so a missing closing
+    // fence restored the original string with the fence still on it, and the
+    // parser reported `expected value at line 1 column 1`.
+    assert_eq!(strip_json_fence("```json\n{\"a\":1}"), "{\"a\":1}");
+    assert_eq!(strip_json_fence("```\n{\"a\":1}"), "{\"a\":1}");
+    assert_eq!(strip_json_fence("```JSON\n{\"a\":1}"), "{\"a\":1}");
+}
+
+#[test]
+fn a_closed_json_fence_is_stripped_from_both_ends() {
+    assert_eq!(strip_json_fence("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+    assert_eq!(strip_json_fence("```\n{\"a\":1}\n```"), "{\"a\":1}");
+}
+
+#[test]
+fn an_unfenced_response_is_returned_trimmed() {
+    assert_eq!(strip_json_fence("  {\"a\":1}\n"), "{\"a\":1}");
+    assert_eq!(strip_json_fence("{\"a\":1}"), "{\"a\":1}");
+}
+
+#[test]
+fn leading_whitespace_before_the_fence_does_not_defeat_stripping() {
+    // The copy in the domain did not trim before matching the prefix, so a
+    // response that opened with a newline kept its fence.
+    assert_eq!(
+        strip_json_fence("\n\n```json\n{\"a\":1}\n```\n"),
+        "{\"a\":1}"
+    );
+}
+
+#[test]
+fn a_json_string_containing_backticks_survives() {
+    let value = "{\"note\":\"use ``` to fence\"}";
+    assert_eq!(strip_json_fence(value), value);
+}

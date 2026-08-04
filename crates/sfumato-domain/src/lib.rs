@@ -24,6 +24,7 @@ pub use deck::{
 pub use document::{
     DOCUMENT_SCHEMA_VERSION, SectionDocument, SectionElement, SectionId, SectionedDocument,
 };
+pub use markdown::strip_json_fence;
 pub use page::{PAGE_SCHEMA_VERSION, PageDocument};
 pub use primitives::{
     ArtifactId, Capability, CapabilityParseError, JobId, ModelProfileName, ProjectName, RevisionId,

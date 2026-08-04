@@ -9,11 +9,12 @@ use std::{
 use serde::{Deserialize, Deserializer, Serialize};
 use sfumato_domain::{
     ArtifactKind, ReviewableDocument, VideoEngine, VideoPlanDocument, VideoScene,
-    VideoSourceDocument, VideoWorkflow,
+    VideoSourceDocument, VideoWorkflow, strip_json_fence,
 };
 use sha2::{Digest, Sha256};
 use slug::slugify;
 
+use crate::resources::excerpt;
 use crate::{
     artifacts::{
         ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
@@ -529,14 +530,6 @@ fn catalog_violations(
 /// reported is recognisable and never repeated after a reviewer patch.
 fn catalog_warning(violation: &VideoCatalogViolation) -> String {
     format!("Video plan catalog: {violation}")
-}
-
-/// Truncates text destined for a prompt.
-fn excerpt(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_owned();
-    }
-    value.chars().take(max_chars).collect()
 }
 
 fn hash_text(value: &str) -> String {
@@ -3023,18 +3016,6 @@ fn emit_stage(
 fn deduplicate_prompts(prompts: &mut Vec<PromptProvenance>) {
     let mut seen = BTreeSet::new();
     prompts.retain(|prompt| seen.insert((prompt.id, prompt.content_hash.clone())));
-}
-
-fn strip_json_fence(value: &str) -> &str {
-    value
-        .trim()
-        .strip_prefix("```json")
-        .or_else(|| value.trim().strip_prefix("```JSON"))
-        .or_else(|| value.trim().strip_prefix("```"))
-        .unwrap_or(value.trim())
-        .strip_suffix("```")
-        .unwrap_or(value.trim())
-        .trim()
 }
 
 fn review_error(error: impl std::fmt::Display) -> SfumatoError {

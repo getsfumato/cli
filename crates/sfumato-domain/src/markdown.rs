@@ -194,6 +194,29 @@ pub(crate) fn validate_node_id(id: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Removes a fenced-code wrapper from a model response that should be JSON.
+///
+/// Models wrap JSON in ```` ```json ```` even when told not to. Stripping is
+/// tolerant on purpose: the prefix and the suffix are handled independently, so
+/// an **unterminated** fence — what a response truncated at the token limit looks
+/// like — still loses its opening fence and reaches the parser as JSON.
+///
+/// One implementation on purpose. There were three, and the one that chained
+/// `strip_suffix` onto `unwrap_or(value)` restored the original string, fence
+/// included, whenever the closing fence was absent. That turned a recoverable
+/// truncated response into `expected value at line 1 column 1`, which points at
+/// JSON syntax when the problem is a leftover fence.
+pub fn strip_json_fence(value: &str) -> &str {
+    let value = value.trim();
+    let value = value
+        .strip_prefix("```json")
+        .or_else(|| value.strip_prefix("```JSON"))
+        .or_else(|| value.strip_prefix("```"))
+        .unwrap_or(value)
+        .trim();
+    value.strip_suffix("```").unwrap_or(value).trim()
+}
+
 #[cfg(test)]
 #[path = "../tests/unit/markdown.rs"]
 mod tests;

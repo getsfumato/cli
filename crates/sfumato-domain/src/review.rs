@@ -1,3 +1,4 @@
+use crate::markdown::strip_json_fence;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -212,15 +213,6 @@ pub fn validate_rfc6902_patch(patch: &Patch) -> Result<(), ReviewError> {
         });
     }
     Ok(())
-}
-
-fn strip_json_fence(value: &str) -> &str {
-    let value = value
-        .strip_prefix("```json")
-        .or_else(|| value.strip_prefix("```JSON"))
-        .or_else(|| value.strip_prefix("```"))
-        .unwrap_or(value);
-    value.strip_suffix("```").unwrap_or(value).trim()
 }
 
 #[cfg(test)]
