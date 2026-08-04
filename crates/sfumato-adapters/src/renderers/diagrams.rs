@@ -123,11 +123,18 @@ fn mermaid_cli_args(
     args
 }
 
+/// Opt-out for environments where the Chromium sandbox cannot start.
+///
+/// The usual case is a container running as root, where Chrome refuses to sandbox
+/// and exits. That is a property of the environment, so it is named by the
+/// environment rather than assumed for everyone.
+const DISABLE_SANDBOX_ENV: &str = "SFUMATO_DISABLE_BROWSER_SANDBOX";
+
 #[derive(Serialize)]
 struct PuppeteerConfig<'a> {
     #[serde(rename = "executablePath")]
     executable_path: &'a Path,
-    args: [&'static str; 1],
+    args: Vec<&'static str>,
 }
 
 fn write_puppeteer_config(output_path: &Path) -> Result<Option<PathBuf>> {
@@ -135,14 +142,33 @@ fn write_puppeteer_config(output_path: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     };
     let path = output_path.with_extension("puppeteer.json");
+    // The sandbox stays on. What `mmdc` loads is Mermaid source written by a model
+    // and never reviewed by the user, so this is the layer that keeps a renderer
+    // bug in the page from reaching the rest of the machine. It was disabled
+    // unconditionally and without explanation; rendering was measured to work with
+    // it enabled, so there is nothing to trade away by default. The other two
+    // browser launch sites already leave it alone.
     let rendered = serde_json::to_string(&PuppeteerConfig {
         executable_path: &browser_path,
-        args: ["--no-sandbox"],
+        args: sandbox_args(std::env::var(DISABLE_SANDBOX_ENV).ok().as_deref()),
     })
     .context("Could not render Puppeteer config")?;
     std::fs::write(&path, rendered)
         .with_context(|| format!("Could not write {}", path.display()))?;
     Ok(Some(path))
+}
+
+/// Returns the browser arguments, which are empty unless the sandbox is opted out.
+///
+/// Takes the setting rather than reading the environment so the decision can be
+/// tested without mutating process-global state.
+fn sandbox_args(opt_out: Option<&str>) -> Vec<&'static str> {
+    let disabled = opt_out.is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE"));
+    if disabled {
+        vec!["--no-sandbox"]
+    } else {
+        Vec::new()
+    }
 }
 
 fn write_mermaid_config(output_path: &Path, config: &MermaidThemeConfig) -> Result<PathBuf> {
