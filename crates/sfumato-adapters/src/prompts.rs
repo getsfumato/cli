@@ -13,7 +13,7 @@ use serde::Deserialize;
 use sfumato_core::prompts::{
     PromptCatalog, PromptError, PromptId, PromptManager, PromptOrigin, PromptOverrideScope,
     PromptProvenance, PromptRenderRequest, PromptTemplateSource, PromptTemplateSummary,
-    RenderedPrompt,
+    PromptValidation, RenderedPrompt, UnreferencedOverride,
 };
 use sha2::{Digest, Sha256};
 
@@ -153,25 +153,41 @@ impl LayeredPromptCatalog {
     }
 
     fn load_templates(&self) -> Result<BTreeMap<PathBuf, TemplateSource>, PromptError> {
+        Ok(self.load_templates_reporting_strays()?.0)
+    }
+
+    /// Loads every layer, also returning override files nothing will reference.
+    ///
+    /// The walk already decides which files it will not use; returning them is
+    /// what turns a silently ignored override into something `validate` can name.
+    fn load_templates_reporting_strays(
+        &self,
+    ) -> Result<(BTreeMap<PathBuf, TemplateSource>, Vec<UnreferencedOverride>), PromptError> {
         let mut templates = BTreeMap::new();
+        let mut strays = Vec::new();
         load_bundled(&mut templates)?;
         if let Some(root) = &self.user_root {
-            load_override_root(root, false, &mut templates)?;
+            load_override_root(root, false, &mut templates, &mut strays)?;
         }
         if let Some(project) = &self.project_root {
             load_override_root(
                 &project.join(".sfumato").join("prompts"),
                 true,
                 &mut templates,
+                &mut strays,
             )?;
         }
-        Ok(templates)
+        Ok((templates, strays))
     }
 
     fn environment(
         &self,
     ) -> Result<(Environment<'static>, BTreeMap<PathBuf, TemplateSource>), PromptError> {
-        let sources = self.load_templates()?;
+        Ok((self.environment_with_strays()?.0, self.load_templates()?))
+    }
+
+    fn environment_with_strays(&self) -> Result<LoadedTemplates, PromptError> {
+        let (sources, strays) = self.load_templates_reporting_strays()?;
         let mut environment = Environment::new();
         environment.set_undefined_behavior(UndefinedBehavior::Strict);
         environment.set_auto_escape_callback(|_| AutoEscape::None);
@@ -184,7 +200,7 @@ impl LayeredPromptCatalog {
                     message: error.to_string(),
                 })?;
         }
-        Ok((environment, sources))
+        Ok((environment, sources, strays))
     }
 }
 
@@ -226,8 +242,8 @@ impl PromptCatalog for LayeredPromptCatalog {
         })
     }
 
-    fn validate(&self) -> Result<Vec<PromptProvenance>, PromptError> {
-        let (environment, sources) = self.environment()?;
+    fn validate(&self) -> Result<PromptValidation, PromptError> {
+        let (environment, sources, unreferenced) = self.environment_with_strays()?;
         let manifest = manifest()?;
         let mut resolved = Vec::new();
         for entry in manifest.prompts {
@@ -242,7 +258,10 @@ impl PromptCatalog for LayeredPromptCatalog {
             let source = sources.get(path).ok_or(PromptError::Missing(id))?;
             resolved.push(provenance(id, manifest.schema_version, source));
         }
-        Ok(resolved)
+        Ok(PromptValidation {
+            resolved,
+            unreferenced,
+        })
     }
 }
 
@@ -291,10 +310,17 @@ impl PromptManager for LayeredPromptManager {
         LayeredPromptCatalog::for_project(project_root)?.customize(id, scope)
     }
 
-    fn validate(&self, project_root: &Path) -> Result<Vec<PromptProvenance>, PromptError> {
+    fn validate(&self, project_root: &Path) -> Result<PromptValidation, PromptError> {
         LayeredPromptCatalog::for_project(project_root)?.validate()
     }
 }
+
+/// A compiled environment, its sources, and the override files nothing uses.
+type LoadedTemplates = (
+    Environment<'static>,
+    BTreeMap<PathBuf, TemplateSource>,
+    Vec<UnreferencedOverride>,
+);
 
 #[derive(serde::Serialize)]
 struct ValueContext(serde_json::Map<String, serde_json::Value>);
@@ -363,11 +389,12 @@ fn load_override_root(
     root: &Path,
     project: bool,
     templates: &mut BTreeMap<PathBuf, TemplateSource>,
+    strays: &mut Vec<UnreferencedOverride>,
 ) -> Result<(), PromptError> {
     if !root.exists() {
         return Ok(());
     }
-    collect_override_files(root, root, project, templates)
+    collect_override_files(root, root, project, templates, strays)
 }
 
 fn collect_override_files(
@@ -375,6 +402,7 @@ fn collect_override_files(
     directory: &Path,
     project: bool,
     templates: &mut BTreeMap<PathBuf, TemplateSource>,
+    strays: &mut Vec<UnreferencedOverride>,
 ) -> Result<(), PromptError> {
     for entry in fs::read_dir(directory).map_err(|error| PromptError::Load {
         id: PromptId::SlidesDraftSystem,
@@ -392,7 +420,7 @@ fn collect_override_files(
             return Err(PromptError::UnsafePath(entry.path().display().to_string()));
         }
         if file_type.is_dir() {
-            collect_override_files(root, &entry.path(), project, templates)?;
+            collect_override_files(root, &entry.path(), project, templates, strays)?;
             continue;
         }
         let path = entry
@@ -402,7 +430,20 @@ fn collect_override_files(
             .to_path_buf();
         safe_relative(&path)?;
         if path.extension().and_then(|value| value.to_str()) != Some("j2") {
+            strays.push(UnreferencedOverride {
+                path: entry.path(),
+                expected: expected_manifest_path(&path),
+            });
             continue;
+        }
+        // A `.j2` at a path the manifest does not list compiles into the
+        // environment and is then never asked for, which is the quieter half of
+        // the same problem.
+        if prompt_id_for_path(&path).is_none() {
+            strays.push(UnreferencedOverride {
+                path: entry.path(),
+                expected: expected_manifest_path(&path),
+            });
         }
         let bytes = entry
             .metadata()
@@ -452,6 +493,29 @@ fn safe_relative(path: &Path) -> Result<&Path, PromptError> {
 fn prompt_name(path: &Path) -> Result<String, PromptError> {
     safe_relative(path)?;
     Ok(path.to_string_lossy().replace('\\', "/"))
+}
+
+/// Guesses the manifest path a stray override file was meant to be.
+///
+/// Matches on the file name with any `.j2` folded away, which covers the two
+/// mistakes that actually happen: the extension left off, and the directory
+/// pluralised (`videos/` for `video/`). Only an unambiguous match is offered, so
+/// a suggestion is never a guess between two templates.
+fn expected_manifest_path(relative: &Path) -> Option<PathBuf> {
+    let stem = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.trim_end_matches(".j2").to_ascii_lowercase())
+    };
+    let wanted = stem(relative)?;
+    let mut matches = manifest()
+        .ok()?
+        .prompts
+        .into_iter()
+        .filter(|entry| stem(Path::new(&entry.path)).as_deref() == Some(wanted.as_str()))
+        .map(|entry| entry.path);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 fn prompt_id_for_path(path: &Path) -> Option<PromptId> {

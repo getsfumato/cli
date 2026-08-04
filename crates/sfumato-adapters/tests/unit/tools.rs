@@ -5,7 +5,7 @@ use sfumato_core::{
     config::ProjectSecurityConfig,
     errors::{OperationStage, SfumatoResult},
     operation::OperationContext,
-    prompts::{PromptError, PromptOrigin, PromptProvenance, RenderedPrompt},
+    prompts::{PromptError, PromptOrigin, PromptProvenance, PromptValidation, RenderedPrompt},
     providers::{
         ImageGenerationProvider, ImageGenerationResponse, VideoGenerationProvider,
         VideoGenerationRequest, VideoGenerationResponse,
@@ -84,8 +84,8 @@ impl PromptCatalog for TestPromptCatalog {
         })
     }
 
-    fn validate(&self) -> std::result::Result<Vec<PromptProvenance>, PromptError> {
-        Ok(Vec::new())
+    fn validate(&self) -> std::result::Result<PromptValidation, PromptError> {
+        Ok(PromptValidation::default())
     }
 }
 

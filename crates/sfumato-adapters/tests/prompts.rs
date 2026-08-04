@@ -845,3 +845,80 @@ fn a_first_attempt_carries_no_corrective_block() {
 
     assert!(!rendered.text.contains("Corrective retry"));
 }
+
+#[test]
+fn validate_reports_an_override_placed_at_the_wrong_path() {
+    // Someone edits a prompt by hand, generation is unchanged, and the command
+    // whose job is to check prompts used to answer "Validated 69 prompt
+    // templates." with nothing else.
+    let user = tempfile::tempdir().expect("user override root");
+    fs::create_dir_all(user.path().join("videos")).unwrap();
+    fs::write(user.path().join("videos/plan.system.md"), "{{ roto").unwrap();
+    let catalog = LayeredPromptCatalog::new(None, Some(user.path().to_path_buf()));
+
+    let validation = catalog
+        .validate()
+        .expect("bundled templates still validate");
+
+    assert_eq!(validation.unreferenced.len(), 1);
+    let stray = &validation.unreferenced[0];
+    assert!(stray.path.ends_with("videos/plan.system.md"));
+    assert_eq!(
+        stray.expected.as_deref(),
+        Some(std::path::Path::new("video/plan.system.md.j2"))
+    );
+}
+
+#[test]
+fn validate_reports_a_j2_override_the_manifest_does_not_list() {
+    // The quieter half: a `.j2` at an unlisted path compiles into the
+    // environment and is then never asked for.
+    let user = tempfile::tempdir().expect("user override root");
+    fs::create_dir_all(user.path().join("videos")).unwrap();
+    fs::write(user.path().join("videos/plan.system.md.j2"), "hello").unwrap();
+    let catalog = LayeredPromptCatalog::new(None, Some(user.path().to_path_buf()));
+
+    let validation = catalog
+        .validate()
+        .expect("bundled templates still validate");
+
+    assert_eq!(validation.unreferenced.len(), 1);
+    assert_eq!(
+        validation.unreferenced[0].expected.as_deref(),
+        Some(std::path::Path::new("video/plan.system.md.j2"))
+    );
+}
+
+#[test]
+fn validate_stays_quiet_for_an_override_at_the_path_customize_writes() {
+    let user = tempfile::tempdir().expect("user override root");
+    let catalog = LayeredPromptCatalog::new(None, Some(user.path().to_path_buf()));
+    let written = catalog
+        .customize(PromptId::VideoPlanSystem, PromptOverrideScope::User)
+        .expect("customize writes an override");
+
+    let validation = catalog.validate().expect("the override validates");
+
+    assert!(
+        validation.unreferenced.is_empty(),
+        "a correct override must not warn: {:?}",
+        validation.unreferenced
+    );
+    assert!(written.ends_with("video/plan.system.md.j2"));
+}
+
+#[test]
+fn an_unrecognisable_stray_is_reported_without_a_guess() {
+    // A suggestion that is wrong is worse than none, so only an unambiguous
+    // name match offers one.
+    let user = tempfile::tempdir().expect("user override root");
+    fs::write(user.path().join("notes.txt"), "scratch").unwrap();
+    let catalog = LayeredPromptCatalog::new(None, Some(user.path().to_path_buf()));
+
+    let validation = catalog
+        .validate()
+        .expect("bundled templates still validate");
+
+    assert_eq!(validation.unreferenced.len(), 1);
+    assert_eq!(validation.unreferenced[0].expected, None);
+}

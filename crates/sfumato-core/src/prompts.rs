@@ -456,13 +456,35 @@ pub enum PromptError {
     NonObjectContext,
 }
 
+/// An override file that no manifest entry references.
+///
+/// A hand-placed prompt override at the wrong path, or without the `.j2`
+/// extension, is loaded into the environment but never used: the generation runs
+/// with the bundled template and nothing says the edit had no effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnreferencedOverride {
+    /// Absolute path of the file that is being ignored.
+    pub path: PathBuf,
+    /// The manifest path it was most likely meant to be, when one is evident.
+    pub expected: Option<PathBuf>,
+}
+
+/// Outcome of validating every prompt resolved for one project.
+#[derive(Clone, Debug, Default)]
+pub struct PromptValidation {
+    /// Templates that resolved and compiled.
+    pub resolved: Vec<PromptProvenance>,
+    /// Files under an override root that are being silently ignored.
+    pub unreferenced: Vec<UnreferencedOverride>,
+}
+
 /// Port for layered prompt resolution and strict rendering.
 pub trait PromptCatalog: Send + Sync {
     /// Resolves and renders one prompt.
     fn render(&self, request: PromptRenderRequest) -> Result<RenderedPrompt, PromptError>;
 
     /// Validates that every required template resolves and compiles.
-    fn validate(&self) -> Result<Vec<PromptProvenance>, PromptError>;
+    fn validate(&self) -> Result<PromptValidation, PromptError>;
 }
 
 /// Port for listing, inspecting, validating, and customizing prompt templates.
@@ -486,7 +508,7 @@ pub trait PromptManager: Send + Sync {
     ) -> Result<PathBuf, PromptError>;
 
     /// Validates every template resolved for one project root.
-    fn validate(&self, project_root: &Path) -> Result<Vec<PromptProvenance>, PromptError>;
+    fn validate(&self, project_root: &Path) -> Result<PromptValidation, PromptError>;
 }
 
 /// Prompt identifiers that define one text-model request.

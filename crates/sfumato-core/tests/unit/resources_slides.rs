@@ -2,7 +2,7 @@ use super::*;
 
 use crate::{
     config::GlobalConfig,
-    prompts::{PromptError, PromptOrigin, RenderedPrompt},
+    prompts::{PromptError, PromptOrigin, PromptValidation, RenderedPrompt},
     providers::TextGenerationLimitError,
     sources::SourceDocument,
     themes::{THEME_SCHEMA_VERSION, ThemeAdapters, ThemeManifest},
@@ -53,8 +53,8 @@ impl PromptCatalog for StaticPromptCatalog {
         })
     }
 
-    fn validate(&self) -> std::result::Result<Vec<PromptProvenance>, PromptError> {
-        Ok(Vec::new())
+    fn validate(&self) -> std::result::Result<PromptValidation, PromptError> {
+        Ok(PromptValidation::default())
     }
 }
 

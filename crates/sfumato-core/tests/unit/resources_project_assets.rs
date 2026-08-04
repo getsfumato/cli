@@ -11,7 +11,10 @@ use crate::{
         AddProjectAssetRequest, ProjectAsset, ProjectAssetCatalog, ProjectAssetMetadata,
         ProjectAssetVariant, UpdateProjectAssetRequest,
     },
-    prompts::{PromptError, PromptOrigin, PromptProvenance, PromptRenderRequest, RenderedPrompt},
+    prompts::{
+        PromptError, PromptOrigin, PromptProvenance, PromptRenderRequest, PromptValidation,
+        RenderedPrompt,
+    },
     providers::{ImageGenerationProvider, ImageGenerationResponse},
     themes::{ThemeAdapters, ThemeManifest, ThemeTokens},
 };
@@ -96,8 +99,8 @@ impl PromptCatalog for FixturePrompts {
         })
     }
 
-    fn validate(&self) -> std::result::Result<Vec<PromptProvenance>, PromptError> {
-        Ok(Vec::new())
+    fn validate(&self) -> std::result::Result<PromptValidation, PromptError> {
+        Ok(PromptValidation::default())
     }
 }
 
