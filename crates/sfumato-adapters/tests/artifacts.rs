@@ -329,3 +329,79 @@ fn sweeping_leaves_committed_revisions_untouched() {
     assert!(committed.current_path.is_file());
     drop(next);
 }
+
+/// Reads the `parent_revision` recorded in a committed revision's manifest.
+fn recorded_parent(root: &std::path::Path, revision: &str) -> Option<String> {
+    let manifest = fs::read_to_string(root.join(format!(
+        "University/resources/slides/fourier-series/revisions/{revision}/manifest.json"
+    )))
+    .unwrap();
+    serde_json::from_str::<serde_json::Value>(&manifest).unwrap()["parent_revision"]
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+#[test]
+fn a_regeneration_records_the_revision_it_replaced() {
+    // `parent_revision` was initialised to `None` and never assigned, so the
+    // revision chain existed on disk while the field documenting it stayed empty,
+    // leaving no diff and no rollback between revisions.
+    let temp = tempfile::tempdir().unwrap();
+    let store = FilesystemArtifactStore::new(temp.path().to_path_buf());
+    let mut revisions = Vec::new();
+
+    for index in 0..3 {
+        let transaction = store
+            .begin("University", ArtifactResourceKind::Slides)
+            .unwrap();
+        revisions.push(transaction.revision_id().as_str().to_owned());
+        fs::write(
+            transaction.staging_root().join("deck.md"),
+            format!("# Fourier {index}"),
+        )
+        .unwrap();
+        let manifest = manifest(
+            transaction.as_ref(),
+            vec![ResourceArtifactFile {
+                path: PathBuf::from("deck.md"),
+                kind: ArtifactKind::Markdown,
+                media_type: None,
+            }],
+        );
+        transaction.commit(manifest).unwrap();
+    }
+
+    // The first revision has no parent; each later one names its predecessor.
+    assert_eq!(recorded_parent(temp.path(), &revisions[0]), None);
+    assert_eq!(
+        recorded_parent(temp.path(), &revisions[1]).as_deref(),
+        Some(revisions[0].as_str())
+    );
+    assert_eq!(
+        recorded_parent(temp.path(), &revisions[2]).as_deref(),
+        Some(revisions[1].as_str())
+    );
+}
+
+#[test]
+fn a_first_revision_records_no_parent() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FilesystemArtifactStore::new(temp.path().to_path_buf());
+    let transaction = store
+        .begin("University", ArtifactResourceKind::Slides)
+        .unwrap();
+    let revision = transaction.revision_id().as_str().to_owned();
+    fs::write(transaction.staging_root().join("deck.md"), "# Fourier").unwrap();
+    let manifest = manifest(
+        transaction.as_ref(),
+        vec![ResourceArtifactFile {
+            path: PathBuf::from("deck.md"),
+            kind: ArtifactKind::Markdown,
+            media_type: None,
+        }],
+    );
+
+    transaction.commit(manifest).unwrap();
+
+    assert_eq!(recorded_parent(temp.path(), &revision), None);
+}

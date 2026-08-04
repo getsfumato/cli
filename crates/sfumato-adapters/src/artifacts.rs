@@ -9,7 +9,7 @@ use std::{
 };
 
 use fs2::FileExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sfumato_core::artifacts::{
     ArtifactId, ArtifactResourceKind, ArtifactStore, ArtifactStoreError, ArtifactTransaction,
     CommittedArtifactRevision, JobId, ProjectName, ResourceArtifactManifest, RevisionId,
@@ -162,7 +162,7 @@ impl ArtifactTransaction for FilesystemArtifactTransaction {
 
     fn commit(
         mut self: Box<Self>,
-        manifest: ResourceArtifactManifest,
+        mut manifest: ResourceArtifactManifest,
     ) -> Result<CommittedArtifactRevision, ArtifactStoreError> {
         validate_manifest_identity(&self, &manifest)?;
         ArtifactId::new(&manifest.resource_id)
@@ -186,13 +186,20 @@ impl ArtifactTransaction for FilesystemArtifactTransaction {
             reject_symlink_components(&self.staging_root, relative)?;
         }
 
-        let manifest_path = self.staging_root.join("manifest.json");
-        write_json_atomic(&manifest_path, &manifest)?;
         let resource_root = self
             .project_root
             .join("resources")
             .join(self.kind.as_str())
             .join(&manifest.resource_id);
+        // Resolved here rather than in `begin`, because the resource is
+        // identified by its title slug and that is not known until the caller
+        // hands over the manifest. `parent_revision` was initialised to `None`
+        // and never assigned, so every regeneration recorded a null parent while
+        // the revision chain sat on disk beside it — the field that documents the
+        // lineage was the one part that did not.
+        manifest.parent_revision = read_current_revision(&resource_root);
+        let manifest_path = self.staging_root.join("manifest.json");
+        write_json_atomic(&manifest_path, &manifest)?;
         let revisions_root = resource_root.join("revisions");
         fs::create_dir_all(&revisions_root).map_err(persistence)?;
         let committed_root = revisions_root.join(self.revision_id.as_str());
@@ -239,11 +246,24 @@ impl Drop for FilesystemArtifactTransaction {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct CurrentRevision {
     schema_version: u32,
     revision_id: RevisionId,
     manifest: PathBuf,
+}
+
+/// Reads the revision a resource currently points at, if it has one.
+///
+/// Best-effort: a resource being committed for the first time has no
+/// `current.json`, and an unreadable or malformed one means the lineage is
+/// unknown rather than that the commit should fail. Recording `None` in that case
+/// is the same thing the field already meant.
+fn read_current_revision(resource_root: &Path) -> Option<RevisionId> {
+    let current = fs::read_to_string(resource_root.join("current.json")).ok()?;
+    serde_json::from_str::<CurrentRevision>(&current)
+        .ok()
+        .map(|current| current.revision_id)
 }
 
 fn validate_manifest_identity(
