@@ -980,6 +980,9 @@ impl crate::filesystem::WorkspaceFileSystem for NarrationWorkspace {
     fn is_file(&self, _: &Path) -> bool {
         false
     }
+    fn is_dir(&self, _: &Path) -> bool {
+        false
+    }
     fn read_dir(
         &self,
         _: &Path,

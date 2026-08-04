@@ -76,25 +76,38 @@ impl RunnableCommand for Commands {
 impl RunnableCommand for VideoCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         match self {
+            // Both arms emit the same `{"error":{...}}` object the generate and
+            // edit commands do. They used to propagate with `?`, leaving a
+            // `--json` caller in the same command group with nothing parseable on
+            // stdout and only prose on stderr.
             Self::Preview(args) => {
-                let source = application.preview_video_review(PreviewVideoReviewCommand {
+                let json = args.json;
+                match application.preview_video_review(PreviewVideoReviewCommand {
                     config: ConfigOverrides {
                         project: args.project,
                         ..ConfigOverrides::default()
                     },
                     review_id: args.review_id,
-                })?;
-                if args.json {
-                    println!("{}", serde_json::json!({"source": source}));
-                } else {
-                    println!(
-                        "Review source: {}\nRun the managed Hyperframes preview from this directory, then approve the same review ID.",
-                        source.display()
-                    );
+                }) {
+                    Ok(source) if json => {
+                        println!("{}", serde_json::json!({"source": source}));
+                    }
+                    Ok(source) => {
+                        println!(
+                            "Review source: {}\nRun the managed Hyperframes preview from this directory, then approve the same review ID.",
+                            source.display()
+                        );
+                    }
+                    Err(error) if json => {
+                        println!("{}", json_typed_error(&error));
+                        return Err(error.into());
+                    }
+                    Err(error) => return Err(error.into()),
                 }
             }
             Self::Approve(args) => {
-                let result = application
+                let json = args.json;
+                match application
                     .approve_video_review(ApproveVideoReviewCommand {
                         operation: interruptible(),
                         config: ConfigOverrides {
@@ -104,8 +117,15 @@ impl RunnableCommand for VideoCommands {
                         },
                         review_id: args.review_id,
                     })
-                    .await?;
-                render_video_result(result, args.json, false)?;
+                    .await
+                {
+                    Ok(result) => render_video_result(result, json, false)?,
+                    Err(error) if json => {
+                        println!("{}", json_typed_error(&error));
+                        return Err(error.into());
+                    }
+                    Err(error) => return Err(error.into()),
+                }
             }
         }
         Ok(())
@@ -519,14 +539,27 @@ impl PromptProjectArgs {
     }
 
     fn validate(self, application: &SfumatoApplication) -> Result<()> {
-        let resolved = application.validate_prompts(self.project)?;
-        println!("Validated {} prompt templates.", resolved.len());
-        for prompt in resolved {
+        let validation = application.validate_prompts(self.project)?;
+        println!("Validated {} prompt templates.", validation.resolved.len());
+        for prompt in validation.resolved {
             println!(
                 "{}\t{}\t{}",
                 prompt.id,
                 prompt_origin_label(&prompt.origin),
                 &prompt.content_hash[..12]
+            );
+        }
+        // Reporting success while an override sits unused is the whole defect:
+        // the edit changes nothing and the command that checks prompts says the
+        // setup is fine.
+        for stray in &validation.unreferenced {
+            eprintln!(
+                "warning: {} is not a prompt template and is being ignored.{}",
+                stray.path.display(),
+                match &stray.expected {
+                    Some(expected) => format!(" Did you mean {}?", expected.display()),
+                    None => String::new(),
+                }
             );
         }
         Ok(())
@@ -1631,8 +1664,16 @@ fn render_document_result(result: GenerateDocumentResult, json: bool, dry_run: b
 fn json_operation_error(error: &anyhow::Error) -> serde_json::Value {
     error
         .downcast_ref::<sfumato_core::errors::SfumatoError>()
-        .map(|error| serde_json::json!({ "error": error }))
+        .map(json_typed_error)
         .unwrap_or_else(|| serde_json::json!({ "error": { "message": format!("{error:#}") } }))
+}
+
+/// Renders the `--json` error object for an already-typed failure.
+///
+/// The video review commands return `SfumatoError` directly rather than through
+/// `anyhow`, and they emit the same object as every other `--json` command.
+fn json_typed_error(error: &sfumato_core::errors::SfumatoError) -> serde_json::Value {
+    serde_json::json!({ "error": error })
 }
 
 pub(crate) async fn execute_slides(

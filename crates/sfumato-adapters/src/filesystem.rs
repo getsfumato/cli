@@ -84,6 +84,10 @@ impl WorkspaceFileSystem for LocalWorkspaceFileSystem {
         path.is_file()
     }
 
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
+    }
+
     fn read_dir(&self, path: &Path) -> SfumatoResult<Vec<WorkspaceEntry>> {
         workspace_result((|| {
             let mut entries = Vec::new();

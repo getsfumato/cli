@@ -78,6 +78,9 @@ impl WorkspaceFileSystem for PublicationWorkspace {
     fn is_file(&self, _: &Path) -> bool {
         unreachable!()
     }
+    fn is_dir(&self, _: &Path) -> bool {
+        unreachable!()
+    }
     fn read_dir(&self, _: &Path) -> crate::errors::SfumatoResult<Vec<WorkspaceEntry>> {
         unreachable!()
     }

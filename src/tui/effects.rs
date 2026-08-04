@@ -387,8 +387,23 @@ pub(super) fn execute_operation(
             Ok(format!("Created prompt override at {}", path.display()))
         }
         OperationKind::PromptValidate => {
-            let prompts = application.validate_prompts(None)?;
-            Ok(format!("Validated {} prompt templates", prompts.len()))
+            let validation = application.validate_prompts(None)?;
+            let mut summary = format!("Validated {} prompt templates", validation.resolved.len());
+            // The TUI has no stderr, so an ignored override has to reach the
+            // result line or it stays as invisible here as it was in the CLI.
+            if !validation.unreferenced.is_empty() {
+                summary.push_str(&format!(
+                    "; {} ignored override file(s): {}",
+                    validation.unreferenced.len(),
+                    validation
+                        .unreferenced
+                        .iter()
+                        .map(|stray| stray.path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            Ok(summary)
         }
         OperationKind::ConfigSet => {
             let key = required_field(form, "Key")?;

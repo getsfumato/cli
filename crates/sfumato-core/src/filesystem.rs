@@ -37,6 +37,8 @@ pub trait WorkspaceFileSystem: Send + Sync {
     fn copy_file(&self, source: &Path, destination: &Path) -> SfumatoResult<()>;
     /// Returns whether a path is a regular file.
     fn is_file(&self, path: &Path) -> bool;
+    /// Returns whether a path is a directory.
+    fn is_dir(&self, path: &Path) -> bool;
     /// Lists direct children and rejects symbolic links.
     fn read_dir(&self, path: &Path) -> SfumatoResult<Vec<WorkspaceEntry>>;
     /// Recursively copies a directory while excluding files by basename.

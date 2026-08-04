@@ -32,8 +32,8 @@ use crate::{
     },
     projects::{ProjectRemoved, ProjectService, ProjectSummary},
     prompts::{
-        PromptCatalog, PromptError, PromptId, PromptManager, PromptOverrideScope, PromptProvenance,
-        PromptTemplateSource, PromptTemplateSummary,
+        PromptCatalog, PromptError, PromptId, PromptManager, PromptOverrideScope,
+        PromptTemplateSource, PromptTemplateSummary, PromptValidation,
     },
     providers::{
         ConnectorCapabilities, ConnectorIntrospection, ConnectorModelSummary, ConnectorStatus,
@@ -634,16 +634,26 @@ impl SfumatoApplication {
             return Err(SfumatoError::validation("Invalid video review identifier"));
         }
         let config = self.config.resolve(command.config)?;
-        let root = self
+        let session = self
             .artifacts
             .project_root(&config.project_name)?
             .join("review-sessions")
-            .join(command.review_id)
-            .join("source");
+            .join(&command.review_id);
+        let root = session.join("source");
+        // Distinguished on purpose: the old message said the session was missing
+        // its source whether or not the session existed, which sent the reader
+        // looking for a broken session instead of a wrong identifier.
+        if !self.workspace.is_dir(&session) {
+            return Err(SfumatoError::not_found(format_args!(
+                "Video review session '{}' was not found",
+                command.review_id
+            )));
+        }
         if !self.workspace.is_file(&root.join("index.html")) {
-            return Err(SfumatoError::validation(
-                "Video review session is missing its Hyperframe source",
-            ));
+            return Err(SfumatoError::validation(format_args!(
+                "Video review session '{}' is missing its Hyperframe source",
+                command.review_id
+            )));
         }
         Ok(root)
     }
@@ -1351,10 +1361,7 @@ impl SfumatoApplication {
     }
 
     /// Validates every prompt resolved for the active or selected project.
-    pub fn validate_prompts(
-        &self,
-        project: Option<String>,
-    ) -> SfumatoResult<Vec<PromptProvenance>> {
+    pub fn validate_prompts(&self, project: Option<String>) -> SfumatoResult<PromptValidation> {
         let root = self.prompt_project_root(project)?;
         self.prompt_manager
             .validate(&root)

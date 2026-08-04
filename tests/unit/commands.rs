@@ -119,3 +119,45 @@ fn strip_ansi(value: &str) -> String {
     }
     output
 }
+
+#[test]
+fn a_typed_error_serializes_the_same_object_as_an_anyhow_one() {
+    // `video preview` and `video approve` return `SfumatoError` directly and used
+    // to propagate with `?`, so a `--json` caller got nothing parseable while the
+    // other five commands in the same group emitted this object.
+    let error = sfumato_core::errors::SfumatoError::not_found("session 'nope' was not found");
+
+    let direct = json_typed_error(&error);
+    let through_anyhow = json_operation_error(&anyhow::Error::new(error));
+
+    assert_eq!(direct, through_anyhow);
+    assert_eq!(direct["error"]["code"], "not_found");
+    assert_eq!(direct["error"]["retryable"], false);
+}
+
+#[test]
+fn every_command_that_accepts_json_can_report_an_error_as_json() {
+    // The contract is per-command, so this pins the list rather than trusting
+    // that a new `--json` flag remembers to wire the error path.
+    let with_json = [
+        "generate slides --json",
+        "generate document --json",
+        "generate page --json",
+        "generate video --json",
+        "edit slides --json",
+        "video preview --json",
+        "video approve --json",
+    ];
+    let source = include_str!("../../src/commands/mod.rs");
+    // Five sites use the anyhow helper; the two video arms use the typed one.
+    let anyhow_sites = source.matches("json_operation_error(&error)").count();
+    let typed_sites = source.matches("json_typed_error(&error)").count();
+
+    assert_eq!(
+        anyhow_sites + typed_sites,
+        with_json.len(),
+        "{} commands accept --json but {} emit a JSON error",
+        with_json.len(),
+        anyhow_sites + typed_sites
+    );
+}

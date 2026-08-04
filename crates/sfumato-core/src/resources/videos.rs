@@ -312,6 +312,14 @@ pub async fn approve_video_review(
         .project_root(&config.project_name)?
         .join("review-sessions")
         .join(review_id);
+    // Checked before reading so an unknown identifier reports `not_found` and
+    // names the session, rather than surfacing the artifact-store read failure
+    // with sfumato's internal path in the message.
+    if !workspace.is_dir(&review_root) {
+        return Err(SfumatoError::not_found(format_args!(
+            "Video review session '{review_id}' was not found"
+        )));
+    }
     let record: ReviewSessionRecord = serde_json::from_str(
         &workspace.read_text(&review_root.join("review.json"))?,
     )
