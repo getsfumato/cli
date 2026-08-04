@@ -9,6 +9,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sfumato_core::{
+    catalogs::{CatalogListing, UnreadableEntry},
     errors::{ErrorClass, ErrorCode, SfumatoError, SfumatoResult},
     project_assets::{
         ALL_THEMES, AddProjectAssetRequest, PROJECT_ASSET_SCHEMA_VERSION, ProjectAsset,
@@ -70,14 +71,22 @@ struct LegacyAssetRecord {
 }
 
 impl ProjectAssetCatalog for FilesystemProjectAssetCatalog {
-    fn list(&self, project_root: &Path) -> SfumatoResult<Vec<ProjectAsset>> {
+    fn list(&self, project_root: &Path) -> SfumatoResult<CatalogListing<ProjectAsset>> {
         asset_result((|| {
             let (root, manifest) = load_manifest(project_root)?;
-            manifest
-                .assets
-                .into_iter()
-                .map(|(name, record)| record_to_asset(&root, name, record))
-                .collect()
+            // Per record, not per manifest: one artifact whose managed file went
+            // missing used to fail the entire listing.
+            let mut listing = CatalogListing::default();
+            for (name, record) in manifest.assets {
+                match record_to_asset(&root, name.clone(), record) {
+                    Ok(asset) => listing.entries.push(asset),
+                    Err(error) => listing.unreadable.push(UnreadableEntry {
+                        name,
+                        problem: format!("{error:#}"),
+                    }),
+                }
+            }
+            Ok(listing)
         })())
     }
 

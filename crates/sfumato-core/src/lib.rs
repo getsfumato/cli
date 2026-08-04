@@ -7,6 +7,7 @@
 
 pub mod application;
 pub mod artifacts;
+pub mod catalogs;
 /// Configuration aggregates and effective model/theme resolution.
 #[allow(missing_docs)]
 pub mod config;

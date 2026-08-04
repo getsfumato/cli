@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{errors::SfumatoResult, sfumato_bail as bail};
+use crate::{catalogs::CatalogListing, errors::SfumatoResult, sfumato_bail as bail};
 
 /// Current project-artifact manifest schema.
 pub const PROJECT_ASSET_SCHEMA_VERSION: u32 = 2;
@@ -125,7 +125,12 @@ pub struct UpdateProjectAssetRequest {
 /// Port for managing portable reusable artifacts under a project root.
 pub trait ProjectAssetCatalog: Send + Sync {
     /// Lists all logical artifacts in stable name order.
-    fn list(&self, project_root: &Path) -> SfumatoResult<Vec<ProjectAsset>>;
+    /// Lists artifacts, skipping and reporting any whose record cannot be read.
+    ///
+    /// One artifact with a missing managed file must not hide the rest: each
+    /// healthy artifact is still reachable through `show`, so failing the listing
+    /// loses discovery without protecting anything.
+    fn list(&self, project_root: &Path) -> SfumatoResult<CatalogListing<ProjectAsset>>;
     /// Loads one logical artifact by name.
     fn load(&self, project_root: &Path, name: &str) -> SfumatoResult<ProjectAsset>;
     /// Copies and registers the first or replacement themed variant.

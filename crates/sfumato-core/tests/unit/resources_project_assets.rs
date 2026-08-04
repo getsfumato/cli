@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{
+    catalogs::CatalogListing,
     errors::SfumatoError,
     project_assets::{
         AddProjectAssetRequest, ProjectAsset, ProjectAssetCatalog, ProjectAssetMetadata,
@@ -22,8 +23,10 @@ use crate::{
 struct MemoryAssetCatalog(Mutex<ProjectAsset>);
 
 impl ProjectAssetCatalog for MemoryAssetCatalog {
-    fn list(&self, _project_root: &Path) -> Result<Vec<ProjectAsset>> {
-        Ok(vec![self.0.lock().unwrap().clone()])
+    fn list(&self, _project_root: &Path) -> Result<CatalogListing<ProjectAsset>> {
+        Ok(CatalogListing::healthy(vec![
+            self.0.lock().unwrap().clone(),
+        ]))
     }
 
     fn load(&self, _project_root: &Path, _name: &str) -> Result<ProjectAsset> {

@@ -12,6 +12,7 @@ use std::{
 
 use crate::{
     artifacts::ArtifactStore,
+    catalogs::CatalogListing,
     config::{ConfigOverrides, EffectiveConfig, GenerationToolKind, GlobalConfig},
     config_editor::{ConfigEditor, ConfigTarget},
     connectors::{
@@ -436,7 +437,7 @@ impl SfumatoApplication {
                 title: command.title,
                 template: command
                     .template
-                    .map(|name| self.templates.load(&name, TemplateKind::Slides))
+                    .map(|name| self.templates.load(&name, Some(TemplateKind::Slides)))
                     .transpose()?,
                 project_asset_catalog: Arc::clone(&self.project_assets),
                 operation: command.operation,
@@ -480,7 +481,7 @@ impl SfumatoApplication {
                 title: command.title,
                 template: command
                     .template
-                    .map(|name| self.templates.load(&name, TemplateKind::Document))
+                    .map(|name| self.templates.load(&name, Some(TemplateKind::Document)))
                     .transpose()?,
                 dry_run: command.dry_run,
                 review: command.review,
@@ -536,7 +537,7 @@ impl SfumatoApplication {
                 title: command.title,
                 template: command
                     .template
-                    .map(|name| self.templates.load(&name, TemplateKind::Page))
+                    .map(|name| self.templates.load(&name, Some(TemplateKind::Page)))
                     .transpose()?,
                 project_asset_catalog: Arc::clone(&self.project_assets),
                 plugins,
@@ -729,7 +730,7 @@ impl SfumatoApplication {
     /// Lists installed offline page plugins.
     pub fn list_installed_page_plugins(
         &self,
-    ) -> SfumatoResult<Vec<crate::page_plugins::PagePluginSummary>> {
+    ) -> SfumatoResult<CatalogListing<crate::page_plugins::PagePluginSummary>> {
         self.page_plugins.list()
     }
 
@@ -751,7 +752,7 @@ impl SfumatoApplication {
         &self,
         project: Option<&str>,
         operation: &OperationContext,
-    ) -> SfumatoResult<Vec<PagePluginStatus>> {
+    ) -> SfumatoResult<CatalogListing<PagePluginStatus>> {
         self.page_plugin_service().list(project, operation).await
     }
 
@@ -764,6 +765,7 @@ impl SfumatoApplication {
     ) -> SfumatoResult<PagePluginStatus> {
         self.list_page_plugins(project, operation)
             .await?
+            .entries
             .into_iter()
             .find(|status| status.plugin.id == id)
             .ok_or_else(|| SfumatoError::not_found(format!("Unknown page plugin '{id}'")))
@@ -812,7 +814,7 @@ impl SfumatoApplication {
     pub fn list_templates(
         &self,
         kind: Option<TemplateKind>,
-    ) -> SfumatoResult<Vec<GenerationTemplateSummary>> {
+    ) -> SfumatoResult<CatalogListing<GenerationTemplateSummary>> {
         self.templates.list(kind)
     }
 
@@ -820,7 +822,7 @@ impl SfumatoApplication {
     pub fn show_template(
         &self,
         name: &str,
-        kind: TemplateKind,
+        kind: Option<TemplateKind>,
     ) -> SfumatoResult<GenerationTemplate> {
         self.templates.load(name, kind)
     }
@@ -852,7 +854,10 @@ impl SfumatoApplication {
     }
 
     /// Lists reusable assets for the active or explicitly selected project.
-    pub fn list_project_assets(&self, project: Option<&str>) -> SfumatoResult<Vec<ProjectAsset>> {
+    pub fn list_project_assets(
+        &self,
+        project: Option<&str>,
+    ) -> SfumatoResult<CatalogListing<ProjectAsset>> {
         let root = self.selected_project_root(project)?;
         self.project_assets.list(&root)
     }

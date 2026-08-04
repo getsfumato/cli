@@ -313,10 +313,16 @@ pub struct ArtifactNameArgs {
     pub project: Option<String>,
 }
 
+/// Mirrors `TemplateKind`, which is the domain's own vocabulary.
+///
+/// A missing variant here is invisible from the outside: the layers below already
+/// scaffold, load, and validate it, so the kind exists everywhere except in what
+/// a caller is allowed to type.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum TemplateKindArg {
     Slides,
     Page,
+    Document,
 }
 
 #[derive(Debug, Args)]
@@ -337,8 +343,10 @@ pub struct TemplateListArgs {
 #[derive(Debug, Args)]
 pub struct TemplateShowArgs {
     pub name: String,
+    /// Optional: the package declares its own kind, and requiring it meant a
+    /// package could not be inspected to find out what kind it is.
     #[arg(long, value_enum)]
-    pub kind: TemplateKindArg,
+    pub kind: Option<TemplateKindArg>,
 }
 
 #[derive(Debug, Args)]

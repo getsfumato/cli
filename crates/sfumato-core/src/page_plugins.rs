@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    catalogs::CatalogListing,
     errors::{SfumatoError, SfumatoResult},
     operation::OperationContext,
     repositories::ProjectRepository,
@@ -461,7 +462,8 @@ pub trait PagePluginSource: Send + Sync {
 /// Versioned user plugin store consumed by generation workflows.
 pub trait PagePluginCatalog: Send + Sync {
     /// Lists installed packages in stable identifier order.
-    fn list(&self) -> SfumatoResult<Vec<PagePluginSummary>>;
+    /// Lists installed packages, skipping and reporting any that cannot be read.
+    fn list(&self) -> SfumatoResult<CatalogListing<PagePluginSummary>>;
     /// Loads the currently selected installed release.
     fn load(&self, id: &str) -> SfumatoResult<PagePluginPackage>;
     /// Atomically installs a validated package and selects its version.
@@ -553,7 +555,7 @@ impl PagePluginService {
         &self,
         project: Option<&str>,
         operation: &OperationContext,
-    ) -> SfumatoResult<Vec<PagePluginStatus>> {
+    ) -> SfumatoResult<CatalogListing<PagePluginStatus>> {
         let registry = self.source.registry(operation).await?;
         let installed = self.store.list()?;
         let registry_state = self.projects.registry()?;
@@ -573,6 +575,7 @@ impl PagePluginService {
             .into_iter()
             .map(|plugin| PagePluginStatus {
                 installed_version: installed
+                    .entries
                     .iter()
                     .find(|value| value.id == plugin.id)
                     .map(|value| value.version.clone()),
@@ -581,7 +584,12 @@ impl PagePluginService {
             })
             .collect::<Vec<_>>();
         statuses.sort_by(|left, right| left.plugin.id.cmp(&right.plugin.id));
-        Ok(statuses)
+        // A damaged install would otherwise read as "not installed", which is the
+        // opposite of what is wrong with it.
+        Ok(CatalogListing {
+            entries: statuses,
+            unreadable: installed.unreadable,
+        })
     }
 
     /// Installs one supported release and all of its dependencies.

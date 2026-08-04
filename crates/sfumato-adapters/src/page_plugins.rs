@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use sfumato_core::{
+    catalogs::{CatalogListing, UnreadableEntry},
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
     operation::OperationContext,
     page_plugins::{
@@ -307,11 +308,11 @@ impl FilesystemPagePluginCatalog {
 }
 
 impl PagePluginCatalog for FilesystemPagePluginCatalog {
-    fn list(&self) -> SfumatoResult<Vec<PagePluginSummary>> {
-        let mut plugins = Vec::new();
+    fn list(&self) -> SfumatoResult<CatalogListing<PagePluginSummary>> {
+        let mut listing = CatalogListing::default();
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(plugins),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(listing),
             Err(error) => return Err(plugin_store_error(error)),
         };
         for entry in entries {
@@ -321,11 +322,21 @@ impl PagePluginCatalog for FilesystemPagePluginCatalog {
             }
             let id = entry.file_name().to_string_lossy().into_owned();
             if validate_plugin_id(&id).is_ok() {
-                plugins.push(self.load(&id)?.summary);
+                // Per package: one damaged install used to fail the whole listing,
+                // which is also how a plugin catalogue reports what is installed.
+                match self.load(&id) {
+                    Ok(package) => listing.entries.push(package.summary),
+                    Err(error) => listing.unreadable.push(UnreadableEntry {
+                        name: id,
+                        problem: error.to_string(),
+                    }),
+                }
             }
         }
-        plugins.sort_by(|left, right| left.id.cmp(&right.id));
-        Ok(plugins)
+        listing
+            .entries
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(listing)
     }
 
     fn load(&self, id: &str) -> SfumatoResult<PagePluginPackage> {

@@ -26,7 +26,7 @@ fn adds_lists_loads_and_removes_project_images() {
         )
         .unwrap();
     assert_eq!(added.name, "logo");
-    assert_eq!(catalog.list(&project).unwrap().len(), 1);
+    assert_eq!(catalog.list(&project).unwrap().entries.len(), 1);
     assert_eq!(
         catalog.load(&project, "logo").unwrap().variants["gruvbox"].content_hash,
         added.variants["gruvbox"].content_hash
@@ -34,7 +34,7 @@ fn adds_lists_loads_and_removes_project_images() {
 
     let removed = catalog.remove(&project, "logo").unwrap();
     assert!(!removed.variants["gruvbox"].path.exists());
-    assert!(catalog.list(&project).unwrap().is_empty());
+    assert!(catalog.list(&project).unwrap().entries.is_empty());
 }
 
 #[test]

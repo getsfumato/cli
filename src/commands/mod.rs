@@ -179,17 +179,18 @@ impl RunnableCommand for ArtifactCommands {
                 println!("Updated project artifact '{}'", asset.name);
             }
             Self::List(args) => {
-                let assets = application.list_project_assets(args.project.as_deref())?;
-                if assets.is_empty() {
+                let listing = application.list_project_assets(args.project.as_deref())?;
+                if listing.entries.is_empty() && listing.is_complete() {
                     println!("No reusable project artifacts.");
-                } else {
+                } else if !listing.entries.is_empty() {
                     print_table(
                         &["NAME", "THEMES", "TAGS", "DESCRIPTION"],
-                        assets
-                            .into_iter()
+                        listing
+                            .entries
+                            .iter()
                             .map(|asset| {
                                 vec![
-                                    Cell::primary(asset.name),
+                                    Cell::primary(&asset.name),
                                     Cell::new(
                                         asset
                                             .variants
@@ -199,12 +200,13 @@ impl RunnableCommand for ArtifactCommands {
                                             .join(", "),
                                     ),
                                     Cell::muted(asset.metadata.tags.join(", ")),
-                                    Cell::new(asset.metadata.description),
+                                    Cell::new(&asset.metadata.description),
                                 ]
                             })
                             .collect(),
                     );
                 }
+                report_unreadable("project artifact", &listing.unreadable);
             }
             Self::Show(args) => {
                 let asset = application.show_project_asset(&args.name, args.project.as_deref())?;
@@ -260,13 +262,14 @@ impl RunnableCommand for TemplateCommands {
                 );
             }
             Self::List(args) => {
-                let templates = application.list_templates(args.kind.map(template_kind))?;
-                if templates.is_empty() {
+                let listing = application.list_templates(args.kind.map(template_kind))?;
+                if listing.entries.is_empty() && listing.is_complete() {
                     println!("No reusable generation templates installed.");
-                } else {
+                } else if !listing.entries.is_empty() {
                     print_table(
                         &["NAME", "KIND", "DESCRIPTION"],
-                        templates
+                        listing
+                            .entries
                             .into_iter()
                             .map(|template| {
                                 vec![
@@ -278,9 +281,11 @@ impl RunnableCommand for TemplateCommands {
                             .collect(),
                     );
                 }
+                report_unreadable("template", &listing.unreadable);
             }
             Self::Show(args) => {
-                let template = application.show_template(&args.name, template_kind(args.kind))?;
+                let template =
+                    application.show_template(&args.name, args.kind.map(template_kind))?;
                 println!(
                     "{} ({})\n{}\n\n{}",
                     template.manifest.name,
@@ -294,10 +299,25 @@ impl RunnableCommand for TemplateCommands {
     }
 }
 
+/// Warns about catalog entries that were skipped, naming each one.
+///
+/// On stderr rather than in the table: the listing's job is to show what is
+/// usable, and a skipped entry is not. Silence would be worse than either — a
+/// damaged package that stops appearing looks deleted rather than broken.
+fn report_unreadable(label: &str, unreadable: &[sfumato_core::catalogs::UnreadableEntry]) {
+    for entry in unreadable {
+        eprintln!(
+            "warning: skipped {label} '{}': {}",
+            entry.name, entry.problem
+        );
+    }
+}
+
 fn template_kind(kind: TemplateKindArg) -> TemplateKind {
     match kind {
         TemplateKindArg::Slides => TemplateKind::Slides,
         TemplateKindArg::Page => TemplateKind::Page,
+        TemplateKindArg::Document => TemplateKind::Document,
     }
 }
 
@@ -306,12 +326,14 @@ impl RunnableCommand for PluginCommands {
     async fn run(self, application: Arc<SfumatoApplication>) -> Result<()> {
         match self {
             Self::List(args) => {
-                let statuses = application
+                let listing = application
                     .list_page_plugins(args.project.as_deref(), &interruptible())
                     .await?;
+                report_unreadable("page plugin", &listing.unreadable);
                 print_table(
                     &["ID", "PLUGIN", "LATEST", "INSTALLED", "PROJECT"],
-                    statuses
+                    listing
+                        .entries
                         .into_iter()
                         .map(|status| {
                             vec![

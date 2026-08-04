@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use sfumato_core::{
+    catalogs::{CatalogListing, UnreadableEntry},
     errors::{ErrorClass, ErrorCode, SfumatoError, SfumatoResult},
     templates::{
         GenerationTemplate, GenerationTemplateCatalog, GenerationTemplateManifest,
@@ -62,10 +63,13 @@ impl FilesystemGenerationTemplateCatalog {
 }
 
 impl GenerationTemplateCatalog for FilesystemGenerationTemplateCatalog {
-    fn list(&self, kind: Option<TemplateKind>) -> SfumatoResult<Vec<GenerationTemplateSummary>> {
+    fn list(
+        &self,
+        kind: Option<TemplateKind>,
+    ) -> SfumatoResult<CatalogListing<GenerationTemplateSummary>> {
         template_result((|| {
             if !self.root.exists() {
-                return Ok(Vec::new());
+                return Ok(CatalogListing::default());
             }
             let mut names = fs::read_dir(&self.root)
                 .with_context(|| format!("Could not read {}", self.root.display()))?
@@ -79,25 +83,38 @@ impl GenerationTemplateCatalog for FilesystemGenerationTemplateCatalog {
                 })
                 .collect::<Result<Vec<_>>>()?;
             names.sort();
-            let mut templates = names
-                .into_iter()
-                .map(|name| self.resolve(&name, None))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .filter(|template| kind.is_none_or(|kind| template.manifest.kind == kind))
-                .map(|template| GenerationTemplateSummary {
-                    name: template.manifest.name,
-                    kind: template.manifest.kind,
-                    description: template.manifest.description,
-                })
-                .collect::<Vec<_>>();
-            templates.sort_by(|left, right| left.name.cmp(&right.name));
-            Ok(templates)
+            // Per entry, not per catalog: collecting into one `Result` meant the
+            // first damaged package discarded every package already resolved.
+            let mut listing = CatalogListing::default();
+            for name in names {
+                match self.resolve(&name, None) {
+                    Ok(template) => {
+                        if kind.is_none_or(|kind| template.manifest.kind == kind) {
+                            listing.entries.push(GenerationTemplateSummary {
+                                name: template.manifest.name,
+                                kind: template.manifest.kind,
+                                description: template.manifest.description,
+                            });
+                        }
+                    }
+                    // Reported rather than dropped: a package that silently stopped
+                    // appearing would look deleted instead of damaged. The kind
+                    // filter cannot apply, since the kind is what could not be read.
+                    Err(error) => listing.unreadable.push(UnreadableEntry {
+                        name,
+                        problem: format!("{error:#}"),
+                    }),
+                }
+            }
+            listing
+                .entries
+                .sort_by(|left, right| left.name.cmp(&right.name));
+            Ok(listing)
         })())
     }
 
-    fn load(&self, name: &str, kind: TemplateKind) -> SfumatoResult<GenerationTemplate> {
-        template_result(self.resolve(name, Some(kind)))
+    fn load(&self, name: &str, kind: Option<TemplateKind>) -> SfumatoResult<GenerationTemplate> {
+        template_result(self.resolve(name, kind))
     }
 
     fn create(

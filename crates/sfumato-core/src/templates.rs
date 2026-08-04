@@ -5,6 +5,7 @@ use std::{fmt, path::PathBuf, str::FromStr};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    catalogs::CatalogListing,
     errors::{SfumatoError, SfumatoResult},
     sfumato_bail as bail,
 };
@@ -116,9 +117,24 @@ pub struct GenerationTemplateSummary {
 /// Persistence and discovery port for user-global structural templates.
 pub trait GenerationTemplateCatalog: Send + Sync {
     /// Lists installed packages, optionally restricted by resource kind.
-    fn list(&self, kind: Option<TemplateKind>) -> SfumatoResult<Vec<GenerationTemplateSummary>>;
+    /// Lists template packages, skipping and reporting any that cannot be read.
+    ///
+    /// A damaged package must not hide the healthy ones: `TEMPLATE_SCHEMA_VERSION`
+    /// is rejected when it does not match, so the first time it is bumped every
+    /// package a user already has would otherwise fail the listing — breaking
+    /// discovery before they can see what needs migrating.
+    fn list(
+        &self,
+        kind: Option<TemplateKind>,
+    ) -> SfumatoResult<CatalogListing<GenerationTemplateSummary>>;
     /// Loads one named package and verifies its kind.
-    fn load(&self, name: &str, kind: TemplateKind) -> SfumatoResult<GenerationTemplate>;
+    /// Loads one template package, optionally requiring a kind.
+    ///
+    /// Generation requires it — a slides template must not be used for a
+    /// document. Inspection does not: the manifest declares the kind, so demanding
+    /// it up front means a package of unknown kind cannot be examined to find out
+    /// what kind it is.
+    fn load(&self, name: &str, kind: Option<TemplateKind>) -> SfumatoResult<GenerationTemplate>;
     /// Creates a package from a scaffold or an imported source file.
     fn create(
         &self,

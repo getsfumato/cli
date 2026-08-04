@@ -71,7 +71,7 @@ fn filesystem_catalog_installs_and_lists_selected_versions() {
         .install(package("shadcn", "1.1.0", Vec::new()))
         .unwrap();
 
-    let plugins = catalog.list().unwrap();
+    let plugins = catalog.list().unwrap().entries;
     assert_eq!(plugins.len(), 1);
     assert_eq!(plugins[0].id, "shadcn");
     assert_eq!(plugins[0].version, "1.1.0");

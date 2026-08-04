@@ -557,9 +557,10 @@ pub(super) fn load_section(
             .collect(),
         Section::Templates => application
             .list_templates(None)?
+            .entries
             .into_iter()
             .map(|template| {
-                let package = application.show_template(&template.name, template.kind)?;
+                let package = application.show_template(&template.name, Some(template.kind))?;
                 Ok(BrowseRow {
                     title: template.name,
                     subtitle: format!("{} template", template.kind),
@@ -570,6 +571,7 @@ pub(super) fn load_section(
             .collect(),
         Section::Artifacts => application
             .list_project_assets(None)?
+            .entries
             .into_iter()
             .map(|asset| {
                 Ok(BrowseRow {

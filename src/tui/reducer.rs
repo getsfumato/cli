@@ -104,6 +104,7 @@ impl App {
         let (sender, messages) = channel(256);
         let installed_plugins = application
             .list_installed_page_plugins()
+            .map(|listing| listing.entries)
             .unwrap_or_default();
         let page_ui = installed_plugins
             .iter()

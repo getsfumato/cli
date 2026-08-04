@@ -64,7 +64,16 @@ pub(crate) async fn prepare_project_assets(
     let mut assets = Vec::new();
     let mut prompts = Vec::new();
     let mut warnings = Vec::new();
-    for mut asset in request.catalog.list(request.project_root)? {
+    let listing = request.catalog.list(request.project_root)?;
+    // A damaged record cannot be prepared, but the generation already reports what
+    // it could not use, so it is warned about rather than silently absent.
+    for entry in &listing.unreadable {
+        warnings.push(format!(
+            "Project artifact '{}' was skipped: {}",
+            entry.name, entry.problem
+        ));
+    }
+    for mut asset in listing.entries {
         let variant = if let Some(variant) = asset.resolve(&request.theme.manifest.name) {
             Some(variant.clone())
         } else if request.dry_run {
