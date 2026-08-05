@@ -55,3 +55,4 @@ pub mod templates;
 #[allow(missing_docs)]
 pub mod themes;
 pub mod tools;
+pub mod web;

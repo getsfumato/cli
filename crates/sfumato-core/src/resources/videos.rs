@@ -1740,15 +1740,7 @@ fn apply_catalog_policy(scenes: &mut [VideoScene], catalog: Option<&VideoCatalog
     warnings
 }
 
-/// Namespace URLs that are declarations, not fetches.
-///
-/// An `xmlns` never causes a request; SVG markup is unusable without it.
-const XML_NAMESPACES: &[&str] = &[
-    "http://www.w3.org/2000/svg",
-    "http://www.w3.org/1999/xlink",
-    "http://www.w3.org/1999/xhtml",
-    "http://www.w3.org/1998/math/mathml",
-];
+use crate::web::XML_NAMESPACES;
 
 /// Operations that pull a remote resource, wherever they appear.
 ///

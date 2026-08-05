@@ -16,6 +16,7 @@ use sfumato_core::{
     generation::{PageInspectionIssue, PageIssueKind, PageRuntimeSelection},
     operation::OperationContext,
     renderers::{AssembledPage, PageAssembler, PageAssemblyRequest, PageInspector},
+    web::is_xml_namespace,
 };
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
@@ -327,19 +328,106 @@ fn validate_javascript_policy(javascript: &str) -> Result<()> {
 }
 
 fn reject_remote_or_traversal(value: &str, label: &str) -> Result<()> {
-    let lowercase = value.to_ascii_lowercase();
-    if lowercase.contains("http://")
-        || lowercase.contains("https://")
-        || lowercase.contains("src=\"//")
-        || lowercase.contains("src='//")
-        || lowercase.contains("url(//")
-    {
-        bail!("Generated {label} cannot reference remote URLs");
+    // Naming the offenders is what lets the repair pass fix them. The message used to
+    // say only that a remote URL existed somewhere in the field, which left the model
+    // re-scanning its own output to guess which reference was meant — and a repair that
+    // guesses wrong burns the single attempt the caller has.
+    let remote = offending_references(
+        value,
+        &["http://", "https://", "src=\"//", "src='//", "url(//"],
+    );
+    if !remote.is_empty() {
+        bail!(
+            "Generated {label} cannot reference remote URLs. Remove or inline these {}: {}. \
+             Everything the page needs must be local, and images belong under `images/`.",
+            plural("reference", remote.len()),
+            remote.join(", ")
+        );
     }
-    if value.contains("../") || value.contains("..\\") {
-        bail!("Generated {label} cannot traverse outside the page artifact");
+    let traversal = offending_references(value, &["../", "..\\"]);
+    if !traversal.is_empty() {
+        bail!(
+            "Generated {label} cannot traverse outside the page artifact. Remove these {}: {}.",
+            plural("reference", traversal.len()),
+            traversal.join(", ")
+        );
     }
     Ok(())
+}
+
+/// Longest excerpt quoted back per offending reference.
+///
+/// Enough to identify a CDN URL, short enough that a field full of them cannot turn one
+/// validation error into a wall of text the repair prompt has to wade through.
+const MAX_REFERENCE_EXCERPT: usize = 120;
+
+/// Most offenders quoted in one message.
+const MAX_REFERENCES_REPORTED: usize = 6;
+
+/// Quotes back each place `needles` appears, so a validation error can be acted on.
+///
+/// Matching is case-insensitive on the needle but the excerpt comes from the original
+/// text: a URL echoed back in a different case is not the string the model wrote, and
+/// telling it to remove something it cannot find is worse than saying nothing.
+fn offending_references(value: &str, needles: &[&str]) -> Vec<String> {
+    let lowercase = value.to_ascii_lowercase();
+    let mut starts: Vec<usize> = Vec::new();
+    for needle in needles {
+        let mut offset = 0;
+        while let Some(found) = lowercase[offset..].find(needle) {
+            starts.push(offset + found);
+            offset += found + needle.len();
+        }
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    let mut references = Vec::new();
+    for start in starts {
+        // An `xmlns` is a declaration, not a fetch, and `document.createElementNS`
+        // cannot make an SVG element without one — so counting it as a remote reference
+        // forbids scripted SVG outright. The video validator already knew this.
+        if value.is_char_boundary(start) && is_xml_namespace(&value[start..]) {
+            continue;
+        }
+        // A reference already reported is one whose excerpt would repeat it, which
+        // happens whenever two needles match inside the same URL.
+        if references.len() >= MAX_REFERENCES_REPORTED {
+            references.push("and more".to_string());
+            break;
+        }
+        if !value.is_char_boundary(start) {
+            continue;
+        }
+        let excerpt: String = value[start..]
+            .chars()
+            .take_while(|character| {
+                !character.is_whitespace()
+                    && !matches!(*character, '"' | '\'' | ')' | '>' | ';' | ',')
+            })
+            .take(MAX_REFERENCE_EXCERPT)
+            .collect();
+        let excerpt = if excerpt.is_empty() {
+            value[start..]
+                .chars()
+                .take(MAX_REFERENCE_EXCERPT)
+                .collect::<String>()
+        } else {
+            excerpt
+        };
+        let quoted = format!("`{excerpt}`");
+        if !references.contains(&quoted) {
+            references.push(quoted);
+        }
+    }
+    references
+}
+
+fn plural(word: &str, count: usize) -> String {
+    if count == 1 {
+        word.to_string()
+    } else {
+        format!("{word}s")
+    }
 }
 
 fn quoted_attribute_values<'a>(html: &'a str, name: &str) -> Vec<&'a str> {

@@ -352,3 +352,145 @@ async fn material_ui_and_react_execute_offline_in_a_real_browser() {
 
     assert!(issues.is_empty(), "{issues:#?}");
 }
+
+#[test]
+fn a_remote_reference_is_quoted_back_so_a_repair_can_target_it() {
+    let (_directory, theme) = theme();
+    let page = PageDocument::new(
+        "Unsafe",
+        "<div id=\"chart\"></div>",
+        "",
+        "const chart = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.js';",
+    )
+    .unwrap();
+
+    let error = StandalonePageAssembler
+        .assemble(PageAssemblyRequest {
+            document: &page,
+            theme: &theme,
+            plugins: &[],
+            allowed_assets: &[],
+            inspection: false,
+        })
+        .unwrap_err()
+        .to_string();
+
+    // Saying only that a remote URL exists somewhere leaves the repair pass guessing,
+    // and it gets one attempt.
+    assert!(
+        error.contains("https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.js"),
+        "the offending URL must appear in the error: {error}"
+    );
+    assert!(
+        error.contains("images/"),
+        "the error must say where local assets belong: {error}"
+    );
+}
+
+#[test]
+fn several_remote_references_are_all_reported_and_a_flood_is_summarised() {
+    let many = (0..12)
+        .map(|index| format!("const url{index} = 'https://cdn.example.com/{index}.js';"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_directory, theme) = theme();
+    let page = PageDocument::new("Unsafe", "<div></div>", "", &many).unwrap();
+
+    let error = StandalonePageAssembler
+        .assemble(PageAssemblyRequest {
+            document: &page,
+            theme: &theme,
+            plugins: &[],
+            allowed_assets: &[],
+            inspection: false,
+        })
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("https://cdn.example.com/0.js"), "{error}");
+    // A field full of URLs must not turn one validation error into a wall of text the
+    // repair prompt has to wade through.
+    assert!(error.contains("and more"), "{error}");
+    assert!(
+        !error.contains("https://cdn.example.com/11.js"),
+        "the list is capped: {error}"
+    );
+}
+
+#[test]
+fn a_traversal_reference_is_quoted_back_too() {
+    let (_directory, theme) = theme();
+    let page = PageDocument::new("Unsafe", "<img src=\"../../secrets/key.png\">", "", "").unwrap();
+
+    let error = StandalonePageAssembler
+        .assemble(PageAssemblyRequest {
+            document: &page,
+            theme: &theme,
+            plugins: &[],
+            allowed_assets: &[],
+            inspection: false,
+        })
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("traverse outside"), "{error}");
+    assert!(error.contains("../"), "{error}");
+}
+
+#[test]
+fn scripted_svg_is_accepted_because_a_namespace_is_not_a_fetch() {
+    let (_directory, theme) = theme();
+    let page = PageDocument::new(
+        "Diagram",
+        "<div id=\"plot\"></div>",
+        "",
+        // The only way the DOM makes an SVG element. The page prompt now actively steers
+        // the model here — "build interactivity with plain DOM, CSS, SVG, or canvas" —
+        // so rejecting it turned the advice into a guaranteed validation failure.
+        "const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');\n\
+         svg.setAttributeNS('http://www.w3.org/2000/xmlns/', 'xmlns', 'http://www.w3.org/2000/svg');\n\
+         document.getElementById('plot').append(svg);",
+    )
+    .unwrap();
+
+    StandalonePageAssembler
+        .assemble(PageAssemblyRequest {
+            document: &page,
+            theme: &theme,
+            plugins: &[],
+            allowed_assets: &[],
+            inspection: false,
+        })
+        .expect("an xmlns declaration is not a remote reference");
+}
+
+#[test]
+fn a_real_cdn_beside_a_namespace_is_still_refused() {
+    let (_directory, theme) = theme();
+    let page = PageDocument::new(
+        "Mixed",
+        "<div></div>",
+        "",
+        "const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');\n\
+         const lib = 'https://cdn.jsdelivr.net/npm/d3';",
+    )
+    .unwrap();
+
+    let error = StandalonePageAssembler
+        .assemble(PageAssemblyRequest {
+            document: &page,
+            theme: &theme,
+            plugins: &[],
+            allowed_assets: &[],
+            inspection: false,
+        })
+        .unwrap_err()
+        .to_string();
+
+    // Allowing namespaces must not blunt the check that matters.
+    assert!(error.contains("https://cdn.jsdelivr.net/npm/d3"), "{error}");
+    assert!(
+        !error.contains("2000/svg"),
+        "the namespace must not be listed as an offender: {error}"
+    );
+}
