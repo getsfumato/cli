@@ -230,7 +230,7 @@ fn every_resource_steers_charting_and_can_grant_code_execution() {
         assert!(
             form.fields
                 .iter()
-                .any(|field| field.label() == "Allow generated code execution"),
+                .any(|field| field.label() == "Code execution"),
             "resource {resource} cannot grant code execution"
         );
     }
@@ -294,7 +294,7 @@ fn the_direct_model_engine_withholds_a_permission_it_would_reject() {
         !form
             .fields
             .iter()
-            .any(|field| field.label() == "Allow generated code execution")
+            .any(|field| field.label() == "Code execution")
     );
     // Still steerable: a project that persisted `security.allow_python` can plot
     // here, so the switch that turns charting off has to stay reachable.
@@ -320,7 +320,7 @@ fn the_document_form_reaches_the_paginated_flags_the_cli_offers() {
         "Publish PDF",
         "Image generation",
         "Chart generation",
-        "Allow generated code execution",
+        "Code execution",
     ] {
         assert!(
             label(expected),
@@ -2249,6 +2249,79 @@ async fn an_unfocused_picker_still_shows_its_caret() {
     );
 }
 
+/// A finished run reported "complete" and nothing else. The footer had a branch that
+/// would have shown the path, but it only ran when no status message was set and the
+/// completion handler always sets one — so the answer to "where is the file" was
+/// unreachable from the interface that had just produced it. It is a feed entry now,
+/// and a managed revision path only answers the question if all of it is on screen.
+#[tokio::test]
+async fn an_output_path_is_readable_to_its_last_character() {
+    let path = "/Users/someone/.sfumato/Projects/Facultad/resources/documents/\
+                asesoramiento-crediticio-ai-safety/revisions/rev-18c906050847b6a8/\
+                asesoramiento-crediticio-ai-safety.pdf";
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Complete;
+    app.activities.push(Activity {
+        kind: ActivityKind::Output,
+        title: "PDF".to_string(),
+        detail: path.to_string(),
+        image_path: None,
+    });
+
+    let screen = render_screen(&mut app, 100, 32);
+
+    assert!(screen.contains("PDF"), "{screen}");
+    // The tail is what a clipped entry loses, and the tail is the file name.
+    assert!(
+        screen.contains("asesoramiento-crediticio-ai-safety.pdf"),
+        "the output path was clipped before its file name:\n{screen}"
+    );
+}
+
+#[test]
+fn leaving_the_sources_field_offers_its_folder_as_the_publish_destination() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("notes.md");
+    std::fs::write(&source, "notes").unwrap();
+
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Generate;
+    focus_field(&mut app, GenerateFieldId::Sources);
+    for character in source.display().to_string().chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    // Still being typed, so publish must stay untouched.
+    assert!(app.form.text(GenerateFieldId::Publish).is_empty());
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+    // A file resolves to the directory holding it, because "beside the sources" is a
+    // folder either way.
+    assert_eq!(
+        app.form.text(GenerateFieldId::Publish),
+        directory.path().display().to_string()
+    );
+}
+
+#[test]
+fn a_typed_publish_folder_survives_a_later_source_edit() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Generate;
+
+    focus_field(&mut app, GenerateFieldId::Publish);
+    for character in "Handouts".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    focus_field(&mut app, GenerateFieldId::Sources);
+    for character in directory.path().display().to_string().chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+    assert_eq!(app.form.text(GenerateFieldId::Publish), "Handouts");
+}
+
 #[tokio::test]
 async fn the_exit_prompt_names_the_run_it_would_cancel() {
     let mut app = App::new(Picker::halfblocks(), test_application());
@@ -2257,5 +2330,8 @@ async fn the_exit_prompt_names_the_run_it_would_cancel() {
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
 
     let (message, _) = app.status.clone().expect("a status was set");
-    assert!(message.contains("cancels the running operation"), "{message}");
+    assert!(
+        message.contains("cancels the running operation"),
+        "{message}"
+    );
 }

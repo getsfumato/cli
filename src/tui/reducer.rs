@@ -50,6 +50,18 @@ pub(super) fn reduce_message(app: &mut App, message: UiMessage) {
                     // selecting a chart reported "Could not preview" for a file that
                     // exists — one directory over.
                     reroot_previews(&mut app.activities, result.markdown_path());
+                    // Where it landed, recorded in the feed rather than only in the
+                    // status line: the footer is one row that elides, and it is
+                    // overwritten by the completion message anyway, so a finished run
+                    // used to leave no reachable answer to "where is the file".
+                    for (label, path) in result.artifacts() {
+                        app.activities.push(Activity {
+                            kind: ActivityKind::Output,
+                            title: label.to_string(),
+                            detail: path.display().to_string(),
+                            image_path: None,
+                        });
+                    }
                     app.status = Some((result.completion_message().to_string(), false));
                     app.result = Some(result);
                 }
@@ -1092,6 +1104,40 @@ impl App {
     }
 
     pub(super) fn handle_generate_key(&mut self, key: KeyEvent) {
+        let before = self.form.field_id(self.form.selected);
+        self.dispatch_generate_key(key);
+        // Offered when focus leaves the sources field, not on every keystroke: a
+        // half-typed path must never land in publish, and this way the filesystem is
+        // consulted once per edit instead of once per character.
+        if before == Some(GenerateFieldId::Sources)
+            && self.form.field_id(self.form.selected) != Some(GenerateFieldId::Sources)
+        {
+            self.offer_publish_from_sources();
+        }
+    }
+
+    /// Resolves the first source to a folder and offers it as the publish destination.
+    ///
+    /// A source may be a file or a directory, and "beside the sources" means the
+    /// directory either way, so a file is resolved to its parent.
+    fn offer_publish_from_sources(&mut self) {
+        let sources = self.form.text(GenerateFieldId::Sources);
+        let Some(first) = split_values(&sources).into_iter().next() else {
+            return;
+        };
+        let path = Path::new(&first);
+        let folder = if path.is_dir() {
+            Some(path)
+        } else {
+            path.parent().filter(|parent| parent.is_dir())
+        };
+        if let Some(folder) = folder {
+            self.form
+                .offer_publish_folder(&folder.display().to_string());
+        }
+    }
+
+    fn dispatch_generate_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.transition(Screen::Home),
             KeyCode::Up => self.form.selected = self.form.selected.saturating_sub(1),

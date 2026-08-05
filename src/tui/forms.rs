@@ -422,6 +422,29 @@ impl GenerateForm {
             })
     }
 
+    /// Offers `folder` as the publish destination, without ever overwriting a typed one.
+    ///
+    /// Leaving publish empty is not the same as not caring where the resource goes:
+    /// the artifact is committed to a managed revision under `~/.sfumato` either way,
+    /// and nothing reaches the folder the sources came from. Filling the field in —
+    /// visibly, while it is still editable — states that destination instead of
+    /// deciding it silently at submit time. Only an empty field is filled, so a typed
+    /// path is never clobbered.
+    pub(super) fn offer_publish_folder(&mut self, folder: &str) {
+        let Some(index) = self
+            .field_ids
+            .iter()
+            .position(|candidate| *candidate == GenerateFieldId::Publish)
+        else {
+            return;
+        };
+        if let FormField::Text { value, .. } = &mut self.fields[index]
+            && value.trim().is_empty()
+        {
+            *value = folder.to_string();
+        }
+    }
+
     /// Writes a picked value back, or clears it when `value` is empty.
     pub(super) fn set_choice(&mut self, id: GenerateFieldId, value: &str) {
         if let Some(index) = self.field_ids.iter().position(|candidate| *candidate == id)
@@ -1004,7 +1027,9 @@ fn build_generation_fields(
         pairs.push((
             GenerateFieldId::AllowCodeExecution,
             FormField::Toggle {
-                label: "Allow generated code execution",
+                // Short enough for the label column, which compacted the longer
+                // wording to "Allow generate..." and lost the word that mattered.
+                label: "Code execution",
                 value: false,
             },
         ));

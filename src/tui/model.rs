@@ -71,6 +71,12 @@ pub(super) enum ActivityKind {
     ToolResult,
     Warning,
     Success,
+    /// A committed artifact and where it landed.
+    ///
+    /// Its own kind because it is the one entry that must survive being long: a
+    /// managed revision path runs past a hundred characters, and an entry that
+    /// answers "where is it" is worthless clipped.
+    Output,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -564,6 +570,54 @@ impl ResourceResult {
             Self::GeneratedVideo(result) => &result.output.warnings,
             Self::Edited(result) => &result.warnings,
         }
+    }
+
+    /// Every committed artifact, labelled, in the order worth reading.
+    ///
+    /// The published copy comes first when there is one: it is the path the caller
+    /// asked for, and the managed revision is where it lives regardless.
+    pub(super) fn artifacts(&self) -> Vec<(&'static str, PathBuf)> {
+        let mut artifacts = Vec::new();
+        match self {
+            Self::Generated(result) => {
+                if let Some(path) = &result.published_pdf_path {
+                    artifacts.push(("Published PDF", path.clone()));
+                }
+                if let Some(path) = &result.pdf_path {
+                    artifacts.push(("PDF", path.clone()));
+                }
+                artifacts.push(("Markdown", result.markdown_path.clone()));
+            }
+            Self::GeneratedDocument(result) => {
+                if let Some(path) = &result.published_pdf_path {
+                    artifacts.push(("Published PDF", path.clone()));
+                }
+                if let Some(path) = &result.pdf_path {
+                    artifacts.push(("PDF", path.clone()));
+                }
+                artifacts.push(("Markdown", result.markdown_path.clone()));
+            }
+            Self::GeneratedPage(result) => {
+                artifacts.extend(
+                    result
+                        .published_paths
+                        .iter()
+                        .map(|path| ("Published page", path.clone())),
+                );
+                artifacts.push(("Page", result.html_path.clone()));
+            }
+            Self::GeneratedVideo(result) => {
+                artifacts.extend(
+                    result
+                        .published_paths
+                        .iter()
+                        .map(|path| ("Published video", path.clone())),
+                );
+                artifacts.push(("Video", result.video_path.clone()));
+            }
+            Self::Edited(result) => artifacts.push(("Markdown", result.markdown_path.clone())),
+        }
+        artifacts
     }
 
     pub(super) fn completion_message(&self) -> &'static str {

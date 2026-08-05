@@ -188,7 +188,9 @@ impl App {
                 // read — a refused path told you it was refused and not why. Wrapping
                 // costs rows, so only the entries that carry a reason get them.
                 let allowance = match activity.kind {
-                    ActivityKind::Warning => 4,
+                    // An output path is the same case as a warning: the entry is its
+                    // text, and a managed revision path needs every one of these rows.
+                    ActivityKind::Warning | ActivityKind::Output => 4,
                     _ => 1,
                 };
                 lines.extend(
@@ -305,6 +307,7 @@ pub(super) fn activity_style(kind: ActivityKind) -> (&'static str, Color) {
         ActivityKind::ToolResult => ("↳", GREEN),
         ActivityKind::Warning => ("⚠", RED),
         ActivityKind::Success => ("✓", GREEN),
+        ActivityKind::Output => ("⤓", CYAN),
     }
 }
 
