@@ -49,6 +49,7 @@ pub(super) enum Screen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ResourceOperation {
     Generate,
+    GenerateDocument,
     GeneratePage,
     GenerateVideo,
     Edit,
@@ -538,6 +539,7 @@ pub(super) enum UiMessage {
 
 pub(super) enum ResourceResult {
     Generated(GenerateSlidesResult),
+    GeneratedDocument(GenerateDocumentResult),
     GeneratedPage(GeneratePageResult),
     GeneratedVideo(GenerateVideoResult),
     Edited(EditSlidesResult),
@@ -547,6 +549,7 @@ impl ResourceResult {
     pub(super) fn markdown_path(&self) -> &std::path::Path {
         match self {
             Self::Generated(result) => &result.markdown_path,
+            Self::GeneratedDocument(result) => &result.markdown_path,
             Self::GeneratedPage(result) => &result.html_path,
             Self::GeneratedVideo(result) => &result.video_path,
             Self::Edited(result) => &result.markdown_path,
@@ -556,6 +559,7 @@ impl ResourceResult {
     pub(super) fn warnings(&self) -> &[String] {
         match self {
             Self::Generated(result) => &result.warnings,
+            Self::GeneratedDocument(result) => &result.warnings,
             Self::GeneratedPage(result) => &result.warnings,
             Self::GeneratedVideo(result) => &result.output.warnings,
             Self::Edited(result) => &result.warnings,
@@ -565,6 +569,7 @@ impl ResourceResult {
     pub(super) fn completion_message(&self) -> &'static str {
         match self {
             Self::Generated(_) => "Generation complete",
+            Self::GeneratedDocument(_) => "Document generation complete",
             Self::GeneratedPage(_) => "Page generation complete",
             Self::GeneratedVideo(_) => "Video generation complete",
             Self::Edited(_) => "Slide edit complete",

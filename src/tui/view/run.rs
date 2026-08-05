@@ -77,8 +77,21 @@ impl App {
             GenerationStage::VideoRepair,
             GenerationStage::VideoRendering,
         ];
+        // In the order the workflow emits them, so the marker only ever moves
+        // forward: draft, structural repair, diagrams, review, then the page-format
+        // check and its repair before the PDF is rendered.
+        let document_stages = [
+            GenerationStage::DocumentDraft,
+            GenerationStage::DocumentValidationRepair,
+            GenerationStage::DocumentDiagramRepair,
+            GenerationStage::DocumentReview,
+            GenerationStage::DocumentFormatCheck,
+            GenerationStage::DocumentFormatRepair,
+            GenerationStage::DocumentRendering,
+        ];
         let stages: &[GenerationStage] = match self.resource_operation {
             ResourceOperation::Generate => &generation_stages,
+            ResourceOperation::GenerateDocument => &document_stages,
             ResourceOperation::GeneratePage => &page_stages,
             ResourceOperation::GenerateVideo => &video_stages,
             ResourceOperation::Edit => &edit_stages,

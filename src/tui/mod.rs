@@ -59,6 +59,7 @@ use sfumato_core::{
     prompts::{PromptOrigin, PromptOverrideScope},
     providers::{GenerationStage, TextGenerationEvent},
     resources::{
+        documents::GenerateDocumentResult,
         pages::GeneratePageResult,
         slides::{EditSlidesResult, GenerateSlidesResult},
         videos::GenerateVideoResult,
@@ -73,10 +74,12 @@ use tokio::{
 
 use crate::{
     cli::{
-        EditSlidesArgs, GenerationToolArg, PageArgs, SlidesArgs, VideoArgs, VideoAudioArg,
-        VideoEngineArg, VideoWorkflowArg,
+        DocumentArgs, DocumentPageSizeArg, EditSlidesArgs, GenerationToolArg, PageArgs, SlidesArgs,
+        VideoArgs, VideoAudioArg, VideoEngineArg, VideoWorkflowArg,
     },
-    commands::{execute_edit_slides, execute_page, execute_slides, execute_video},
+    commands::{
+        execute_document, execute_edit_slides, execute_page, execute_slides, execute_video,
+    },
 };
 
 const TICK_RATE: Duration = Duration::from_millis(80);
@@ -117,7 +120,7 @@ const NAV_ITEMS: &[NavItem] = &[
     NavItem {
         group: NavGroup::Create,
         title: "Generate",
-        hint: "slides, page, or video",
+        hint: "slides, document, page, or video",
     },
     NavItem {
         group: NavGroup::Create,

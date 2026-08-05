@@ -43,6 +43,34 @@ pub(super) fn spawn_generation(
     })
 }
 
+pub(super) fn spawn_document_generation(
+    job_id: u64,
+    application: Arc<SfumatoApplication>,
+    args: DocumentArgs,
+    sink: Arc<dyn Fn(TextGenerationEvent) + Send + Sync>,
+    operation: OperationContext,
+    sender: Sender<UiMessage>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        match execute_document(&application, args, Some(sink), operation).await {
+            Err(error) if is_cancelled_error(&error) => {
+                let _ = sender.send(UiMessage::ResourceCancelled { job_id }).await;
+            }
+            result => {
+                let result = result
+                    .map(ResourceResult::GeneratedDocument)
+                    .map_err(|error| format!("{error:#}"));
+                let _ = sender
+                    .send(UiMessage::ResourceFinished {
+                        job_id,
+                        result: Box::new(result),
+                    })
+                    .await;
+            }
+        }
+    })
+}
+
 pub(super) fn spawn_page_generation(
     job_id: u64,
     application: Arc<SfumatoApplication>,

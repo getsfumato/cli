@@ -9,6 +9,25 @@ struct SlidesCliHarness {
     args: SlidesArgs,
 }
 
+#[derive(Parser)]
+struct DocumentCliHarness {
+    #[command(flatten)]
+    args: DocumentArgs,
+}
+
+/// Puts the resource selector on `index` and rebuilds the form around it.
+fn form_for_resource(index: usize) -> GenerateForm {
+    let mut form = GenerateForm::default();
+    if let FormField::Select { selected, .. } = &mut form.fields[0] {
+        *selected = index;
+    }
+    form.switch_resource_from_selector();
+    form
+}
+
+/// The selector index the document resource sits at.
+const DOCUMENT: usize = 3;
+
 fn test_application() -> Arc<SfumatoApplication> {
     Arc::new(sfumato_adapters::application::production_application().unwrap())
 }
@@ -194,6 +213,225 @@ fn video_engine_switches_only_show_applicable_fields() {
     assert!(!form.fields.iter().any(|field| field.label() == "FPS"));
 }
 
+/// Charting was the one tool the form could not steer, and the permission it needs
+/// was reachable only from the Manim branch — so a deck or a page that wanted a
+/// plot had to be configured project-wide and could not be held back for one run.
+#[test]
+fn every_resource_steers_charting_and_can_grant_code_execution() {
+    for resource in 0..=DOCUMENT {
+        let form = form_for_resource(resource);
+
+        assert!(
+            form.fields
+                .iter()
+                .any(|field| field.label() == "Chart generation"),
+            "resource {resource} cannot steer charting"
+        );
+        assert!(
+            form.fields
+                .iter()
+                .any(|field| field.label() == "Allow generated code execution"),
+            "resource {resource} cannot grant code execution"
+        );
+    }
+}
+
+#[test]
+fn switching_charting_off_disables_it_for_this_run_alone() {
+    let mut form = GenerateForm::default();
+    for field in &mut form.fields {
+        if let FormField::Text {
+            label: "Instruction",
+            value,
+            ..
+        } = field
+        {
+            *value = "Plot the error term".to_string();
+        }
+    }
+    let chart = form
+        .field_ids
+        .iter()
+        .position(|id| *id == GenerateFieldId::ChartTool)
+        .unwrap();
+    if let FormField::Select { selected, .. } = &mut form.fields[chart] {
+        *selected = 2;
+    }
+
+    let args = form.to_slides_args().unwrap();
+
+    assert!(args.tools.is_empty());
+    assert!(
+        args.disabled_tools
+            .iter()
+            .any(|tool| matches!(tool, GenerationToolArg::ChartGen))
+    );
+    // Left off unless asked: the toggle is consent, so its default cannot be a yes.
+    assert!(!args.allow_code_execution);
+}
+
+/// The command layer rejects `--allow-code-execution` with `--engine model`, which
+/// runs no local code, so offering the toggle there would only build a run that
+/// cannot start.
+#[test]
+fn the_direct_model_engine_withholds_a_permission_it_would_reject() {
+    let mut form = GenerateForm::default();
+    if let FormField::Select { selected, .. } = &mut form.fields[0] {
+        *selected = 2;
+    }
+    form.switch_resource_from_selector();
+    let engine = form
+        .field_ids
+        .iter()
+        .position(|id| *id == GenerateFieldId::Engine)
+        .unwrap();
+    if let FormField::Select { selected, .. } = &mut form.fields[engine] {
+        *selected = 2;
+    }
+    form.switch_video_engine_from_selector();
+
+    assert!(
+        !form
+            .fields
+            .iter()
+            .any(|field| field.label() == "Allow generated code execution")
+    );
+    // Still steerable: a project that persisted `security.allow_python` can plot
+    // here, so the switch that turns charting off has to stay reachable.
+    assert!(
+        form.fields
+            .iter()
+            .any(|field| field.label() == "Chart generation")
+    );
+}
+
+/// Paginated documents were reachable only from the CLI: the TUI's resource
+/// selector offered three of the four resources `generate` supports.
+#[test]
+fn the_document_form_reaches_the_paginated_flags_the_cli_offers() {
+    let form = form_for_resource(DOCUMENT);
+    let label = |name: &str| form.fields.iter().any(|field| field.label() == name);
+
+    for expected in [
+        "Page size",
+        "Table of contents",
+        "Cover page",
+        "Template",
+        "Publish PDF",
+        "Image generation",
+        "Chart generation",
+        "Allow generated code execution",
+    ] {
+        assert!(
+            label(expected),
+            "the document form has no '{expected}' field"
+        );
+    }
+    // Borrowed from no other resource: a document has no UI library, no timeline,
+    // and no engine to pick.
+    for absent in ["UI library", "Utility plugins", "Video engine", "Duration"] {
+        assert!(
+            !label(absent),
+            "the document form should not offer '{absent}'"
+        );
+    }
+}
+
+#[test]
+fn document_theme_overrides_stay_silent_until_the_form_asks() {
+    let mut form = form_for_resource(DOCUMENT);
+    for field in &mut form.fields {
+        if let FormField::Text {
+            label: "Instruction",
+            value,
+            ..
+        } = field
+        {
+            *value = "Summarise the unit".to_string();
+        }
+    }
+
+    let untouched = form.to_document_args().unwrap();
+    assert!(untouched.page_size.is_none());
+    assert!(!untouched.toc && !untouched.no_toc);
+    assert!(!untouched.cover && !untouched.no_cover);
+
+    let set = |form: &mut GenerateForm, id, choice| {
+        let index = form
+            .field_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+            .unwrap();
+        if let FormField::Select { selected, .. } = &mut form.fields[index] {
+            *selected = choice;
+        }
+    };
+    set(&mut form, GenerateFieldId::PageSize, 2);
+    set(&mut form, GenerateFieldId::TableOfContents, 2);
+    set(&mut form, GenerateFieldId::Cover, 1);
+
+    let asked = form.to_document_args().unwrap();
+    assert!(matches!(asked.page_size, Some(DocumentPageSizeArg::Letter)));
+    // Off has to travel as `--no-toc`, not as a missing `--toc`, or the theme's own
+    // default would quietly win.
+    assert!(asked.no_toc && !asked.toc);
+    assert!(asked.cover && !asked.no_cover);
+}
+
+#[test]
+fn cli_and_tui_build_equivalent_document_arguments() {
+    let cli_args = DocumentCliHarness::try_parse_from([
+        "document",
+        "notes",
+        "--instruction",
+        "Write the practical guide",
+        "--project",
+        "university",
+        "--theme",
+        "gruvbox",
+        "--model",
+        "text=cloud-draft",
+        "--review-model",
+        "local-review",
+        "--out",
+        "Documents",
+        "--template",
+        "handout",
+    ])
+    .unwrap()
+    .args;
+
+    let mut form = form_for_resource(DOCUMENT);
+    for field in &mut form.fields {
+        if let FormField::Text { label, value, .. } | FormField::Choice { label, value, .. } = field
+        {
+            *value = match *label {
+                "Instruction" => "Write the practical guide",
+                "Project" => "university",
+                "Sources" => "notes",
+                "Theme" => "gruvbox",
+                "Publish PDF" => "Documents",
+                "Text model" => "cloud-draft",
+                "Reviewer" => "local-review",
+                "Template" => "handout",
+                _ => continue,
+            }
+            .to_string();
+        }
+    }
+    let tui_args = form.to_document_args().unwrap();
+
+    assert_eq!(tui_args.inputs, cli_args.inputs);
+    assert_eq!(tui_args.instruction, cli_args.instruction);
+    assert_eq!(tui_args.project, cli_args.project);
+    assert_eq!(tui_args.theme, cli_args.theme);
+    assert_eq!(tui_args.out, cli_args.out);
+    assert_eq!(tui_args.template, cli_args.template);
+    assert_eq!(tui_args.model_overrides, cli_args.model_overrides);
+    assert_eq!(tui_args.review_model, cli_args.review_model);
+    assert_eq!(tui_args.no_review, cli_args.no_review);
+}
+
 #[test]
 fn cli_and_tui_build_equivalent_generation_arguments() {
     let cli_args = SlidesCliHarness::try_parse_from([
@@ -347,12 +585,8 @@ fn no_two_fields_in_one_form_share_a_label() {
     // Compacting the layout exposed two fields both labelled "Narration" — the
     // Hyperframe narration policy and the speech tool switch — which differ in what
     // they do. Identical labels in one form are indistinguishable to the user.
-    for resource_index in 0..3 {
-        let mut form = GenerateForm::default();
-        if let FormField::Select { selected, .. } = &mut form.fields[0] {
-            *selected = resource_index;
-        }
-        form.switch_resource_from_selector();
+    for resource_index in 0..=DOCUMENT {
+        let form = form_for_resource(resource_index);
 
         let mut labels: Vec<&str> = form.fields.iter().map(|field| field.label()).collect();
         let total = labels.len();

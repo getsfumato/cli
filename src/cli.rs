@@ -678,6 +678,12 @@ pub struct DocumentArgs {
     #[arg(long = "no-cover", help = "Omit the cover page")]
     pub no_cover: bool,
 
+    #[arg(
+        long,
+        help = "Consent for this run to execute the Python the chart-gen tool writes"
+    )]
+    pub allow_code_execution: bool,
+
     #[arg(long)]
     pub dry_run: bool,
 
@@ -746,6 +752,12 @@ pub struct SlidesArgs {
     #[arg(long = "no-pdf", hide = true)]
     pub no_pdf: bool,
 
+    #[arg(
+        long,
+        help = "Consent for this run to execute the Python the chart-gen tool writes"
+    )]
+    pub allow_code_execution: bool,
+
     #[arg(long)]
     pub dry_run: bool,
 
@@ -800,6 +812,12 @@ pub struct PageArgs {
         help = "Publish the page to this folder; managed revisions remain in Sfumato's project workspace"
     )]
     pub out: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Consent for this run to execute the Python the chart-gen tool writes"
+    )]
+    pub allow_code_execution: bool,
 
     #[arg(long)]
     pub dry_run: bool,
@@ -947,7 +965,10 @@ pub struct VideoArgs {
         help = "Override the speech profile's voice for this film"
     )]
     pub voice: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Consent for this run to execute generated Python, which Manim and the chart-gen tool need"
+    )]
     pub allow_code_execution: bool,
     #[arg(long = "tool", value_enum)]
     pub tools: Vec<GenerationToolArg>,

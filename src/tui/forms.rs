@@ -57,6 +57,7 @@ pub(super) enum ChoiceSource {
     Themes,
     SlideTemplates,
     PageTemplates,
+    DocumentTemplates,
     TextModels,
     CodeModels,
     ImageModels,
@@ -73,6 +74,7 @@ impl ChoiceSource {
             Self::Themes => &options.themes,
             Self::SlideTemplates => &options.slide_templates,
             Self::PageTemplates => &options.page_templates,
+            Self::DocumentTemplates => &options.document_templates,
             Self::TextModels => &options.text_models,
             Self::CodeModels => &options.code_models,
             Self::ImageModels => &options.image_models,
@@ -129,6 +131,9 @@ pub(super) enum GenerateResource {
     Slides,
     Page,
     Video,
+    /// Appended rather than slotted beside slides: the selector's indices are what
+    /// the reducer and the saved drafts key off, so a new resource goes last.
+    Document,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -150,6 +155,9 @@ pub(super) enum GenerateFieldId {
     ImageTool,
     VideoTool,
     AudioTool,
+    /// Local plotting, which needs no model profile and so was easy to leave out
+    /// of the form even though every other tool could be steered per run.
+    ChartTool,
     /// Narration policy for Hyperframe, kept apart from the direct model's own
     /// audio switch so switching engines cannot carry one label onto the other.
     Narration,
@@ -161,6 +169,13 @@ pub(super) enum GenerateFieldId {
     Urls,
     /// Pause after contact-sheet review for human approval.
     VisualReview,
+    /// Sheet to print a document on; the theme decides when left at its default.
+    PageSize,
+    /// Table-of-contents and cover-page overrides, both tri-state for the same
+    /// reason the CLI pairs `--toc` with `--no-toc`: the theme owns the default,
+    /// so a form has to be able to say nothing at all.
+    TableOfContents,
+    Cover,
     Duration,
     Resolution,
     AspectRatio,
@@ -292,6 +307,7 @@ impl GenerateForm {
         let resource = match selected {
             1 => GenerateResource::Page,
             2 => GenerateResource::Video,
+            3 => GenerateResource::Document,
             _ => GenerateResource::Slides,
         };
         if resource != self.resource {
@@ -375,6 +391,7 @@ impl GenerateForm {
                 GenerateResource::Slides => 0,
                 GenerateResource::Page => 1,
                 GenerateResource::Video => 2,
+                GenerateResource::Document => 3,
             };
         }
     }
@@ -492,6 +509,7 @@ impl GenerateForm {
             (GenerateFieldId::ImageTool, GenerationToolArg::ImageGen),
             (GenerateFieldId::VideoTool, GenerationToolArg::VideoGen),
             (GenerateFieldId::AudioTool, GenerationToolArg::AudioGen),
+            (GenerateFieldId::ChartTool, GenerationToolArg::ChartGen),
         ] {
             match self.select_index(id) {
                 Some(1) => enabled.push(tool),
@@ -521,6 +539,7 @@ impl GenerateForm {
             out: optional(self.text(GenerateFieldId::Publish)).map(PathBuf::from),
             pdf: true,
             no_pdf: false,
+            allow_code_execution: self.toggle(GenerateFieldId::AllowCodeExecution),
             dry_run: self.toggle(GenerateFieldId::DryRun),
             project,
             theme,
@@ -531,6 +550,58 @@ impl GenerateForm {
             tools,
             disabled_tools,
         })
+    }
+
+    pub(super) fn to_document_args(&self) -> Result<DocumentArgs> {
+        let CommonGenerationFields {
+            instruction,
+            inputs,
+            project,
+            title,
+            theme,
+            model_overrides,
+        } = self.common()?;
+        let optional = |value: String| (!value.is_empty()).then_some(value);
+        let (tools, disabled_tools) = self.tool_flags();
+        // Each pair mirrors the CLI's `--flag` / `--no-flag`, so leaving the field on
+        // its default sends neither and the theme keeps deciding.
+        let (toc, no_toc) = self.theme_override(GenerateFieldId::TableOfContents);
+        let (cover, no_cover) = self.theme_override(GenerateFieldId::Cover);
+        Ok(DocumentArgs {
+            inputs,
+            instruction,
+            title,
+            template: optional(self.text(GenerateFieldId::Template)),
+            out: optional(self.text(GenerateFieldId::Publish)).map(PathBuf::from),
+            page_size: match self.select_index(GenerateFieldId::PageSize) {
+                Some(1) => Some(DocumentPageSizeArg::A4),
+                Some(2) => Some(DocumentPageSizeArg::Letter),
+                _ => None,
+            },
+            toc,
+            no_toc,
+            cover,
+            no_cover,
+            allow_code_execution: self.toggle(GenerateFieldId::AllowCodeExecution),
+            dry_run: self.toggle(GenerateFieldId::DryRun),
+            project,
+            theme,
+            model_overrides,
+            review_model: optional(self.text(GenerateFieldId::Reviewer)),
+            no_review: !self.toggle(GenerateFieldId::Review),
+            json: false,
+            tools,
+            disabled_tools,
+        })
+    }
+
+    /// Reads a tri-state select as the CLI's on / off flag pair.
+    fn theme_override(&self, id: GenerateFieldId) -> (bool, bool) {
+        match self.select_index(id) {
+            Some(1) => (true, false),
+            Some(2) => (false, true),
+            _ => (false, false),
+        }
     }
 
     pub(super) fn to_page_args(&self) -> Result<PageArgs> {
@@ -555,6 +626,7 @@ impl GenerateForm {
             title,
             template: optional(self.text(GenerateFieldId::Template)),
             out: optional(self.text(GenerateFieldId::Publish)).map(PathBuf::from),
+            allow_code_execution: self.toggle(GenerateFieldId::AllowCodeExecution),
             dry_run: self.toggle(GenerateFieldId::DryRun),
             project,
             theme,
@@ -678,11 +750,17 @@ fn build_generation_fields(
             GenerateFieldId::Resource,
             FormField::Select {
                 label: "Resource",
-                options: vec!["Slides".into(), "Page".into(), "Video".into()],
+                options: vec![
+                    "Slides".into(),
+                    "Page".into(),
+                    "Video".into(),
+                    "Document".into(),
+                ],
                 selected: match resource {
                     GenerateResource::Slides => 0,
                     GenerateResource::Page => 1,
                     GenerateResource::Video => 2,
+                    GenerateResource::Document => 3,
                 },
             },
         ),
@@ -722,6 +800,7 @@ fn build_generation_fields(
                 "optional reusable structure",
                 match resource {
                     GenerateResource::Page => ChoiceSource::PageTemplates,
+                    GenerateResource::Document => ChoiceSource::DocumentTemplates,
                     _ => ChoiceSource::SlideTemplates,
                 },
             ),
@@ -731,7 +810,7 @@ fn build_generation_fields(
         GenerateFieldId::Publish,
         text_generate_field(
             match resource {
-                GenerateResource::Slides => "Publish PDF",
+                GenerateResource::Slides | GenerateResource::Document => "Publish PDF",
                 GenerateResource::Page => "Publish page",
                 GenerateResource::Video => "Publish MP4",
             },
@@ -774,6 +853,23 @@ fn build_generation_fields(
             ChoiceSource::ReviewerModels,
         ),
     ));
+    if resource == GenerateResource::Document {
+        pairs.extend([
+            (
+                GenerateFieldId::PageSize,
+                FormField::Select {
+                    label: "Page size",
+                    options: vec!["Theme default".into(), "A4".into(), "Letter".into()],
+                    selected: 0,
+                },
+            ),
+            (
+                GenerateFieldId::TableOfContents,
+                theme_override_select("Table of contents"),
+            ),
+            (GenerateFieldId::Cover, theme_override_select("Cover page")),
+        ]);
+    }
     if resource == GenerateResource::Page {
         let mut options = vec!["Project default".into(), "None".into()];
         options.extend(ui_plugins.iter().cloned());
@@ -875,13 +971,6 @@ fn build_generation_fields(
                     GenerateFieldId::Quality,
                     text_generate_value("Quality", "high", "high"),
                 ),
-                (
-                    GenerateFieldId::AllowCodeExecution,
-                    FormField::Toggle {
-                        label: "Allow generated code execution",
-                        value: false,
-                    },
-                ),
             ]),
             VideoEngineArg::Model => pairs.push((
                 GenerateFieldId::Audio,
@@ -893,17 +982,32 @@ fn build_generation_fields(
             )),
         }
     }
-    if matches!(
-        resource,
-        GenerateResource::Slides | GenerateResource::Page | GenerateResource::Video
-    ) {
-        pairs.push((GenerateFieldId::ImageTool, tool_select("Image generation")));
-    }
+    // Every resource wires an image tool, so the guard this used to carry only
+    // listed the resources that existed when it was written.
+    pairs.push((GenerateFieldId::ImageTool, tool_select("Image generation")));
     if resource == GenerateResource::Page {
         pairs.push((GenerateFieldId::VideoTool, tool_select("Video generation")));
     }
     if matches!(resource, GenerateResource::Page | GenerateResource::Video) {
         pairs.push((GenerateFieldId::AudioTool, tool_select("Speech generation")));
+    }
+    // Every resource the drafter writes can plot, and charting needs no model
+    // profile — so unlike the tools above it is offered unconditionally. Its real
+    // gate is the consent toggle below.
+    pairs.push((GenerateFieldId::ChartTool, tool_select("Chart generation")));
+    // Raised out of the Manim branch, where it used to live: charting runs
+    // generated Python for a deck or a page too, and those runs had no way to
+    // grant the permission for one generation. Withheld from the direct model
+    // engine alone, which runs no local code and whose command layer rejects the
+    // flag outright, so offering it would only build a run that cannot start.
+    if !(resource == GenerateResource::Video && video_engine == VideoEngineArg::Model) {
+        pairs.push((
+            GenerateFieldId::AllowCodeExecution,
+            FormField::Toggle {
+                label: "Allow generated code execution",
+                value: false,
+            },
+        ));
     }
     pairs.extend([
         (
@@ -927,6 +1031,7 @@ fn build_generation_fields(
                     GenerateResource::Slides => "Generate slides",
                     GenerateResource::Page => "Generate page",
                     GenerateResource::Video => "Generate video",
+                    GenerateResource::Document => "Generate document",
                 },
             },
         ),
@@ -960,6 +1065,19 @@ fn tool_select(label: &'static str) -> FormField {
     FormField::Select {
         label,
         options: vec!["Project default".into(), "On".into(), "Off".into()],
+        selected: 0,
+    }
+}
+
+/// A tri-state the theme owns until the run says otherwise.
+///
+/// Two options would collapse the distinction the CLI keeps with its `--toc` /
+/// `--no-toc` pairs: a form that can only say yes or no cannot leave the decision
+/// where it belongs, and would silently override whatever the theme chose.
+fn theme_override_select(label: &'static str) -> FormField {
+    FormField::Select {
+        label,
+        options: vec!["Theme default".into(), "On".into(), "Off".into()],
         selected: 0,
     }
 }

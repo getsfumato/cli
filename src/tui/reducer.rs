@@ -1264,6 +1264,7 @@ impl App {
     pub(super) fn start_generation(&mut self) {
         enum PreparedGeneration {
             Slides(SlidesArgs),
+            Document(DocumentArgs),
             Page(PageArgs),
             Video(VideoArgs),
         }
@@ -1271,6 +1272,10 @@ impl App {
             GenerateResource::Slides => self.form.to_slides_args().map(PreparedGeneration::Slides),
             GenerateResource::Page => self.form.to_page_args().map(PreparedGeneration::Page),
             GenerateResource::Video => self.form.to_video_args().map(PreparedGeneration::Video),
+            GenerateResource::Document => self
+                .form
+                .to_document_args()
+                .map(PreparedGeneration::Document),
         };
         let prepared = match prepared {
             Ok(prepared) => prepared,
@@ -1290,6 +1295,7 @@ impl App {
             GenerateResource::Slides => ResourceOperation::Generate,
             GenerateResource::Page => ResourceOperation::GeneratePage,
             GenerateResource::Video => ResourceOperation::GenerateVideo,
+            GenerateResource::Document => ResourceOperation::GenerateDocument,
         };
         self.transition(Screen::Running);
 
@@ -1307,6 +1313,14 @@ impl App {
             PreparedGeneration::Video(args) => {
                 effects::spawn_video_generation(job_id, application, args, sink, operation, sender)
             }
+            PreparedGeneration::Document(args) => effects::spawn_document_generation(
+                job_id,
+                application,
+                args,
+                sink,
+                operation,
+                sender,
+            ),
         });
     }
 
@@ -1399,6 +1413,7 @@ impl App {
             KeyCode::Esc | KeyCode::Backspace => self.transition(Screen::Home),
             KeyCode::Enter => self.transition(match self.resource_operation {
                 ResourceOperation::Generate
+                | ResourceOperation::GenerateDocument
                 | ResourceOperation::GeneratePage
                 | ResourceOperation::GenerateVideo => Screen::Generate,
                 ResourceOperation::Edit => Screen::Edit,

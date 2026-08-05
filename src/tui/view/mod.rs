@@ -107,17 +107,22 @@ impl App {
                     GenerateResource::Slides => "Slides",
                     GenerateResource::Page => "Page",
                     GenerateResource::Video => "Video",
+                    GenerateResource::Document => "Document",
                 }
             ),
             Screen::Edit => "Edit / Slides".to_string(),
             Screen::Running => match self.resource_operation {
                 ResourceOperation::Generate => "Generate / In progress".to_string(),
+                ResourceOperation::GenerateDocument => {
+                    "Generate document / In progress".to_string()
+                }
                 ResourceOperation::GeneratePage => "Generate page / In progress".to_string(),
                 ResourceOperation::GenerateVideo => "Generate video / In progress".to_string(),
                 ResourceOperation::Edit => "Edit / In progress".to_string(),
             },
             Screen::Complete => match self.resource_operation {
                 ResourceOperation::Generate => "Generate / Result".to_string(),
+                ResourceOperation::GenerateDocument => "Generate document / Result".to_string(),
                 ResourceOperation::GeneratePage => "Generate page / Result".to_string(),
                 ResourceOperation::GenerateVideo => "Generate video / Result".to_string(),
                 ResourceOperation::Edit => "Edit / Result".to_string(),

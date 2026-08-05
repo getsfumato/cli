@@ -83,6 +83,8 @@ pub(crate) struct GenerateDocumentOptions {
     pub template: Option<GenerationTemplate>,
     pub dry_run: bool,
     pub review: bool,
+    /// Per-run consent to execute generated Python, gating the charting tool.
+    pub allow_code_execution: bool,
     pub page_size: Option<DocumentPageSize>,
     pub table_of_contents: Option<bool>,
     pub cover: Option<bool>,
@@ -166,6 +168,7 @@ pub(crate) async fn generate_document(
         template,
         dry_run,
         review,
+        allow_code_execution,
         page_size,
         table_of_contents,
         cover,
@@ -282,7 +285,7 @@ pub(crate) async fn generate_document(
         project_instructions
             .as_ref()
             .map(|value| value.content.clone()),
-        false,
+        allow_code_execution,
     );
     let chart_generation_available = chart_tool.is_some();
     let tool_set = tool_factory.create(GenerationToolsRequest {
@@ -355,7 +358,7 @@ pub(crate) async fn generate_document(
     let mut warnings = prepared_assets.warnings.clone();
     // A charting tool the project enabled but the Python gate withheld leaves no
     // other trace: the resource simply comes back without charts.
-    warnings.extend(chart_tool_gate_warning(&config, false));
+    warnings.extend(chart_tool_gate_warning(&config, allow_code_execution));
     let mut prompts = prepared_assets.prompts.clone();
 
     let mut draft_request = render_pair(

@@ -1227,6 +1227,7 @@ pub(crate) async fn execute_page(
             ui,
             dry_run: args.dry_run,
             review: !args.no_review,
+            allow_code_execution: args.allow_code_execution,
             event_sink,
         })
         .await?)
@@ -1632,6 +1633,7 @@ pub(crate) async fn execute_document(
             cover: flag_override(args.cover, args.no_cover),
             dry_run: args.dry_run,
             review: !args.no_review,
+            allow_code_execution: args.allow_code_execution,
             event_sink,
         })
         .await?)
@@ -1766,6 +1768,7 @@ pub(crate) async fn execute_slides(
             template: args.template,
             dry_run: args.dry_run,
             review: !args.no_review,
+            allow_code_execution: args.allow_code_execution,
             event_sink,
         })
         .await?)

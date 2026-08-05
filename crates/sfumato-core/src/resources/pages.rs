@@ -70,6 +70,8 @@ pub(crate) struct GeneratePageOptions {
     pub plugins: Vec<String>,
     pub dry_run: bool,
     pub review: bool,
+    /// Per-run consent to execute generated Python, gating the charting tool.
+    pub allow_code_execution: bool,
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
     pub prompt_catalog: Arc<dyn PromptCatalog>,
     pub artifact_store: Arc<dyn ArtifactStore>,
@@ -162,6 +164,7 @@ pub(crate) async fn generate_page(
         plugins: plugin_ids,
         dry_run,
         review,
+        allow_code_execution,
         event_sink,
         prompt_catalog,
         artifact_store,
@@ -321,7 +324,7 @@ pub(crate) async fn generate_page(
         project_instructions
             .as_ref()
             .map(|value| value.content.clone()),
-        false,
+        allow_code_execution,
     );
     let chart_generation_available = chart_tool.is_some();
     let tool_set = tool_factory.create(GenerationToolsRequest {
@@ -518,7 +521,7 @@ pub(crate) async fn generate_page(
     let mut warnings = prepared_assets.warnings.clone();
     // A charting tool the project enabled but the Python gate withheld leaves no
     // other trace: the resource simply comes back without charts.
-    warnings.extend(chart_tool_gate_warning(&config, false));
+    warnings.extend(chart_tool_gate_warning(&config, allow_code_execution));
 
     if let Some((reviewer_name, reviewer_profile)) = reviewer {
         emit_stage(

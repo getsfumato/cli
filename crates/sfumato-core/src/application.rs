@@ -94,6 +94,12 @@ pub struct GenerateSlidesCommand {
     pub dry_run: bool,
     /// Run semantic and layout review.
     pub review: bool,
+    /// Consent, for this run only, to execute the Python the model writes.
+    ///
+    /// Charting is the only tool a deck can reach that runs generated code, so
+    /// this is what decides whether it is offered at all when the project has
+    /// not persisted `security.allow_python`.
+    pub allow_code_execution: bool,
     /// Legacy detailed generation events consumed by current frontends.
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
 }
@@ -120,6 +126,8 @@ pub struct GenerateDocumentCommand {
     pub dry_run: bool,
     /// Run semantic review and focused page-format repair.
     pub review: bool,
+    /// Consent, for this run only, to execute the Python the model writes.
+    pub allow_code_execution: bool,
     /// Legacy detailed generation events consumed by current frontends.
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
 }
@@ -146,6 +154,8 @@ pub struct GeneratePageCommand {
     pub dry_run: bool,
     /// Enables semantic and browser-focused model repair.
     pub review: bool,
+    /// Consent, for this run only, to execute the Python the model writes.
+    pub allow_code_execution: bool,
     /// Optional frontend observer for provider progress events.
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
 }
@@ -443,6 +453,7 @@ impl SfumatoApplication {
                 operation: command.operation,
                 dry_run: command.dry_run,
                 review: command.review,
+                allow_code_execution: command.allow_code_execution,
                 event_sink: command.event_sink,
                 prompt_catalog,
                 artifact_store: Arc::clone(&self.artifacts),
@@ -485,6 +496,7 @@ impl SfumatoApplication {
                     .transpose()?,
                 dry_run: command.dry_run,
                 review: command.review,
+                allow_code_execution: command.allow_code_execution,
                 page_size: command.page_size,
                 table_of_contents: command.table_of_contents,
                 cover: command.cover,
@@ -540,6 +552,7 @@ impl SfumatoApplication {
                 plugins,
                 dry_run: command.dry_run,
                 review: command.review,
+                allow_code_execution: command.allow_code_execution,
                 event_sink: command.event_sink,
                 prompt_catalog,
                 artifact_store: Arc::clone(&self.artifacts),
