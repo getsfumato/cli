@@ -85,9 +85,21 @@ impl FilesystemToolExecutor {
             .canonicalize()
             .with_context(|| format!("Could not resolve tool path {}", candidate.display()))?;
         if !self.roots.iter().any(|root| canonical.starts_with(root)) {
+            // Naming the roots is what makes the refusal actionable: a model that only
+            // hears "outside the allowed roots" has nothing to correct towards, and
+            // spends its next turn guessing. Models do reach for paths of their own —
+            // a plugin cache, a skill file — and one sentence turns a dead turn into a
+            // corrected one.
             bail!(
-                "Refusing to read {} because it is outside the allowed generation roots",
-                canonical.display()
+                "Refusing to read {} because it is outside the allowed generation roots. \
+                 Readable roots for this operation: {}. Only the project and the sources \
+                 given to it can be read.",
+                canonical.display(),
+                self.roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
         Ok(canonical)
