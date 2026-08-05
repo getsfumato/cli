@@ -317,3 +317,68 @@ fn the_bundled_theme_colours_all_validate() {
     let package = repository.install_default().unwrap();
     assert!(!package.manifest.tokens.colors.is_empty());
 }
+
+/// Imports a DESIGN.md whose colours use the given names and returns the HTML theme CSS.
+fn html_css_for_colors(colors: &[(&str, &str)]) -> String {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemThemeRepository::new(temp.path().join("themes"));
+    let design_path = temp.path().join("DESIGN.md");
+    let colours = colors
+        .iter()
+        .map(|(name, value)| format!("  {name}: \"{value}\""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(
+        &design_path,
+        format!(
+            "---\nversion: alpha\nname: Vocabulary\ndescription: Token naming.\ncolors:\n\
+             {colours}\ntypography:\n  body-md:\n    fontFamily: Inter\n---\n\n## Overview\n\nx\n"
+        ),
+    )
+    .unwrap();
+    let imported = repository
+        .import_design(design_path, Some("vocabulary"))
+        .unwrap();
+    let css = imported
+        .manifest
+        .adapters
+        .html
+        .as_ref()
+        .map(|html| imported.root.join(&html.css))
+        .expect("the imported theme declares an HTML adapter");
+    fs::read_to_string(css).unwrap()
+}
+
+#[test]
+fn a_dark_theme_that_names_its_surfaces_canvas_and_ink_is_not_inverted() {
+    // The vocabulary a real imported theme uses. Neither `background` nor `text` is
+    // present, so the old chains fell through to white on dark grey and turned a dark
+    // theme into a light one by pure absence — a dark page body with light content, or
+    // the reverse, depending on what the page itself assumed.
+    let css = html_css_for_colors(&[
+        ("canvas", "#181818"),
+        ("ink", "#ffffff"),
+        ("surface-card", "#303030"),
+        ("primary", "#da291c"),
+    ]);
+
+    assert!(css.contains("--background: #181818"), "{css}");
+    assert!(css.contains("--text: #ffffff"), "{css}");
+    assert!(css.contains("--surface: #303030"), "{css}");
+}
+
+#[test]
+fn every_manifest_token_becomes_a_custom_property_the_prompt_can_promise() {
+    // The prompt lists these names and tells the model to use them, so a page written to
+    // the instruction must not resolve them to nothing.
+    let css = html_css_for_colors(&[
+        ("canvas", "#181818"),
+        ("accent-yellow", "#f6e500"),
+        ("semantic-info", "#4c98b9"),
+    ]);
+
+    assert!(css.contains("--canvas: #181818"), "{css}");
+    assert!(css.contains("--accent-yellow: #f6e500"), "{css}");
+    assert!(css.contains("--semantic-info: #4c98b9"), "{css}");
+    assert!(css.contains("--font-body: Inter"), "{css}");
+}

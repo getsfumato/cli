@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, fs};
 
-use super::{StandalonePageAssembler, contains_html_tag};
+use super::{
+    StandalonePageAssembler, contains_html_tag, declared_custom_properties,
+    undeclared_token_properties,
+};
 use sfumato_core::{
     page_plugins::{PagePluginPackage, PagePluginSummary},
     renderers::{PageAssembler, PageAssemblyRequest},
@@ -493,4 +496,54 @@ fn a_real_cdn_beside_a_namespace_is_still_refused() {
         !error.contains("2000/svg"),
         "the namespace must not be listed as an offender: {error}"
     );
+}
+
+#[test]
+fn a_theme_installed_before_the_token_vocabulary_still_gets_it() {
+    // Written once at import and never rewritten, so a theme on disk from an older build
+    // ships only the six aliases. The page then references `var(--canvas)` — which the
+    // prompt told it to use — and gets nothing.
+    let stale = ":root { --background: #ffffff; --text: #202124; }\n";
+    let (_directory, mut package) = theme();
+    for (name, value) in [("canvas", "#181818"), ("ink", "#ffffff")] {
+        package
+            .manifest
+            .tokens
+            .colors
+            .insert(name.into(), value.into());
+    }
+    let manifest = package.manifest;
+
+    let filled = undeclared_token_properties(stale, &manifest);
+
+    assert!(filled.contains("--canvas: #181818"), "{filled}");
+    assert!(filled.contains("--ink: #ffffff"), "{filled}");
+    // What the stylesheet does declare stays authoritative: it may have been tuned.
+    assert!(!filled.contains("--background"), "{filled}");
+    assert!(!filled.contains("--text:"), "{filled}");
+}
+
+#[test]
+fn a_current_theme_needs_no_second_block_at_all() {
+    let (_directory, mut package) = theme();
+    package
+        .manifest
+        .tokens
+        .colors
+        .insert("canvas".into(), "#181818".into());
+    let manifest = package.manifest;
+    let complete = ":root { --canvas: #181818; }\n";
+
+    assert_eq!(undeclared_token_properties(complete, &manifest), "");
+}
+
+#[test]
+fn using_a_variable_is_not_declaring_it() {
+    // `var(--canvas)` is a use; only `--canvas:` claims the name. Confusing the two would
+    // let a page's own reference suppress the definition it needs.
+    let uses_only = "body { background: var(--canvas); color: var(--ink); }\n";
+
+    let declared = declared_custom_properties(uses_only);
+
+    assert!(declared.is_empty(), "{declared:?}");
 }

@@ -539,7 +539,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "370373d6320f02c4a227c0eff7bd1486f9a748f65377aa9df1a44c8dc26984ff"
+        "b08e03c13f10d0e324be32a65fabd4cb8dced0404dd794d4161beecef59200d8"
     );
 }
 

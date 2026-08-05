@@ -313,9 +313,16 @@ fn write_design_adapters(root: &Path, manifest: &ThemeManifest) -> Result<()> {
             .cloned()
             .unwrap_or_else(|| fallback.to_string())
     };
-    let background = color("background", &color("neutral", "#ffffff"));
-    let surface = color("surface", &background);
-    let text = color("text", &color("on-surface", "#202124"));
+    // Each chain walks the names real theme manifests actually use before falling back
+    // to a literal. Stopping at `background`/`neutral` meant a theme that names its
+    // surfaces `canvas` and `ink` — as an imported DESIGN.md does — resolved to white on
+    // dark grey by pure absence, inverting a dark theme rather than reading it.
+    let background = color("background", &color("canvas", &color("neutral", "#ffffff")));
+    let surface = color(
+        "surface",
+        &color("surface-card", &color("canvas-elevated", &background)),
+    );
+    let text = color("text", &color("ink", &color("on-surface", "#202124")));
     let muted = color("muted", &color("secondary", &text));
     let primary = color("primary", &text);
     let accent = color("accent", &color("tertiary", &primary));
@@ -338,11 +345,34 @@ fn write_design_adapters(root: &Path, manifest: &ThemeManifest) -> Result<()> {
     fs::write(root.join(&manifest.adapters.marp_css), marp)?;
     if let Some(html) = &manifest.adapters.html {
         let css = format!(
-            ":root {{ color-scheme: light dark; --background: {background}; --surface: {surface}; --text: {text}; --muted: {muted}; --primary: {primary}; --accent: {accent}; }}\nbody {{ margin: 0; background: var(--background); color: var(--text); font-family: {body}; }}\nh1, h2, h3 {{ font-family: {heading}; }}\nmain {{ max-width: 72rem; margin: 0 auto; padding: 2rem; }}\n"
+            ":root {{ color-scheme: light dark; {}--background: {background}; --surface: {surface}; --text: {text}; --muted: {muted}; --primary: {primary}; --accent: {accent}; }}\nbody {{ margin: 0; background: var(--background); color: var(--text); font-family: {body}; }}\nh1, h2, h3 {{ font-family: {heading}; }}\nmain {{ max-width: 72rem; margin: 0 auto; padding: 2rem; }}\n",
+            token_custom_properties(manifest),
         );
         fs::write(root.join(&html.css), css)?;
     }
     Ok(())
+}
+
+/// Every manifest token as a CSS custom property, in `--name: value; ` form.
+///
+/// The drafting prompt lists the manifest's own token names and tells the model to use
+/// the theme variables, but only six hardcoded aliases were ever emitted — so a page
+/// that did exactly as instructed referenced `var(--canvas)`, `var(--ink)`, and
+/// `var(--surface-card)`, none of which existed, and every one silently fell through to
+/// whatever fallback the model had guessed. A dark card on a light body is what that
+/// looks like.
+///
+/// Fonts are prefixed because a font and a colour can share a name, and `--font-body` is
+/// the spelling the prompt shows.
+pub(crate) fn token_custom_properties(manifest: &ThemeManifest) -> String {
+    let mut properties = String::new();
+    for (name, value) in &manifest.tokens.colors {
+        properties.push_str(&format!("--{name}: {value}; "));
+    }
+    for (name, value) in &manifest.tokens.fonts {
+        properties.push_str(&format!("--font-{name}: {value}; "));
+    }
+    properties
 }
 
 fn render_design_document(manifest: &ThemeManifest) -> Result<String> {

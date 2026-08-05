@@ -15,7 +15,9 @@ Name: {{ theme_name }}
 Colors: {{ theme_colors }}
 Fonts: {{ theme_fonts }}
 
-Use the semantic theme variables and create a clear visual hierarchy. Do not redefine the whole theme or force a one-color palette.
+Every colour above is available as a CSS custom property named `--<token>`, and every font as `--font-<token>` — `canvas` is `var(--canvas)`, `surface-card` is `var(--surface-card)`, `body` is `var(--font-body)`. Use them directly. A fallback is not a substitute: `var(--canvas, #181818)` hides a wrong name behind a hardcoded colour, and the page then ignores the theme it was given.
+
+Create a clear visual hierarchy. Do not redefine the whole theme or force a one-color palette, and do not set a background on the page wrapper that fights the one `body` already has.
 
 {% if template_enabled %}
 ## Structural template
