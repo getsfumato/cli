@@ -15,8 +15,8 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, StatefulWidget, Wrap,
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph,
+        Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Wrap,
     },
 };
 use ratatui_image::{Resize, StatefulImage, picker::Picker, protocol::StatefulProtocol};
