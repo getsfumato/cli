@@ -244,15 +244,6 @@ pub(super) fn truncate_spans(spans: Vec<Span<'static>>, budget: usize) -> Vec<Sp
     kept
 }
 
-pub(super) fn panel(title: &'static str) -> Block<'static> {
-    Block::new()
-        .title(format!(" {title} "))
-        .title_style(Style::default().fg(CYAN).bold())
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(MUTED))
-        .style(Style::default().bg(BG))
-}
 
 pub(super) fn field_block(label: &'static str, selected: bool) -> Block<'static> {
     Block::new()
