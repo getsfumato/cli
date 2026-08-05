@@ -461,6 +461,14 @@ pub enum ThemeCommands {
     List,
     Show(ThemeNameArgs),
     Use(ThemeUseArgs),
+    #[command(about = "Re-derive a theme's renderer stylesheets from its manifest")]
+    Regenerate(ThemeRegenerateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ThemeRegenerateArgs {
+    #[arg(help = "Theme to regenerate; omit to regenerate every installed theme")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]

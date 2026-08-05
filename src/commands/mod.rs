@@ -789,6 +789,28 @@ impl RunnableCommand for ThemeCommands {
                 println!("{}", toml::to_string_pretty(&theme.manifest)?);
                 Ok(())
             }
+            Self::Regenerate(args) => {
+                let names = match args.name {
+                    Some(name) => vec![name],
+                    None => application
+                        .list_themes()?
+                        .into_iter()
+                        .map(|theme| theme.name)
+                        .collect(),
+                };
+                // Reported per theme rather than as one line: a package that fails to
+                // regenerate must not be hidden behind the ones that succeeded.
+                let mut rows = Vec::new();
+                for name in names {
+                    let outcome = match application.regenerate_theme(&name) {
+                        Ok(_) => Cell::success("regenerated"),
+                        Err(error) => Cell::warning(error.to_string()),
+                    };
+                    rows.push(vec![Cell::primary(name), outcome]);
+                }
+                print_table(&["THEME", "RESULT"], rows);
+                Ok(())
+            }
             Self::Use(args) => args.run(application).await,
         }
     }

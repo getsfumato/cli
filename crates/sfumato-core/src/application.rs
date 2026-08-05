@@ -850,6 +850,15 @@ impl SfumatoApplication {
             .export_design(name, path)
     }
 
+    /// Re-derives one theme's renderer stylesheets from its manifest.
+    ///
+    /// They were written once, at import, and nothing rewrote them — so a theme installed
+    /// by an older build keeps stylesheets a current build would generate differently,
+    /// and the drafting prompt promises custom properties the stylesheet never declares.
+    pub fn regenerate_theme(&self, name: &str) -> SfumatoResult<ThemePackage> {
+        ThemeService::new(Arc::clone(&self.themes), Arc::clone(&self.projects)).regenerate(name)
+    }
+
     /// Lists reusable assets for the active or explicitly selected project.
     pub fn list_project_assets(
         &self,

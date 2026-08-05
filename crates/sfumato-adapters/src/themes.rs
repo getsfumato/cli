@@ -144,6 +144,17 @@ impl ThemeRepository for FilesystemThemeRepository {
         })())
     }
 
+    fn regenerate_adapters(&self, name: &str) -> SfumatoResult<ThemePackage> {
+        theme_result((|| {
+            // Reads the manifest back rather than the stylesheets: the manifest is the
+            // source of truth the drafting prompt already quotes from, and the
+            // stylesheets are derived from it.
+            let package = self.resolve(name)?;
+            write_design_adapters(&package.root, &package.manifest)?;
+            self.resolve(name)
+        })())
+    }
+
     fn export_design(&self, name: &str, path: PathBuf) -> SfumatoResult<PathBuf> {
         theme_result((|| {
             let theme = self.resolve(name)?;

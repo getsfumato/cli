@@ -91,4 +91,11 @@ pub trait ThemeRepository: Send + Sync {
     fn import_design(&self, path: PathBuf, name: Option<&str>) -> SfumatoResult<ThemePackage>;
     /// Exports a theme package using the Google DESIGN.md interchange format.
     fn export_design(&self, name: &str, path: PathBuf) -> SfumatoResult<PathBuf>;
+    /// Re-derives the renderer stylesheets a theme package ships.
+    ///
+    /// They are written once, at import, from the manifest — so a package installed by an
+    /// older build keeps stylesheets that a current one would generate differently, and
+    /// nothing but a reimport rewrote them. Reimporting is not an option: it refuses an
+    /// existing name, and there is no remove.
+    fn regenerate_adapters(&self, name: &str) -> SfumatoResult<ThemePackage>;
 }

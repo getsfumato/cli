@@ -382,3 +382,47 @@ fn every_manifest_token_becomes_a_custom_property_the_prompt_can_promise() {
     assert!(css.contains("--semantic-info: #4c98b9"), "{css}");
     assert!(css.contains("--font-body: Inter"), "{css}");
 }
+
+#[test]
+fn regenerating_rewrites_only_the_derived_stylesheets() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemThemeRepository::new(temp.path().join("themes"));
+    let package = repository.create("regen").unwrap();
+    let manifest_before = fs::read_to_string(package.root.join("theme.toml")).unwrap();
+    let shell = package
+        .manifest
+        .adapters
+        .html
+        .as_ref()
+        .map(|html| package.root.join(&html.shell))
+        .expect("the scaffold declares an HTML adapter");
+    let shell_before = fs::read_to_string(&shell).unwrap();
+    // A stylesheet an older build wrote, missing the token vocabulary entirely.
+    let css_path = package
+        .root
+        .join(&package.manifest.adapters.html.as_ref().unwrap().css);
+    fs::write(&css_path, ":root { --background: #ffffff; }\n").unwrap();
+
+    repository.regenerate_adapters("regen").unwrap();
+
+    let css_after = fs::read_to_string(&css_path).unwrap();
+    assert!(
+        css_after.contains("--surface:"),
+        "the stylesheet must be re-derived: {css_after}"
+    );
+    // Reimporting is not an option — it refuses an existing name and there is no remove —
+    // so this must not become a way to lose the manifest or a hand-edited shell.
+    assert_eq!(
+        fs::read_to_string(package.root.join("theme.toml")).unwrap(),
+        manifest_before
+    );
+    assert_eq!(fs::read_to_string(&shell).unwrap(), shell_before);
+}
+
+#[test]
+fn regenerating_an_unknown_theme_is_an_error_rather_than_a_silent_success() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = FilesystemThemeRepository::new(temp.path().join("themes"));
+
+    assert!(repository.regenerate_adapters("absent").is_err());
+}

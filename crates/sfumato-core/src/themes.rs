@@ -193,6 +193,12 @@ impl ThemeService {
         validate_theme_name(name)?;
         self.repository.export_design(name, path)
     }
+
+    /// Re-derives one installed theme's renderer stylesheets from its manifest.
+    pub fn regenerate(&self, name: &str) -> Result<ThemePackage> {
+        validate_theme_name(name)?;
+        self.repository.regenerate_adapters(name)
+    }
 }
 
 /// Validates the stable theme identifier grammar.
