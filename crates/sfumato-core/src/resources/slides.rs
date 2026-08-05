@@ -236,6 +236,21 @@ pub(crate) async fn generate_slides(
             })
         })
         .transpose()?;
+    // Resolved before the prompt context, because whether the model is told it can plot
+    // depends on whether it actually can. The tool was reaching the factory and never
+    // the prose, which left it announced only in the tool schema.
+    let chart_tool = ChartToolConfig::enable(
+        &config,
+        python_runtime.clone(),
+        images_dir.clone(),
+        "images",
+        &theme,
+        project_instructions
+            .as_ref()
+            .map(|value| value.content.clone()),
+        false,
+    );
+    let chart_generation_available = chart_tool.is_some();
     let tool_set = tool_factory.create(GenerationToolsRequest {
         project_root: config.project_root.clone(),
         sources: request.sources.clone(),
@@ -244,17 +259,7 @@ pub(crate) async fn generate_slides(
         // Neither a deck nor a printable document has a timeline to hang audio
         // on, so speech is not offered here.
         audio: None,
-        chart: ChartToolConfig::enable(
-            &config,
-            python_runtime.clone(),
-            images_dir.clone(),
-            "images",
-            &theme,
-            project_instructions
-                .as_ref()
-                .map(|value| value.content.clone()),
-            false,
-        ),
+        chart: chart_tool,
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let review_tool_definitions = tool_set
@@ -282,6 +287,7 @@ pub(crate) async fn generate_slides(
         title: title_override.as_deref(),
         source_bundle: &source_bundle,
         image_generation_available: image_selection.is_some(),
+        chart_generation_available,
         project_instructions: &project_instructions_prompt,
         tools: &tool_summaries,
         max_tool_rounds: draft_tool_rounds,
@@ -366,6 +372,7 @@ pub(crate) async fn generate_slides(
         title: title_override.as_deref(),
         source_bundle: &compact_source_bundle,
         image_generation_available: false,
+        chart_generation_available: false,
         project_instructions: &project_instructions_prompt,
         tools: &[],
         max_tool_rounds: draft_tool_rounds,

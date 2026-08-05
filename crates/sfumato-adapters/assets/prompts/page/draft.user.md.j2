@@ -43,8 +43,14 @@ API: `{{ plugin.api_global }}`
 No JavaScript plugins were selected. Use standard browser APIs only.
 {% endif %}
 
+The page is rendered offline with no network access, so a charting or animation library cannot be loaded from a CDN and a reference to one is rejected outright. Build interactivity with plain DOM, CSS, SVG, or canvas, and use the generation tools listed above for anything a script cannot draw.
+
 {% if image_generation_available %}
 Actively assess where a new purpose-built image would materially improve learning. Call `sfumato_image_gen` whenever it is the clearest medium, even when reusable project artifacts are listed below; those artifacts are options, not an image budget or a restriction. Use every returned artifact path exactly in an `<img>` element with useful alt text.
+{% endif %}
+
+{% if chart_generation_available %}
+Call `sfumato_chart_gen` for anything quantitative — axes, curves, distributions, phase and convergence diagrams, 3D surfaces — by writing matplotlib code that Sfumato runs locally against the project theme. The numbers are computed rather than imagined, so prefer it over an illustration whenever the picture carries data. Embed the returned `markdown_path` exactly as its relative `<img>` source.
 {% endif %}
 
 {% if video_generation_available %}

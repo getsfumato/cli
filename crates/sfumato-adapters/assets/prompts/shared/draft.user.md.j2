@@ -45,6 +45,9 @@ Template source (read-only structure):
 {% else %}
 - No image generation model is configured. Use Markdown and Mermaid for visuals.
 {% endif %}
+{% if chart_generation_available %}
+- Call `sfumato_chart_gen` for anything quantitative — axes, curves, distributions, phase and convergence diagrams, 3D surfaces — by writing matplotlib code that Sfumato runs locally against the project theme. The numbers are computed rather than imagined, so prefer it over an illustration whenever the picture carries data. Embed every returned `markdown_path` with Marp's `![height:420px](images/file.png)` syntax so it fits within the slide.
+{% endif %}
 {% if reusable_assets %}
 - The project provides these theme-compatible visual assets. They are copied only when the final deck references them. Use one only when it improves the deck, and embed its exact path with Marp image syntax:
 {% for asset in reusable_assets %}

@@ -58,6 +58,9 @@ Content requirements:
 {% else %}
 - No image generation model is configured. Use Markdown and Mermaid for visuals.
 {% endif %}
+{% if chart_generation_available %}
+- Call `sfumato_chart_gen` for anything quantitative — axes, curves, distributions, phase and convergence diagrams, 3D surfaces — by writing matplotlib code that Sfumato runs locally against the project theme. The numbers are computed rather than imagined, so prefer it over an illustration whenever the picture carries data. Embed every returned `markdown_path` with plain Markdown image syntax, `![alt](images/file.png)`.
+{% endif %}
 {% if reusable_assets %}
 - The project provides these theme-compatible visual assets. They are copied only when the final document references them. Use one only when it improves the document, and embed its exact path:
 {% for asset in reusable_assets %}

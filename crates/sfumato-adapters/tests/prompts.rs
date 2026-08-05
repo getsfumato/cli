@@ -27,6 +27,7 @@ fn representative_variables() -> PromptVariables {
         ("image_generation_available", json!(true)),
         ("narration_available", json!(true)),
         ("video_generation_available", json!(true)),
+        ("chart_generation_available", json!(true)),
         (
             "accessible_description",
             json!("Animated Fourier decomposition"),
@@ -538,7 +539,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "eacac02db2ec67f5484db2a97302daf53ead160579d35752bbafbdf207d0c42a"
+        "370373d6320f02c4a227c0eff7bd1486f9a748f65377aa9df1a44c8dc26984ff"
     );
 }
 
@@ -921,4 +922,43 @@ fn an_unrecognisable_stray_is_reported_without_a_guess() {
 
     assert_eq!(validation.unreferenced.len(), 1);
     assert_eq!(validation.unreferenced[0].expected, None);
+}
+
+#[test]
+fn every_draft_prompt_announces_the_charting_tool_when_it_is_available() {
+    let catalog = LayeredPromptCatalog::new(None, None);
+    for id in [
+        PromptId::PageDraftUser,
+        PromptId::SlidesDraftUser,
+        PromptId::DocumentDraftUser,
+    ] {
+        let rendered = catalog
+            .render(PromptRenderRequest {
+                id,
+                variables: representative_variables(),
+            })
+            .unwrap();
+        // A tool present only in the schema gets overlooked, and the model reaches for
+        // the habit that fits the task — a charting library from a CDN, which the page
+        // validator then rejects. Naming it in the prose is what closed that gap.
+        assert!(
+            rendered.text.contains("sfumato_chart_gen"),
+            "{id:?} offers the charting tool without telling the model it exists"
+        );
+    }
+}
+
+#[test]
+fn the_page_prompt_says_what_to_do_instead_of_loading_a_library() {
+    let catalog = LayeredPromptCatalog::new(None, None);
+    let rendered = catalog
+        .render(PromptRenderRequest {
+            id: PromptId::PageDraftUser,
+            variables: representative_variables(),
+        })
+        .unwrap();
+
+    // "Do not use remote URLs" alone left no offline path for interactivity.
+    assert!(rendered.text.contains("cannot be loaded from a CDN"));
+    assert!(rendered.text.contains("plain DOM, CSS, SVG, or canvas"));
 }

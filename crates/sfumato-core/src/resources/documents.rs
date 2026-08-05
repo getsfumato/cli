@@ -139,6 +139,7 @@ pub(crate) struct DocumentPromptContext {
     pub table_of_contents: bool,
     pub reusable_assets: Vec<ProjectAssetReference>,
     pub image_generation_available: bool,
+    pub chart_generation_available: bool,
     pub template_enabled: bool,
     pub template_name: String,
     pub template_source: String,
@@ -269,6 +270,21 @@ pub(crate) async fn generate_document(
         theme: theme.clone(),
         project_instructions: project_instructions.as_ref().map(|v| v.content.clone()),
     });
+    // Resolved before the prompt context, because whether the model is told it can plot
+    // depends on whether it actually can. The tool was reaching the factory and never
+    // the prose, which left it announced only in the tool schema.
+    let chart_tool = ChartToolConfig::enable(
+        &config,
+        python_runtime.clone(),
+        images_dir.clone(),
+        "images",
+        &theme,
+        project_instructions
+            .as_ref()
+            .map(|value| value.content.clone()),
+        false,
+    );
+    let chart_generation_available = chart_tool.is_some();
     let tool_set = tool_factory.create(GenerationToolsRequest {
         project_root: config.project_root.clone(),
         sources: request.sources.clone(),
@@ -277,17 +293,7 @@ pub(crate) async fn generate_document(
         // Neither a deck nor a printable document has a timeline to hang audio
         // on, so speech is not offered here.
         audio: None,
-        chart: ChartToolConfig::enable(
-            &config,
-            python_runtime.clone(),
-            images_dir.clone(),
-            "images",
-            &theme,
-            project_instructions
-                .as_ref()
-                .map(|value| value.content.clone()),
-            false,
-        ),
+        chart: chart_tool,
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let tool_summaries = summarize_tools(&tool_set.definitions);
@@ -327,6 +333,7 @@ pub(crate) async fn generate_document(
         table_of_contents: setup.table_of_contents,
         reusable_assets: reusable_assets.clone(),
         image_generation_available: image_selection.is_some(),
+        chart_generation_available,
         template_enabled: template.is_some(),
         template_name: template
             .as_ref()

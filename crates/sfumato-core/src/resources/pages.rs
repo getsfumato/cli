@@ -111,6 +111,7 @@ struct PagePromptContext {
     title_provided: bool,
     image_generation_available: bool,
     video_generation_available: bool,
+    chart_generation_available: bool,
     source_bundle: String,
     plugins: Vec<PagePromptPlugin>,
     page_snapshot: String,
@@ -142,6 +143,7 @@ struct PageContextInput<'a> {
     source_bundle: &'a str,
     image_generation_available: bool,
     video_generation_available: bool,
+    chart_generation_available: bool,
     plugins: &'a [PagePluginPackage],
     max_tool_rounds: usize,
     template: Option<&'a GenerationTemplate>,
@@ -306,6 +308,22 @@ pub(crate) async fn generate_page(
             })
         })
         .transpose()?;
+    // Resolved before the prompt context is built, because whether the model is told
+    // it can plot depends on whether it actually can. The tool used to be passed to
+    // the factory and never mentioned in the prose, which left it announced only in
+    // the tool schema — see the chart paragraph in the draft prompt.
+    let chart_tool = ChartToolConfig::enable(
+        &config,
+        python_runtime.clone(),
+        images_dir.clone(),
+        "assets/images",
+        &theme,
+        project_instructions
+            .as_ref()
+            .map(|value| value.content.clone()),
+        false,
+    );
+    let chart_generation_available = chart_tool.is_some();
     let tool_set = tool_factory.create(GenerationToolsRequest {
         project_root: config.project_root.clone(),
         sources: request.sources.clone(),
@@ -329,17 +347,7 @@ pub(crate) async fn generate_page(
             reference_prefix: "assets/audio".into(),
             options: profile.options.speech.clone(),
         }),
-        chart: ChartToolConfig::enable(
-            &config,
-            python_runtime.clone(),
-            images_dir.clone(),
-            "assets/images",
-            &theme,
-            project_instructions
-                .as_ref()
-                .map(|value| value.content.clone()),
-            false,
-        ),
+        chart: chart_tool,
         prompt_catalog: prompt_catalog.clone(),
     })?;
     let tool_summaries = summarize_tools(&tool_set.definitions);
@@ -382,6 +390,7 @@ pub(crate) async fn generate_page(
         source_bundle: &source_bundle,
         image_generation_available: image_selection.is_some(),
         video_generation_available: video_selection.is_some(),
+        chart_generation_available,
         plugins: &plugins,
         max_tool_rounds,
         template: template.as_ref(),
@@ -400,6 +409,7 @@ pub(crate) async fn generate_page(
     compact_context.source_bundle = compact_source_bundle;
     compact_context.image_generation_available = false;
     compact_context.video_generation_available = false;
+    compact_context.chart_generation_available = false;
     let compact_request = render_page_request(
         prompt_catalog.as_ref(),
         PromptId::PageCompactDraftSystem,
@@ -860,6 +870,7 @@ fn page_context(input: PageContextInput<'_>) -> PagePromptContext {
         source_bundle,
         image_generation_available,
         video_generation_available,
+        chart_generation_available,
         plugins,
         max_tool_rounds,
         template,
@@ -882,6 +893,7 @@ fn page_context(input: PageContextInput<'_>) -> PagePromptContext {
         title_provided: title.is_some(),
         image_generation_available,
         video_generation_available,
+        chart_generation_available,
         source_bundle: source_bundle.into(),
         plugins: plugins
             .iter()
