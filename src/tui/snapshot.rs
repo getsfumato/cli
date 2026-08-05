@@ -13,7 +13,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use sfumato_core::application::SfumatoApplication;
+use sfumato_core::{application::SfumatoApplication, config::Capability, templates::TemplateKind};
 
 /// Everything the chrome and the home screen display about the workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -29,11 +29,47 @@ pub(super) struct WorkspaceSnapshot {
     /// Number of registered projects, so "no active project" can be distinguished
     /// from "no projects at all".
     pub(super) projects: usize,
+    /// Values the form pickers offer.
+    pub(super) options: FormOptions,
     /// Problems found while collecting, surfaced rather than swallowed.
     ///
     /// The previous code used `.ok()` and `unwrap_or(0)` at each call, so a broken
     /// registry rendered as a workspace with zero of everything.
     pub(super) problems: Vec<String>,
+}
+
+/// One selectable value: what to store, and what to show beside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Choice {
+    /// The identifier the CLI expects.
+    pub(super) value: String,
+    /// Context that makes the identifier recognisable — a connector, a path, a kind.
+    pub(super) detail: String,
+}
+
+/// Everything the generation and edit forms can offer as a choice.
+///
+/// Collected with the rest of the snapshot, for the same reason: the form used to ask
+/// for a project, a theme, a template, and two model profiles as free text, so filling
+/// it required knowing every identifier by heart — and a typo surfaced as a failure
+/// after the form was submitted rather than while it was being filled.
+///
+/// Filtered where filtering is what makes the list correct: a slides template must not
+/// be offered to a document, and a text model must not be offered where a video model
+/// is wanted, because the layers below reject both.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct FormOptions {
+    pub(super) projects: Vec<Choice>,
+    pub(super) themes: Vec<Choice>,
+    pub(super) slide_templates: Vec<Choice>,
+    pub(super) page_templates: Vec<Choice>,
+    pub(super) document_templates: Vec<Choice>,
+    pub(super) text_models: Vec<Choice>,
+    pub(super) code_models: Vec<Choice>,
+    pub(super) image_models: Vec<Choice>,
+    pub(super) video_models: Vec<Choice>,
+    pub(super) speech_models: Vec<Choice>,
+    pub(super) reviewer_models: Vec<Choice>,
 }
 
 /// The active project, reduced to what the views show.
@@ -90,7 +126,95 @@ impl WorkspaceSnapshot {
         snapshot.models = snapshot.count(application.list_models(), "models");
         snapshot.connectors = snapshot.count(application.list_connectors(), "connectors");
         snapshot.themes = snapshot.count(application.list_themes(), "themes");
+        snapshot.options = snapshot.collect_options(application);
         snapshot
+    }
+
+    /// Gathers the values the form pickers offer.
+    fn collect_options(&mut self, application: &Arc<SfumatoApplication>) -> FormOptions {
+        let mut options = FormOptions::default();
+        match application.list_projects() {
+            Ok(projects) => {
+                options.projects = projects
+                    .into_iter()
+                    .map(|project| Choice {
+                        detail: if project.available {
+                            project.path.display().to_string()
+                        } else {
+                            // Offered but labelled: hiding it would make a registered
+                            // project look deleted instead of broken.
+                            format!("missing — {}", project.path.display())
+                        },
+                        value: project.name,
+                    })
+                    .collect();
+            }
+            Err(error) => self.problems.push(format!("projects: {error}")),
+        }
+        match application.list_themes() {
+            Ok(themes) => {
+                options.themes = themes
+                    .into_iter()
+                    .map(|theme| Choice {
+                        value: theme.name,
+                        detail: String::new(),
+                    })
+                    .collect();
+            }
+            Err(error) => self.problems.push(format!("themes: {error}")),
+        }
+        match application.list_templates(None) {
+            Ok(listing) => {
+                for template in listing.entries {
+                    let choice = Choice {
+                        value: template.name,
+                        detail: template.description,
+                    };
+                    match template.kind {
+                        TemplateKind::Slides => options.slide_templates.push(choice),
+                        TemplateKind::Page => options.page_templates.push(choice),
+                        TemplateKind::Document => options.document_templates.push(choice),
+                    }
+                }
+                self.problems.extend(
+                    listing
+                        .unreadable
+                        .iter()
+                        .map(|entry| format!("template '{}': {}", entry.name, entry.problem)),
+                );
+            }
+            Err(error) => self.problems.push(format!("templates: {error}")),
+        }
+        match application.list_models() {
+            Ok(models) => {
+                for model in models {
+                    let choice = Choice {
+                        value: model.name.clone(),
+                        detail: format!("{} · {}", model.connector, model.model),
+                    };
+                    // A profile appears under every capability it declares, because a
+                    // profile that cannot do the job is refused further down.
+                    if model.capabilities.contains(&Capability::Text) {
+                        options.text_models.push(choice.clone());
+                        options.reviewer_models.push(choice.clone());
+                    }
+                    if model.capabilities.contains(&Capability::Code) {
+                        options.code_models.push(choice.clone());
+                    }
+                    if model.capabilities.contains(&Capability::Image) {
+                        options.image_models.push(choice.clone());
+                    }
+                    if model.capabilities.contains(&Capability::Video) {
+                        options.video_models.push(choice.clone());
+                    }
+                    if model.capabilities.contains(&Capability::Speech) {
+                        options.speech_models.push(choice);
+                    }
+                }
+            }
+            Err(error) => self.problems.push(format!("models: {error}")),
+        }
+        options
     }
 
     fn count<T>(

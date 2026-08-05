@@ -23,14 +23,15 @@ use ratatui_image::{Resize, StatefulImage, picker::Picker, protocol::StatefulPro
 use serde_json::Value;
 mod effects;
 mod forms;
+use forms::ChoiceSource;
 use forms::{EditForm, FormField, GenerateFieldId, GenerateForm, GenerateResource};
 mod jobs;
 use jobs::{ConnectorQuery, OperationLifecycle};
 mod model;
 mod palette;
 mod snapshot;
-use palette::Overlay;
-use snapshot::WorkspaceSnapshot;
+use palette::{ChoiceTarget, Overlay};
+use snapshot::{Choice, FormOptions, WorkspaceSnapshot};
 mod reducer;
 mod view;
 
@@ -44,7 +45,8 @@ use model::*;
 use sfumato_core::{
     application::SfumatoApplication,
     config::{
-        Capability, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile, TextModelOptions,
+        Capability, GenerationToolKind, GlobalConfig, ModelDefaults, ModelOptions, ModelProfile,
+        ModelRole, TextModelOptions,
     },
     config_editor::ConfigTarget,
     connectors::ConnectorPreset,
@@ -53,6 +55,7 @@ use sfumato_core::{
         DiscardEvents, EventSink, EventSinkError, OperationContext, OperationEvent,
         OperationEventKind,
     },
+    page_plugins::PagePluginCategory,
     prompts::{PromptOrigin, PromptOverrideScope},
     providers::{GenerationStage, TextGenerationEvent},
     resources::{
@@ -158,6 +161,16 @@ const NAV_ITEMS: &[NavItem] = &[
     },
     NavItem {
         group: NavGroup::Settings,
+        title: "Tools",
+        hint: "image, video, speech, charts",
+    },
+    NavItem {
+        group: NavGroup::Settings,
+        title: "Plugins",
+        hint: "offline page libraries",
+    },
+    NavItem {
+        group: NavGroup::Settings,
         title: "Configuration",
         hint: "merged settings",
     },
@@ -237,6 +250,7 @@ fn section_actions(section: Section) -> &'static [BrowseAction] {
         Section::Projects => &[
             BrowseAction::ProjectCreate,
             BrowseAction::ProjectActivate,
+            BrowseAction::ProjectEdit,
             BrowseAction::ProjectRemove,
         ],
         Section::Models => &[
@@ -263,8 +277,25 @@ fn section_actions(section: Section) -> &'static [BrowseAction] {
             BrowseAction::PromptCustomizeProject,
             BrowseAction::PromptValidate,
         ],
+        Section::Tools => &[BrowseAction::ToolEnable, BrowseAction::ToolDisable],
+        Section::Plugins => &[BrowseAction::PluginEnable, BrowseAction::PluginDisable],
         Section::Configuration => &[BrowseAction::ConfigSet, BrowseAction::ConfigDelete],
         Section::Setup => &[BrowseAction::SetupUser, BrowseAction::ProjectCreate],
+    }
+}
+
+/// A picker field for an operation form.
+fn choice_operation_field(
+    label: &'static str,
+    value: &str,
+    placeholder: &'static str,
+    source: ChoiceSource,
+) -> FormField {
+    FormField::Choice {
+        label,
+        value: value.to_string(),
+        placeholder,
+        source,
     }
 }
 

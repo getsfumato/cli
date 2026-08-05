@@ -15,7 +15,9 @@ use super::*;
 
 // Re-exported for the reducer and the tests, which reason about form geometry and
 // stage names without rendering anything.
-pub(super) use form::{field_height, multi_select_line, select_line, visible_field_range};
+pub(super) use form::draw_resource_form;
+#[cfg(test)]
+pub(super) use form::{select_line, visible_field_range};
 pub(super) use run::stage_label;
 #[cfg(test)]
 pub(super) use run::wrap_detail;
@@ -128,10 +130,30 @@ impl App {
     /// The footer used to show only a status word, so every binding had to be
     /// guessed. Listing them is what makes a keyboard UI discoverable at all.
     pub(super) fn key_hints(&self) -> Vec<(&'static str, &'static str)> {
-        if self.operation.is_some() {
+        // The overlay owns the keyboard while it is up, so the footer must describe
+        // it rather than the screen it covers.
+        if let Some(Overlay::Choice { .. }) = self.overlay {
+            return vec![
+                ("type", "filter"),
+                ("↑↓", "move"),
+                ("enter", "pick"),
+                ("del", "clear"),
+                ("esc", "cancel"),
+            ];
+        }
+        if let Some(operation) = self.operation.as_ref() {
+            // What enter does depends on the field, and "confirm" is wrong on a picker.
+            let confirm = if matches!(
+                operation.fields.get(operation.selected),
+                Some(FormField::Choice { .. })
+            ) {
+                "choose"
+            } else {
+                "confirm"
+            };
             return vec![
                 ("↑↓", "field"),
-                ("enter", "confirm"),
+                ("enter", confirm),
                 ("esc", "cancel"),
                 ("?", "help"),
             ];
@@ -144,12 +166,19 @@ impl App {
                 ("enter", "run"),
                 ("esc", "back"),
             ],
-            Screen::Generate | Screen::Edit => vec![
-                ("↑↓", "field"),
-                ("space", "toggle"),
-                ("enter", "start"),
-                ("esc", "back"),
-            ],
+            Screen::Generate | Screen::Edit => {
+                let mut keys = vec![("↑↓", "field")];
+                // What enter does depends on the field, and a picker is the one case
+                // where the generic "start" hint is actively wrong.
+                if self.form.focused_choice().is_some() && self.screen == Screen::Generate {
+                    keys.push(("enter", "choose"));
+                } else {
+                    keys.push(("space", "toggle"));
+                    keys.push(("enter", "start"));
+                }
+                keys.push(("esc", "back"));
+                keys
+            }
             Screen::Running => vec![("↑↓", "scroll"), ("esc", "cancel")],
             Screen::Complete => vec![("↑↓", "scroll"), ("enter", "home")],
         };
@@ -244,18 +273,4 @@ pub(super) fn truncate_spans(spans: Vec<Span<'static>>, budget: usize) -> Vec<Sp
         break;
     }
     kept
-}
-
-
-pub(super) fn field_block(label: &'static str, selected: bool) -> Block<'static> {
-    Block::new()
-        .title(format!(" {label} "))
-        .title_style(
-            Style::default()
-                .fg(if selected { ACCENT } else { MUTED })
-                .bold(),
-        )
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if selected { ACCENT } else { MUTED }))
 }

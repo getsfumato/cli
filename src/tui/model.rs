@@ -12,6 +12,8 @@ pub(super) enum Section {
     Templates,
     Artifacts,
     Prompts,
+    Tools,
+    Plugins,
     Configuration,
     Setup,
 }
@@ -25,6 +27,8 @@ impl Section {
             Self::Themes => "Themes",
             Self::Templates => "Templates",
             Self::Artifacts => "Artifacts",
+            Self::Tools => "Tools",
+            Self::Plugins => "Plugins",
             Self::Prompts => "Prompts",
             Self::Configuration => "Configuration",
             Self::Setup => "Setup",
@@ -78,6 +82,7 @@ pub(super) enum BrowseFocus {
 pub(super) enum BrowseAction {
     ProjectCreate,
     ProjectActivate,
+    ProjectEdit,
     ProjectRemove,
     ModelAdd,
     ModelEdit,
@@ -93,6 +98,10 @@ pub(super) enum BrowseAction {
     TemplateCreate,
     ArtifactAdd,
     ArtifactRemove,
+    ToolEnable,
+    ToolDisable,
+    PluginEnable,
+    PluginDisable,
     PromptCustomizeUser,
     PromptCustomizeProject,
     PromptValidate,
@@ -106,6 +115,7 @@ impl BrowseAction {
         match self {
             Self::ProjectCreate => "Create",
             Self::ProjectActivate => "Activate",
+            Self::ProjectEdit => "Edit",
             Self::ProjectRemove => "Remove",
             Self::ModelAdd => "Add",
             Self::ModelEdit => "Edit",
@@ -121,6 +131,10 @@ impl BrowseAction {
             Self::TemplateCreate => "Create",
             Self::ArtifactAdd => "Add",
             Self::ArtifactRemove => "Remove",
+            Self::ToolEnable => "Enable",
+            Self::ToolDisable => "Disable",
+            Self::PluginEnable => "Enable",
+            Self::PluginDisable => "Disable",
             Self::PromptCustomizeUser => "Customize user",
             Self::PromptCustomizeProject => "Customize project",
             Self::PromptValidate => "Validate",
@@ -131,10 +145,13 @@ impl BrowseAction {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OperationKind {
     ProjectCreate,
+    ProjectEdit,
     ProjectRemove,
+    ToolSet(bool),
+    PluginSet(bool),
     ModelAdd,
     ModelEdit,
     ModelUse,
@@ -173,7 +190,14 @@ impl OperationForm {
         self.fields
             .iter()
             .find_map(|field| match field {
+                // A picked value reads the same as a typed one, so every effect that
+                // already reads a field by label keeps working when it becomes a picker.
                 FormField::Text {
+                    label: field_label,
+                    value,
+                    ..
+                }
+                | FormField::Choice {
                     label: field_label,
                     value,
                     ..
@@ -181,6 +205,27 @@ impl OperationForm {
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    /// The value of a field, or `None` when the form has no such field.
+    ///
+    /// [`Self::text`] cannot tell an emptied field from an absent one, and for anything
+    /// that treats empty as "remove this" the difference decides whether a missing field
+    /// silently deletes configuration.
+    pub(super) fn field(&self, label: &str) -> Option<String> {
+        self.fields.iter().find_map(|field| match field {
+            FormField::Text {
+                label: field_label,
+                value,
+                ..
+            }
+            | FormField::Choice {
+                label: field_label,
+                value,
+                ..
+            } if *field_label == label => Some(value.trim().to_string()),
+            _ => None,
+        })
     }
 
     pub(super) fn toggle(&self, label: &str) -> bool {

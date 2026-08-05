@@ -405,6 +405,117 @@ pub(super) fn execute_operation(
             }
             Ok(summary)
         }
+        OperationKind::ProjectEdit => {
+            let project = form
+                .target
+                .clone()
+                .context("Editing a project needs the project it belongs to")?;
+            // Compared against what the project currently holds rather than written
+            // unconditionally. `delete_config` reports an absent key as an error, so
+            // clearing a picker that was already empty would abort the whole save; and
+            // seven writes per visit would churn the file for nothing.
+            let current = application.show_project(Some(&project))?;
+            let wanted: [(&str, Option<&String>, Option<String>); 7] = [
+                ("theme", Some(&current.theme), form.field("Theme")),
+                (
+                    "model_defaults.text",
+                    current.model_defaults.get(&Capability::Text),
+                    form.field("Text model"),
+                ),
+                (
+                    "model_defaults.code",
+                    current.model_defaults.get(&Capability::Code),
+                    form.field("Code model"),
+                ),
+                (
+                    "model_defaults.image",
+                    current.model_defaults.get(&Capability::Image),
+                    form.field("Image model"),
+                ),
+                (
+                    "model_defaults.video",
+                    current.model_defaults.get(&Capability::Video),
+                    form.field("Video model"),
+                ),
+                (
+                    "model_defaults.speech",
+                    current.model_defaults.get(&Capability::Speech),
+                    form.field("Speech model"),
+                ),
+                (
+                    "model_roles.reviewer",
+                    current.model_roles.get(&ModelRole::Reviewer),
+                    form.field("Reviewer"),
+                ),
+            ];
+            let mut written = Vec::new();
+            for (key, present, value) in &wanted {
+                // A field the form does not carry says nothing about the key, so it must
+                // leave it alone. Reading it as an empty value would make an incomplete
+                // form clear configuration it never showed the caller.
+                let Some(value) = value else { continue };
+                let present = present.filter(|existing| !existing.is_empty());
+                match (present, value.as_str()) {
+                    // A theme is required, so an empty picker there means "leave it",
+                    // not "remove it" — there is no inherited theme to fall back to.
+                    (_, "") if *key == "theme" => {}
+                    (None, "") => {}
+                    (Some(existing), "") => {
+                        application.delete_config(
+                            ConfigTarget::Project,
+                            Some(project.clone()),
+                            key,
+                        )?;
+                        written.push(format!("{key} cleared (was {existing})"));
+                    }
+                    (Some(existing), chosen) if existing == chosen => {}
+                    (_, chosen) => {
+                        application.set_config(
+                            ConfigTarget::Project,
+                            Some(project.clone()),
+                            key,
+                            chosen,
+                        )?;
+                        written.push(format!("{key} = {chosen}"));
+                    }
+                }
+            }
+            if written.is_empty() {
+                Ok(format!("{project} was already up to date"))
+            } else {
+                Ok(format!("Updated {project}: {}", written.join(", ")))
+            }
+        }
+        OperationKind::ToolSet(enabled) => {
+            let name = form
+                .target
+                .clone()
+                .context("Select a tool to enable or disable")?;
+            let tool: GenerationToolKind = name
+                .parse()
+                .with_context(|| format!("'{name}' is not a generation tool"))?;
+            application.set_generation_tool(tool, enabled, None)?;
+            Ok(format!(
+                "{name} is now {} for this project",
+                if enabled { "enabled" } else { "disabled" }
+            ))
+        }
+        OperationKind::PluginSet(enabled) => {
+            let id = form
+                .target
+                .clone()
+                .context("Select a plugin to enable or disable")?;
+            let changed = if enabled {
+                application.enable_page_plugin(&id, None)?
+            } else {
+                application.disable_page_plugin(&id, None)?
+            };
+            Ok(format!(
+                "{id} is now {} for {}",
+                if enabled { "enabled" } else { "disabled" },
+                changed.project
+            ))
+        }
         OperationKind::ConfigSet => {
             let key = required_field(form, "Key")?;
             let path = application.set_config(
@@ -625,6 +736,123 @@ pub(super) fn load_section(
                 })
             })
             .collect(),
+        // The tool switches the CLI exposes as `sfumato tool`. Their status carries a
+        // second fact beyond enabled/disabled: whether a model for the capability even
+        // exists, because an enabled tool without one is silently absent at generation
+        // time and that is invisible from the config alone.
+        Section::Tools => Ok(application
+            .list_generation_tools(None)?
+            .into_iter()
+            .map(|status| {
+                let mut detail = format!(
+                    "Tool: {}\nProject: {}\nModel for its capability: {}\n",
+                    status.tool.as_str(),
+                    if status.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    if status.model_configured {
+                        "configured"
+                    } else {
+                        "missing"
+                    },
+                );
+                if status.enabled && !status.model_configured {
+                    detail.push_str(
+                        "\nEnabled but unusable: no model profile provides the capability \
+                         this tool needs, so the drafter is never offered it. Add one in \
+                         Models, or set it as the project default in Projects > Edit.\n",
+                    );
+                }
+                detail.push_str("\nCLI: sfumato tool enable ");
+                detail.push_str(status.tool.as_str());
+                BrowseRow {
+                    title: status.tool.as_str().to_string(),
+                    subtitle: match (status.enabled, status.model_configured) {
+                        (true, true) => "enabled".to_string(),
+                        (true, false) => "enabled, but no model provides it".to_string(),
+                        (false, _) => "disabled".to_string(),
+                    },
+                    detail,
+                    active: status.enabled,
+                }
+            })
+            .collect()),
+        // Installed plugins only. The full catalog listing reaches a remote registry,
+        // which this synchronous load path cannot do; installing stays a CLI step.
+        Section::Plugins => {
+            let listing = application.list_installed_page_plugins()?;
+            // The UI plugin lives in `page.ui`, not `page.plugins`, and the CLI treats
+            // the union as enabled. Reading only the list showed the project's own UI
+            // plugin as disabled.
+            let (enabled, ui) = application
+                .show_project(None)
+                .map(|project| {
+                    let ui = project.page.ui.clone();
+                    let mut enabled = project.page.plugins;
+                    enabled.extend(ui.clone());
+                    (enabled, ui)
+                })
+                .unwrap_or_default();
+            let mut rows = listing
+                .entries
+                .into_iter()
+                .map(|plugin| {
+                    let on = enabled.contains(&plugin.id);
+                    let is_ui = ui.as_deref() == Some(plugin.id.as_str());
+                    // Kept short: the row is one line beside a name and a version, and
+                    // the full explanation belongs in the detail pane.
+                    let state = match (on, is_ui) {
+                        (true, true) => "enabled (UI)",
+                        (true, false) => "enabled",
+                        (false, _) => "disabled",
+                    };
+                    let mut detail = format!(
+                        "Plugin: {}\nVersion: {}\nBrowser global: {}\nCategory: {}\n\
+                         Project: {}\nLicense: {}\n",
+                        plugin.name,
+                        plugin.version,
+                        plugin.api_global,
+                        format!("{:?}", plugin.category).to_lowercase(),
+                        if is_ui && on {
+                            "enabled as this project's UI plugin"
+                        } else {
+                            state
+                        },
+                        plugin.license,
+                    );
+                    // Switching one of these fails at the layer below, so saying it here
+                    // beats offering an action that cannot work.
+                    if plugin.category == PagePluginCategory::Runtime {
+                        detail.push_str(
+                            "\nManaged as a dependency: a runtime plugin is selected by \
+                             whatever needs it and cannot be switched directly.\n",
+                        );
+                    }
+                    detail.push_str(&format!(
+                        "\nCLI: sfumato plugin enable {}\n\
+                         Install or update others with: sfumato plugin install <id>\n",
+                        plugin.id,
+                    ));
+                    BrowseRow {
+                        subtitle: format!("{} {} · {state}", plugin.name, plugin.version),
+                        title: plugin.id,
+                        detail,
+                        active: on,
+                    }
+                })
+                .collect::<Vec<_>>();
+            // An unreadable package is a fact about the store, not something to hide
+            // behind a shorter list.
+            rows.extend(listing.unreadable.into_iter().map(|entry| BrowseRow {
+                subtitle: "cannot be read".to_string(),
+                detail: entry.problem.clone(),
+                title: entry.name,
+                active: false,
+            }));
+            Ok(rows)
+        }
         Section::Configuration => {
             let rows = [
                 ("Effective", ConfigTarget::Effective),

@@ -19,7 +19,7 @@ impl App {
 /// twenty-four. The label now sits in a fixed left column and the value beside it,
 /// with focus shown by a marker and a highlight instead of a border — which also
 /// makes the focused field easier to find than a box among boxes.
-pub(super) fn draw_resource_form(
+pub(crate) fn draw_resource_form(
     frame: &mut Frame<'_>,
     area: Rect,
     fields: &[FormField],
@@ -90,6 +90,24 @@ pub(super) fn draw_resource_form(
                 };
                 let _ = multiline;
                 line.push(shown);
+            }
+            // Shows the chosen identifier, or what will be used when nothing is
+            // chosen — the same phrasing the free-text placeholder used, so the
+            // default is still stated rather than implied by an empty field.
+            FormField::Choice {
+                value, placeholder, ..
+            } => {
+                // A caret, because a picker that looks exactly like a text field
+                // teaches the user to type an identifier they would have to know.
+                line.push(Span::styled(
+                    "▾ ",
+                    Style::default().fg(if selected { ACCENT } else { PANEL }),
+                ));
+                line.push(if value.is_empty() {
+                    Span::styled(*placeholder, Style::default().fg(PANEL))
+                } else {
+                    Span::styled(value.clone(), Style::default().fg(TEXT))
+                });
             }
             FormField::Toggle { value, .. } => line.push(Span::styled(
                 if *value { "on" } else { "off" },

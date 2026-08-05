@@ -232,6 +232,53 @@ impl App {
         let Some(overlay) = self.overlay.take() else {
             return;
         };
+        // The field picker shares the palette's matching and keys; only the list it
+        // offers and where the answer goes differ.
+        if let Overlay::Choice {
+            target,
+            mut query,
+            mut selected,
+        } = overlay
+        {
+            let values = self.choice_values(target);
+            let labels: Vec<&str> = values.iter().map(|choice| choice.value.as_str()).collect();
+            match key.code {
+                KeyCode::Esc => return,
+                KeyCode::Enter => {
+                    if let Some(picked) = palette::matches(&labels, &query).get(selected) {
+                        let picked = (*picked).to_owned();
+                        self.set_choice(target, &picked);
+                    }
+                    return;
+                }
+                // Clearing is how a caller goes back to "whatever the project decides",
+                // which is what an empty value means to every one of these fields.
+                KeyCode::Delete => {
+                    self.set_choice(target, "");
+                    return;
+                }
+                KeyCode::Backspace => {
+                    query.pop();
+                    selected = 0;
+                }
+                KeyCode::Up => selected = selected.saturating_sub(1),
+                KeyCode::Down => {
+                    let count = palette::matches(&labels, &query).len();
+                    selected = (selected + 1).min(count.saturating_sub(1));
+                }
+                KeyCode::Char(character) => {
+                    query.push(character);
+                    selected = 0;
+                }
+                _ => {}
+            }
+            self.overlay = Some(Overlay::Choice {
+                target,
+                query,
+                selected,
+            });
+            return;
+        }
         let Overlay::Palette {
             mut query,
             mut selected,
@@ -284,9 +331,74 @@ impl App {
             Some("Templates") => self.open_section(Section::Templates),
             Some("Artifacts") => self.open_section(Section::Artifacts),
             Some("Prompts") => self.open_section(Section::Prompts),
+            Some("Tools") => self.open_section(Section::Tools),
+            Some("Plugins") => self.open_section(Section::Plugins),
             Some("Configuration") => self.open_section(Section::Configuration),
             Some("Setup") => self.open_section(Section::Setup),
             _ => {}
+        }
+    }
+
+    /// The values one picker field offers, resolved against the snapshot.
+    pub(super) fn choice_values(&self, target: ChoiceTarget) -> Vec<Choice> {
+        self.choice_source(target)
+            .map(|source| source.choices(&self.snapshot.options).to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Which list a picker target offers.
+    pub(super) fn choice_source(&self, target: ChoiceTarget) -> Option<ChoiceSource> {
+        match target {
+            ChoiceTarget::Generate(field) => self.form.choice_source(field),
+            ChoiceTarget::Operation(index) => match self.operation.as_ref()?.fields.get(index)? {
+                FormField::Choice { source, .. } => Some(*source),
+                _ => None,
+            },
+        }
+    }
+
+    /// The label of a picker target, for the overlay's own title.
+    pub(super) fn choice_label(&self, target: ChoiceTarget) -> &'static str {
+        match target {
+            ChoiceTarget::Generate(field) => self
+                .form
+                .field_ids
+                .iter()
+                .position(|candidate| *candidate == field)
+                .and_then(|index| self.form.fields.get(index))
+                .map(|entry| entry.label()),
+            ChoiceTarget::Operation(index) => self
+                .operation
+                .as_ref()
+                .and_then(|operation| operation.fields.get(index))
+                .map(|entry| entry.label()),
+        }
+        .unwrap_or("CHOOSE")
+    }
+
+    /// Writes a picked value back, or clears it when `value` is empty.
+    pub(super) fn set_choice(&mut self, target: ChoiceTarget, value: &str) {
+        match target {
+            ChoiceTarget::Generate(field) => self.form.set_choice(field, value),
+            ChoiceTarget::Operation(index) => {
+                if let Some(operation) = self.operation.as_mut()
+                    && let Some(FormField::Choice { value: current, .. }) =
+                        operation.fields.get_mut(index)
+                {
+                    *current = value.to_owned();
+                }
+            }
+        }
+    }
+
+    /// Opens the picker for the focused operation-form field, when it has one.
+    pub(super) fn open_operation_choice_picker(&mut self) {
+        let Some(operation) = self.operation.as_ref() else {
+            return;
+        };
+        let index = operation.selected;
+        if matches!(operation.fields.get(index), Some(FormField::Choice { .. })) {
+            self.overlay = Some(Overlay::choice(ChoiceTarget::Operation(index)));
         }
     }
 
@@ -652,6 +764,103 @@ impl App {
                 fields: vec![submit_field("Validate prompts")],
                 selected: 0,
             },
+            BrowseAction::ProjectEdit => {
+                let project = selected.context("Select a project to edit")?;
+                // Prefilled from the project's own config, so the form shows what is set
+                // rather than asking the caller to remember it. An empty field means the
+                // project inherits, and clearing one writes that back as a delete.
+                let config = self.application.show_project(Some(&project.title))?;
+                let default_for = |capability: Capability| {
+                    config
+                        .model_defaults
+                        .get(&capability)
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                OperationForm {
+                    title: "Edit project",
+                    kind: OperationKind::ProjectEdit,
+                    target: Some(project.title.clone()),
+                    fields: vec![
+                        choice_operation_field(
+                            "Theme",
+                            &config.theme,
+                            "project theme",
+                            ChoiceSource::Themes,
+                        ),
+                        choice_operation_field(
+                            "Text model",
+                            &default_for(Capability::Text),
+                            "inherit from user config",
+                            ChoiceSource::TextModels,
+                        ),
+                        choice_operation_field(
+                            "Code model",
+                            &default_for(Capability::Code),
+                            "inherit from user config",
+                            ChoiceSource::CodeModels,
+                        ),
+                        choice_operation_field(
+                            "Image model",
+                            &default_for(Capability::Image),
+                            "inherit from user config",
+                            ChoiceSource::ImageModels,
+                        ),
+                        choice_operation_field(
+                            "Video model",
+                            &default_for(Capability::Video),
+                            "inherit from user config",
+                            ChoiceSource::VideoModels,
+                        ),
+                        choice_operation_field(
+                            "Speech model",
+                            &default_for(Capability::Speech),
+                            "inherit from user config",
+                            ChoiceSource::SpeechModels,
+                        ),
+                        choice_operation_field(
+                            "Reviewer",
+                            config
+                                .model_roles
+                                .get(&ModelRole::Reviewer)
+                                .map(String::as_str)
+                                .unwrap_or_default(),
+                            "inherit from user config",
+                            ChoiceSource::ReviewerModels,
+                        ),
+                        submit_field("Save project"),
+                    ],
+                    selected: 0,
+                }
+            }
+            BrowseAction::ToolEnable | BrowseAction::ToolDisable => {
+                let tool = selected.context("Select a tool to switch")?;
+                let enabling = action == BrowseAction::ToolEnable;
+                confirmation_form(
+                    if enabling {
+                        "Enable tool"
+                    } else {
+                        "Disable tool"
+                    },
+                    OperationKind::ToolSet(enabling),
+                    tool.title.clone(),
+                    if enabling { "Enable" } else { "Disable" },
+                )
+            }
+            BrowseAction::PluginEnable | BrowseAction::PluginDisable => {
+                let plugin = selected.context("Select a plugin to switch")?;
+                let enabling = action == BrowseAction::PluginEnable;
+                confirmation_form(
+                    if enabling {
+                        "Enable plugin"
+                    } else {
+                        "Disable plugin"
+                    },
+                    OperationKind::PluginSet(enabling),
+                    plugin.title.clone(),
+                    if enabling { "Enable" } else { "Disable" },
+                )
+            }
             BrowseAction::ConfigSet => OperationForm {
                 title: "Set configuration value",
                 kind: OperationKind::ConfigSet,
@@ -771,6 +980,8 @@ impl App {
                 }
             }
             KeyCode::Enter => match operation.fields.get(operation.selected) {
+                // A picker field has nothing to type into: enter opens the list.
+                Some(FormField::Choice { .. }) => self.open_operation_choice_picker(),
                 Some(FormField::Toggle { .. }) => {
                     if let Some(FormField::Toggle { value, .. }) =
                         operation.fields.get_mut(operation.selected)
@@ -801,6 +1012,19 @@ impl App {
                     operation.fields.get_mut(operation.selected)
                 {
                     value.pop();
+                }
+            }
+            // Typing on a picker opens it with the first character already queried, so a
+            // long list is searchable without a separate key first.
+            KeyCode::Char(character)
+                if matches!(
+                    operation.fields.get(operation.selected),
+                    Some(FormField::Choice { .. })
+                ) =>
+            {
+                self.open_operation_choice_picker();
+                if let Some(Overlay::Choice { query, .. }) = &mut self.overlay {
+                    query.push(character);
                 }
             }
             KeyCode::Char(character) => {
@@ -845,6 +1069,8 @@ impl App {
             KeyCode::Enter => {
                 let selected = self.form.selected;
                 match self.form.fields.get(selected) {
+                    // A picker field has nothing to type into: enter opens the list.
+                    Some(FormField::Choice { .. }) => self.open_choice_picker(),
                     Some(FormField::Toggle { .. }) => self.toggle_form_field(),
                     Some(FormField::Select { .. }) => self.move_form_choice(true),
                     Some(FormField::MultiSelect { .. }) => self.toggle_form_field(),
@@ -866,6 +1092,19 @@ impl App {
             {
                 self.toggle_form_field();
             }
+            // Typing on a picker opens it with the first character already in the
+            // query, so searching a long list does not need a separate key first.
+            KeyCode::Char(character)
+                if matches!(
+                    self.form.fields.get(self.form.selected),
+                    Some(FormField::Choice { .. })
+                ) =>
+            {
+                self.open_choice_picker();
+                if let Some(Overlay::Choice { query, .. }) = &mut self.overlay {
+                    query.push(character);
+                }
+            }
             KeyCode::Backspace => {
                 if let Some(FormField::Text { value, .. }) =
                     self.form.fields.get_mut(self.form.selected)
@@ -875,6 +1114,13 @@ impl App {
             }
             KeyCode::Char(character) => self.push_form_char(character),
             _ => {}
+        }
+    }
+
+    /// Opens the picker for the focused field, when it has one.
+    pub(super) fn open_choice_picker(&mut self) {
+        if let Some(field) = self.form.focused_choice() {
+            self.overlay = Some(Overlay::choice(ChoiceTarget::Generate(field)));
         }
     }
 

@@ -32,15 +32,62 @@ pub(super) enum FormField {
         cursor: usize,
         selected: BTreeSet<usize>,
     },
+    /// A value picked from a list the workspace already knows.
+    ///
+    /// Stores the identifier the CLI expects and names which list to offer, rather
+    /// than carrying the list itself: the options are collected with the workspace
+    /// snapshot, so a field built before that snapshot exists still knows what it
+    /// wants. Free text could not tell the user what was available, and a typo only
+    /// surfaced after the form was submitted.
+    Choice {
+        label: &'static str,
+        value: String,
+        placeholder: &'static str,
+        source: ChoiceSource,
+    },
     Submit {
         label: &'static str,
     },
+}
+
+/// Which list of workspace values a `Choice` field offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ChoiceSource {
+    Projects,
+    Themes,
+    SlideTemplates,
+    PageTemplates,
+    TextModels,
+    CodeModels,
+    ImageModels,
+    VideoModels,
+    SpeechModels,
+    ReviewerModels,
+}
+
+impl ChoiceSource {
+    /// Resolves this source against a collected snapshot.
+    pub(super) fn choices(self, options: &FormOptions) -> &[Choice] {
+        match self {
+            Self::Projects => &options.projects,
+            Self::Themes => &options.themes,
+            Self::SlideTemplates => &options.slide_templates,
+            Self::PageTemplates => &options.page_templates,
+            Self::TextModels => &options.text_models,
+            Self::CodeModels => &options.code_models,
+            Self::ImageModels => &options.image_models,
+            Self::VideoModels => &options.video_models,
+            Self::SpeechModels => &options.speech_models,
+            Self::ReviewerModels => &options.reviewer_models,
+        }
+    }
 }
 
 impl FormField {
     pub(super) fn label(&self) -> &'static str {
         match self {
             Self::Text { label, .. }
+            | Self::Choice { label, .. }
             | Self::Toggle { label, .. }
             | Self::Select { label, .. }
             | Self::MultiSelect { label, .. } => label,
@@ -175,6 +222,11 @@ impl EditForm {
             .iter()
             .find_map(|field| match field {
                 FormField::Text {
+                    label: field_label,
+                    value,
+                    ..
+                }
+                | FormField::Choice {
                     label: field_label,
                     value,
                     ..
@@ -332,10 +384,40 @@ impl GenerateForm {
             .iter()
             .position(|candidate| *candidate == id)
             .and_then(|index| match &self.fields[index] {
-                FormField::Text { value, .. } => Some(value.trim().to_string()),
+                // A `Choice` holds the same kind of value a `Text` field held, so
+                // every argument builder reads it without knowing the difference.
+                FormField::Text { value, .. } | FormField::Choice { value, .. } => {
+                    Some(value.trim().to_string())
+                }
                 _ => None,
             })
             .unwrap_or_default()
+    }
+
+    /// Which list the field at `id` offers, when it is a picker.
+    pub(super) fn choice_source(&self, id: GenerateFieldId) -> Option<ChoiceSource> {
+        self.field_ids
+            .iter()
+            .position(|candidate| *candidate == id)
+            .and_then(|index| match &self.fields[index] {
+                FormField::Choice { source, .. } => Some(*source),
+                _ => None,
+            })
+    }
+
+    /// Writes a picked value back, or clears it when `value` is empty.
+    pub(super) fn set_choice(&mut self, id: GenerateFieldId, value: &str) {
+        if let Some(index) = self.field_ids.iter().position(|candidate| *candidate == id)
+            && let FormField::Choice { value: current, .. } = &mut self.fields[index]
+        {
+            *current = value.to_owned();
+        }
+    }
+
+    /// Which list the currently focused field offers, when it is a picker.
+    pub(super) fn focused_choice(&self) -> Option<GenerateFieldId> {
+        let id = *self.field_ids.get(self.selected)?;
+        self.choice_source(id).map(|_| id)
     }
 
     pub(super) fn toggle(&self, id: GenerateFieldId) -> bool {
@@ -619,7 +701,7 @@ fn build_generation_fields(
         ),
         (
             GenerateFieldId::Project,
-            text_generate_field("Project", "active project"),
+            choice_field("Project", "active project", ChoiceSource::Projects),
         ),
         (
             GenerateFieldId::Title,
@@ -627,13 +709,22 @@ fn build_generation_fields(
         ),
         (
             GenerateFieldId::Theme,
-            text_generate_field("Theme", "project theme"),
+            choice_field("Theme", "project theme", ChoiceSource::Themes),
         ),
     ];
     if resource != GenerateResource::Video {
         pairs.push((
             GenerateFieldId::Template,
-            text_generate_field("Template", "optional reusable structure"),
+            // Filtered by resource: the layers below refuse a slides template used
+            // for a page, so offering it would only produce a late failure.
+            choice_field(
+                "Template",
+                "optional reusable structure",
+                match resource {
+                    GenerateResource::Page => ChoiceSource::PageTemplates,
+                    _ => ChoiceSource::SlideTemplates,
+                },
+            ),
         ));
     }
     pairs.push((
@@ -649,23 +740,39 @@ fn build_generation_fields(
     ));
     pairs.push((
         GenerateFieldId::TextModel,
-        text_generate_field("Text model", "project or user default"),
+        choice_field(
+            "Text model",
+            "project or user default",
+            ChoiceSource::TextModels,
+        ),
     ));
     if resource == GenerateResource::Video {
         match video_engine {
             VideoEngineArg::Hyperframe | VideoEngineArg::Manim => pairs.push((
                 GenerateFieldId::CodeModel,
-                text_generate_field("Code model", "required by local engines"),
+                choice_field(
+                    "Code model",
+                    "required by local engines",
+                    ChoiceSource::CodeModels,
+                ),
             )),
             VideoEngineArg::Model => pairs.push((
                 GenerateFieldId::VideoModel,
-                text_generate_field("Video model", "required by model engine"),
+                choice_field(
+                    "Video model",
+                    "required by model engine",
+                    ChoiceSource::VideoModels,
+                ),
             )),
         }
     }
     pairs.push((
         GenerateFieldId::Reviewer,
-        text_generate_field("Reviewer", "project or user reviewer"),
+        choice_field(
+            "Reviewer",
+            "project or user reviewer",
+            ChoiceSource::ReviewerModels,
+        ),
     ));
     if resource == GenerateResource::Page {
         let mut options = vec!["Project default".into(), "None".into()];
@@ -839,6 +946,16 @@ fn text_generate_value(label: &'static str, placeholder: &'static str, value: &s
         multiline: false,
     }
 }
+/// Builds a field that picks from a workspace list.
+fn choice_field(label: &'static str, placeholder: &'static str, source: ChoiceSource) -> FormField {
+    FormField::Choice {
+        label,
+        value: String::new(),
+        placeholder,
+        source,
+    }
+}
+
 fn tool_select(label: &'static str) -> FormField {
     FormField::Select {
         label,

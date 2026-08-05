@@ -115,90 +115,9 @@ impl App {
             modal,
         );
         let content = modal.inner(Margin::new(2, 1));
-        let range = visible_field_range(&operation.fields, operation.selected, content.height);
-        let visible_fields = &operation.fields[range.clone()];
-        let rows = Layout::vertical(
-            visible_fields
-                .iter()
-                .map(|field| Constraint::Length(field_height(field)))
-                .collect::<Vec<_>>(),
-        )
-        .split(content);
-        for (offset, (field, row)) in visible_fields.iter().zip(rows.iter()).enumerate() {
-            let index = range.start + offset;
-            let selected = index == operation.selected;
-            match field {
-                FormField::Text {
-                    label,
-                    value,
-                    placeholder,
-                    ..
-                } => {
-                    let text = if value.is_empty() {
-                        Span::styled(*placeholder, Style::default().fg(MUTED))
-                    } else {
-                        Span::styled(value.as_str(), Style::default().fg(TEXT))
-                    };
-                    frame.render_widget(
-                        Paragraph::new(text).block(field_block(label, selected)),
-                        *row,
-                    );
-                }
-                FormField::Toggle { label, value } => {
-                    let symbol = if *value { "[x]" } else { "[ ]" };
-                    frame.render_widget(
-                        Paragraph::new(Line::from(vec![
-                            Span::styled(
-                                symbol,
-                                Style::default().fg(if *value { GREEN } else { MUTED }),
-                            ),
-                            Span::raw(" "),
-                            Span::styled(*label, Style::default().fg(TEXT)),
-                        ]))
-                        .block(field_block("OPTION", selected)),
-                        *row,
-                    );
-                }
-                FormField::Select {
-                    label,
-                    options,
-                    selected: choice,
-                } => {
-                    frame.render_widget(
-                        Paragraph::new(select_line(options, *choice, row.width.saturating_sub(2)))
-                            .block(field_block(label, selected)),
-                        *row,
-                    );
-                }
-                FormField::MultiSelect {
-                    label,
-                    options,
-                    cursor,
-                    selected: choices,
-                } => {
-                    frame.render_widget(
-                        Paragraph::new(multi_select_line(options, *cursor, choices))
-                            .block(field_block(label, selected)),
-                        *row,
-                    );
-                }
-                FormField::Submit { label } => {
-                    frame.render_widget(
-                        Paragraph::new(Span::styled(
-                            *label,
-                            Style::default().fg(if selected { BG } else { TEXT }).bold(),
-                        ))
-                        .alignment(Alignment::Center)
-                        .style(if selected {
-                            Style::default().bg(ACCENT)
-                        } else {
-                            Style::default().bg(PANEL)
-                        })
-                        .block(Block::new().borders(Borders::ALL)),
-                        *row,
-                    );
-                }
-            }
-        }
+        // The same renderer the forms use. This modal had its own copy of the field
+        // rendering, in the bordered style the forms have moved away from, so a field
+        // type added to one was invisible in the other.
+        draw_resource_form(frame, content, &operation.fields, operation.selected);
     }
 }

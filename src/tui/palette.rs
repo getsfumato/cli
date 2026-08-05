@@ -9,6 +9,8 @@
 //! question — "what can I do from here" — and a user who opens one often wants the
 //! other.
 
+use super::GenerateFieldId;
+
 /// What the palette overlay is currently showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Overlay {
@@ -16,9 +18,38 @@ pub(super) enum Overlay {
     Palette { query: String, selected: usize },
     /// The key reference for the screen underneath.
     Help,
+    /// Values for one form field, filtered as the user types.
+    ///
+    /// Carries the field it will write back to, so the picker can be opened from any
+    /// form without the form having to hold picker state of its own.
+    Choice {
+        target: ChoiceTarget,
+        query: String,
+        selected: usize,
+    },
+}
+
+/// Which form field a picker writes back to.
+///
+/// The generate form addresses its fields by a stable id and the operation forms are
+/// built per action, so they are addressed positionally. One overlay serves both rather
+/// than each form growing its own picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ChoiceTarget {
+    Generate(GenerateFieldId),
+    Operation(usize),
 }
 
 impl Overlay {
+    /// Opens an empty picker for one field.
+    pub(super) fn choice(target: ChoiceTarget) -> Self {
+        Self::Choice {
+            target,
+            query: String::new(),
+            selected: 0,
+        }
+    }
+
     /// Opens an empty palette.
     pub(super) fn palette() -> Self {
         Self::Palette {
