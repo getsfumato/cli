@@ -953,6 +953,23 @@ fn dump_every_screen() {
         println!("\n╔══════ RUNNING/busy ══════ (100x20)");
         println!("{}", render_screen(&mut busy, 100, 20));
     }
+    // The palette, mid-query.
+    {
+        let mut jump = App::new(Picker::halfblocks(), test_application());
+        jump.overlay = Some(Overlay::Palette {
+            query: "co".to_string(),
+            selected: 0,
+        });
+        println!("\n╔══════ PALETTE ══════ (100x20)");
+        println!("{}", render_screen(&mut jump, 100, 20));
+    }
+    {
+        let mut help = App::new(Picker::halfblocks(), test_application());
+        help.screen = Screen::Browse(Section::Models);
+        help.overlay = Some(Overlay::Help);
+        println!("\n╔══════ HELP ══════ (100x20)");
+        println!("{}", render_screen(&mut help, 100, 20));
+    }
     for (name, screen) in [
         ("HOME", Screen::Home),
         ("BROWSE/Projects", Screen::Browse(Section::Projects)),
@@ -969,5 +986,136 @@ fn dump_every_screen() {
         println!("{}", render_screen(&mut app, 100, 32));
         println!("\n╔══════ {name} ══════ (80x24)");
         println!("{}", render_screen(&mut app, 80, 24));
+    }
+}
+
+#[test]
+fn the_palette_matches_a_subsequence_not_just_a_prefix() {
+    // Typing instead of scrolling only pays off if the query can skip characters:
+    // `cnx` should find `Connectors`.
+    let labels = App::palette_labels();
+
+    for (query, expected) in [
+        ("cnct", "Connectors"),
+        ("tmpl", "Templates"),
+        ("prj", "Projects"),
+        ("gen", "Generate"),
+    ] {
+        let results = palette::matches(&labels, query);
+        assert_eq!(
+            results.first().copied(),
+            Some(expected),
+            "{query:?} should find {expected}, got {results:?}"
+        );
+    }
+}
+
+#[test]
+fn the_palette_ranks_the_closer_match_first() {
+    // `pro` matches both `Projects` and `Prompts`; the one whose characters are
+    // adjacent and earliest wins rather than the order being incidental.
+    let labels = App::palette_labels();
+    let results = palette::matches(&labels, "pro");
+
+    let projects = results.iter().position(|label| *label == "Projects");
+    let prompts = results.iter().position(|label| *label == "Prompts");
+    assert!(projects < prompts, "{results:?}");
+}
+
+#[test]
+fn an_empty_palette_query_offers_every_destination_in_menu_order() {
+    let labels = App::palette_labels();
+    let results = palette::matches(&labels, "");
+
+    assert_eq!(
+        results, labels,
+        "an empty query should not reorder anything"
+    );
+}
+
+#[test]
+fn a_query_that_matches_nothing_returns_nothing() {
+    assert!(palette::matches(&App::palette_labels(), "zzz").is_empty());
+}
+
+#[tokio::test]
+async fn the_palette_jumps_to_the_selected_destination() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.overlay = Some(Overlay::Palette {
+        query: "cnct".to_string(),
+        selected: 0,
+    });
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.screen, Screen::Browse(Section::Connectors));
+    assert!(app.overlay.is_none(), "the overlay closes after jumping");
+}
+
+#[tokio::test]
+async fn ctrl_k_opens_the_palette_from_any_screen() {
+    for screen in [
+        Screen::Home,
+        Screen::Browse(Section::Models),
+        Screen::Complete,
+    ] {
+        let mut app = App::new(Picker::halfblocks(), test_application());
+        app.screen = screen;
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+
+        assert!(
+            matches!(app.overlay, Some(Overlay::Palette { .. })),
+            "no palette on {screen:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_question_mark_is_text_in_a_form_and_help_everywhere_else() {
+    // A form field has to be able to contain `?`, so the shortcut cannot be global.
+    let mut form = App::new(Picker::halfblocks(), test_application());
+    form.screen = Screen::Generate;
+    form.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    assert!(form.overlay.is_none(), "help stole a character from a form");
+
+    let mut browse = App::new(Picker::halfblocks(), test_application());
+    browse.screen = Screen::Browse(Section::Models);
+    browse.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    assert!(matches!(browse.overlay, Some(Overlay::Help)));
+}
+
+#[tokio::test]
+async fn escape_closes_the_palette_without_navigating() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Home;
+    app.overlay = Some(Overlay::palette());
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.overlay.is_none());
+    assert_eq!(app.screen, Screen::Home, "esc should not navigate");
+}
+
+#[tokio::test]
+async fn typing_in_the_palette_does_not_reach_the_screen_underneath() {
+    // The overlay owns every key while open, so a query cannot half-apply to the
+    // menu behind it.
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Home;
+    app.nav_index = 0;
+    app.overlay = Some(Overlay::palette());
+
+    for character in ['j', 'j', 'k'] {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+
+    assert_eq!(
+        app.nav_index, 0,
+        "the menu moved while the palette was open"
+    );
+    match &app.overlay {
+        Some(Overlay::Palette { query, .. }) => assert_eq!(query, "jjk"),
+        other => panic!("expected a palette holding the query, got {other:?}"),
     }
 }

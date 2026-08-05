@@ -23,7 +23,9 @@ use ratatui_image::{Resize, StatefulImage, picker::Picker, protocol::StatefulPro
 use serde_json::Value;
 mod effects;
 mod model;
+mod palette;
 mod snapshot;
+use palette::Overlay;
 use snapshot::WorkspaceSnapshot;
 mod reducer;
 mod view;

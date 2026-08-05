@@ -1490,6 +1490,11 @@ pub(super) struct App {
     /// A long video render can run for minutes; without a clock there is no way to
     /// tell a slow stage from a stuck one.
     pub(super) started_at: Option<std::time::Instant>,
+    /// Palette or help overlay, when one is open.
+    ///
+    /// Drawn over whatever screen is underneath and consuming keys while open, so a
+    /// jump never loses the state of the screen it was launched from.
+    pub(super) overlay: Option<Overlay>,
     pub(super) picker: Picker,
     pub(super) image: Option<StatefulProtocol>,
     pub(super) effects: EffectManager<&'static str>,

@@ -149,6 +149,7 @@ impl App {
             connector_query: None,
             snapshot,
             started_at: None,
+            overlay: None,
             picker,
             image: None,
             effects: EffectManager::default(),
@@ -184,8 +185,28 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // The overlay owns every key while it is open, so a jump cannot half-apply to
+        // the screen underneath.
+        if self.overlay.is_some() {
+            self.handle_overlay_key(key);
+            return;
+        }
         if self.operation.is_some() {
             self.handle_operation_key(key);
+            return;
+        }
+        // Available from every screen: with eleven destinations, walking the menu is
+        // the slow path and should not be the only one.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
+            self.overlay = Some(Overlay::palette());
+            self.dirty = true;
+            return;
+        }
+        // Only where it cannot be a value: a form field takes `?` as text.
+        if key.code == KeyCode::Char('?') && !matches!(self.screen, Screen::Generate | Screen::Edit)
+        {
+            self.overlay = Some(Overlay::Help);
+            self.dirty = true;
             return;
         }
         match self.screen {
@@ -198,6 +219,84 @@ impl App {
         }
     }
 
+    /// Handles keys while the palette or help overlay is open.
+    pub(super) fn handle_overlay_key(&mut self, key: KeyEvent) {
+        self.dirty = true;
+        let Some(overlay) = self.overlay.take() else {
+            return;
+        };
+        let Overlay::Palette {
+            mut query,
+            mut selected,
+        } = overlay
+        else {
+            // Help closes on any key: it has nothing to interact with, and needing a
+            // specific key to dismiss a reference card is its own small puzzle.
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => return,
+            KeyCode::Enter => {
+                let labels = Self::palette_labels();
+                if let Some(label) = palette::matches(&labels, &query).get(selected).copied() {
+                    self.jump_to(label);
+                }
+                return;
+            }
+            KeyCode::Backspace => {
+                query.pop();
+                selected = 0;
+            }
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Down => {
+                let count = palette::matches(&Self::palette_labels(), &query).len();
+                selected = (selected + 1).min(count.saturating_sub(1));
+            }
+            KeyCode::Char(character) => {
+                query.push(character);
+                selected = 0;
+            }
+            _ => {}
+        }
+        self.overlay = Some(Overlay::Palette { query, selected });
+    }
+
+    /// Opens whichever menu entry `nav_index` points at.
+    ///
+    /// Shared by the menu and the palette so a destination cannot be reachable from
+    /// one and not the other — the index-to-screen mapping lived inline in the menu's
+    /// `Enter` arm, which is why the palette needed it lifted out.
+    pub(super) fn open_nav_index(&mut self) {
+        match NAV_ITEMS.get(self.nav_index).map(|item| item.title) {
+            Some("Generate") => self.transition(Screen::Generate),
+            Some("Edit") => self.transition(Screen::Edit),
+            Some("Projects") => self.open_section(Section::Projects),
+            Some("Models") => self.open_section(Section::Models),
+            Some("Connectors") => self.open_section(Section::Connectors),
+            Some("Themes") => self.open_section(Section::Themes),
+            Some("Templates") => self.open_section(Section::Templates),
+            Some("Artifacts") => self.open_section(Section::Artifacts),
+            Some("Prompts") => self.open_section(Section::Prompts),
+            Some("Configuration") => self.open_section(Section::Configuration),
+            Some("Setup") => self.open_section(Section::Setup),
+            _ => {}
+        }
+    }
+
+    /// Every destination the palette can reach.
+    pub(super) fn palette_labels() -> Vec<&'static str> {
+        NAV_ITEMS.iter().map(|item| item.title).collect()
+    }
+
+    /// Opens the destination the palette selected.
+    pub(super) fn jump_to(&mut self, label: &str) {
+        let Some(index) = NAV_ITEMS.iter().position(|item| item.title == label) else {
+            return;
+        };
+        self.nav_index = index;
+        self.open_nav_index();
+    }
+
     pub(super) fn handle_home_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
@@ -206,20 +305,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.nav_index = (self.nav_index + 1).min(NAV_ITEMS.len() - 1);
             }
-            KeyCode::Enter => match self.nav_index {
-                0 => self.transition(Screen::Generate),
-                1 => self.transition(Screen::Edit),
-                2 => self.open_section(Section::Projects),
-                3 => self.open_section(Section::Models),
-                4 => self.open_section(Section::Connectors),
-                5 => self.open_section(Section::Themes),
-                6 => self.open_section(Section::Templates),
-                7 => self.open_section(Section::Artifacts),
-                8 => self.open_section(Section::Prompts),
-                9 => self.open_section(Section::Configuration),
-                10 => self.open_section(Section::Setup),
-                _ => {}
-            },
+            KeyCode::Enter => self.open_nav_index(),
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             _ => {}
         }
