@@ -81,7 +81,7 @@ pub(crate) fn draw_resource_form(
                 ..
             } => {
                 let shown = if value.is_empty() {
-                    Span::styled(*placeholder, Style::default().fg(PANEL))
+                    Span::styled(*placeholder, Style::default().fg(FAINT))
                 } else {
                     Span::styled(
                         compact(value, value_width as usize),
@@ -101,10 +101,10 @@ pub(crate) fn draw_resource_form(
                 // teaches the user to type an identifier they would have to know.
                 line.push(Span::styled(
                     "▾ ",
-                    Style::default().fg(if selected { ACCENT } else { PANEL }),
+                    Style::default().fg(if selected { ACCENT } else { FAINT }),
                 ));
                 line.push(if value.is_empty() {
-                    Span::styled(*placeholder, Style::default().fg(PANEL))
+                    Span::styled(*placeholder, Style::default().fg(FAINT))
                 } else {
                     Span::styled(value.clone(), Style::default().fg(TEXT))
                 });

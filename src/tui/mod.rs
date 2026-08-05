@@ -188,6 +188,14 @@ const BG: Color = Color::Rgb(24, 25, 26);
 const PANEL: Color = Color::Rgb(35, 36, 38);
 const TEXT: Color = Color::Rgb(224, 220, 211);
 const MUTED: Color = Color::Rgb(146, 143, 137);
+/// The dimmest tier text is allowed to use.
+///
+/// It exists because `PANEL` was being borrowed for the job, and `PANEL` is a
+/// fill: as a foreground it reads at 1.1:1 against `BG` and vanishes outright on
+/// a selected row, whose background it *is*. This keeps the three-level hierarchy
+/// that was wanted — value, then label, then hint — at a ratio that can still be
+/// read: 3.3:1 on `BG` and 2.9:1 on `PANEL`.
+const FAINT: Color = Color::Rgb(110, 107, 101);
 const ACCENT: Color = Color::Rgb(250, 189, 47);
 const GREEN: Color = Color::Rgb(184, 187, 38);
 const CYAN: Color = Color::Rgb(131, 165, 152);
