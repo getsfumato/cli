@@ -12,7 +12,7 @@ use futures_util::StreamExt;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Constraint, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
@@ -23,6 +23,8 @@ use ratatui_image::{Resize, StatefulImage, picker::Picker, protocol::StatefulPro
 use serde_json::Value;
 mod effects;
 mod model;
+mod snapshot;
+use snapshot::WorkspaceSnapshot;
 mod reducer;
 mod view;
 
@@ -57,7 +59,6 @@ use tokio::{
     sync::mpsc::{Receiver, Sender, channel},
     task::JoinHandle,
 };
-use tui_widgets::big_text::{BigText, PixelSize};
 
 use crate::{
     cli::{
@@ -68,18 +69,95 @@ use crate::{
 };
 
 const TICK_RATE: Duration = Duration::from_millis(80);
-const NAV_ITEMS: &[(&str, &str)] = &[
-    ("Generate", "Build reviewed slides, pages, or videos"),
-    ("Edit", "Update an existing generated deck"),
-    ("Projects", "Project working directories"),
-    ("Models", "Profiles, capabilities, defaults"),
-    ("Connectors", "Local and cloud model endpoints"),
-    ("Themes", "Reusable visual packages"),
-    ("Templates", "Reusable page and slide structures"),
-    ("Artifacts", "Project logos, icons, and visuals"),
-    ("Prompts", "Layered model instructions"),
-    ("Configuration", "Merged user and project settings"),
-    ("Setup", "Initialize user and project settings"),
+/// A heading in the workspace menu.
+///
+/// The menu used to be eleven flat rows that mixed what you *do* — generate, edit —
+/// with what you *inspect* — projects, models, connectors — and every row carried a
+/// subtitle, so eleven choices filled twenty-two lines. Grouping separates the two
+/// kinds and lets the library collapse into far less vertical space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NavGroup {
+    /// Actions that produce a resource.
+    Create,
+    /// Read-only inspection of what the workspace holds.
+    Library,
+    /// Configuration and first-run setup.
+    Settings,
+}
+
+impl NavGroup {
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Self::Create => "CREATE",
+            Self::Library => "LIBRARY",
+            Self::Settings => "SETTINGS",
+        }
+    }
+}
+
+/// One menu entry: its group, its label, and what it is for.
+pub(super) struct NavItem {
+    pub(super) group: NavGroup,
+    pub(super) title: &'static str,
+    pub(super) hint: &'static str,
+}
+
+const NAV_ITEMS: &[NavItem] = &[
+    NavItem {
+        group: NavGroup::Create,
+        title: "Generate",
+        hint: "slides, page, or video",
+    },
+    NavItem {
+        group: NavGroup::Create,
+        title: "Edit",
+        hint: "update an existing deck",
+    },
+    NavItem {
+        group: NavGroup::Library,
+        title: "Projects",
+        hint: "working directories",
+    },
+    NavItem {
+        group: NavGroup::Library,
+        title: "Models",
+        hint: "profiles and defaults",
+    },
+    NavItem {
+        group: NavGroup::Library,
+        title: "Connectors",
+        hint: "model endpoints",
+    },
+    NavItem {
+        group: NavGroup::Library,
+        title: "Themes",
+        hint: "visual packages",
+    },
+    NavItem {
+        group: NavGroup::Library,
+        title: "Templates",
+        hint: "reusable structures",
+    },
+    NavItem {
+        group: NavGroup::Library,
+        title: "Artifacts",
+        hint: "logos, icons, visuals",
+    },
+    NavItem {
+        group: NavGroup::Library,
+        title: "Prompts",
+        hint: "model instructions",
+    },
+    NavItem {
+        group: NavGroup::Settings,
+        title: "Configuration",
+        hint: "merged settings",
+    },
+    NavItem {
+        group: NavGroup::Settings,
+        title: "Setup",
+        hint: "initialize user and project",
+    },
 ];
 
 const BG: Color = Color::Rgb(24, 25, 26);

@@ -308,7 +308,7 @@ fn home_enter_opens_the_selected_resource_form() {
 
 #[test]
 fn main_menu_exposes_prompt_management() {
-    assert!(NAV_ITEMS.iter().any(|(name, _)| *name == "Prompts"));
+    assert!(NAV_ITEMS.iter().any(|item| item.title == "Prompts"));
     assert_eq!(
         section_actions(Section::Prompts),
         &[
@@ -569,24 +569,31 @@ fn edit_form_builds_a_focused_slide_command() {
 
 #[test]
 fn dashboard_renders_at_eighty_by_twenty_four() {
-    use ratatui::{Terminal, backend::TestBackend};
-
-    let backend = TestBackend::new(80, 24);
-    let mut terminal = Terminal::new(backend).unwrap();
+    // The minimum terminal the TUI supports. The chrome used to spend six of these
+    // twenty-four rows on an ASCII logo; the menu now has to fit alongside grouped
+    // headings and a key-hint row.
     let mut app = App::new(Picker::halfblocks(), test_application());
+    let rendered = render_screen(&mut app, 80, 24);
 
-    terminal.draw(|frame| view::draw(&mut app, frame)).unwrap();
-    let rendered = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>();
-
-    assert!(rendered.contains("SFUMATO"));
-    assert!(rendered.contains("WORKSPACE"));
-    assert!(rendered.contains("ACTIVE PROJECT"));
+    assert!(rendered.contains("sfumato"), "{rendered}");
+    // Grouped, not one flat list.
+    for group in ["CREATE", "LIBRARY", "SETTINGS"] {
+        assert!(rendered.contains(group), "missing {group}:\n{rendered}");
+    }
+    // Every entry is reachable without scrolling at the minimum size.
+    for item in NAV_ITEMS {
+        assert!(
+            rendered.contains(item.title),
+            "missing {}:\n{rendered}",
+            item.title
+        );
+    }
+    // The keys are visible rather than guessed.
+    assert!(rendered.contains("? help"), "{rendered}");
+    // Nothing bled past the right edge.
+    for line in rendered.lines() {
+        assert!(line.chars().count() <= 80, "overflowing line: {line:?}");
+    }
 }
 
 #[tokio::test]
@@ -813,5 +820,50 @@ fn an_unlabelled_operation_stage_names_itself() {
             stage.as_str(),
             "{stage:?} should have a human label"
         );
+    }
+}
+
+/// Renders one screen to text so its layout can be inspected.
+#[cfg(test)]
+fn render_screen(app: &mut App, width: u16, height: u16) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    // Several frames, so the transition effect finishes and the layout is legible.
+    for _ in 0..40 {
+        terminal.draw(|frame| view::draw(app, frame)).unwrap();
+    }
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+#[ignore = "prints the current layout for inspection"]
+fn dump_every_screen() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    for (name, screen) in [
+        ("HOME", Screen::Home),
+        ("BROWSE/Projects", Screen::Browse(Section::Projects)),
+        ("BROWSE/Connectors", Screen::Browse(Section::Connectors)),
+        ("GENERATE", Screen::Generate),
+        ("RUNNING", Screen::Running),
+        ("COMPLETE", Screen::Complete),
+    ] {
+        if let Screen::Browse(section) = screen {
+            app.open_section(section);
+        }
+        app.screen = screen;
+        println!("\n╔══════ {name} ══════ (100x32)");
+        println!("{}", render_screen(&mut app, 100, 32));
+        println!("\n╔══════ {name} ══════ (80x24)");
+        println!("{}", render_screen(&mut app, 80, 24));
     }
 }

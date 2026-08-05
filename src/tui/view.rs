@@ -5,9 +5,12 @@ use super::*;
 pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>) {
     let area = frame.area();
     frame.render_widget(Block::new().style(Style::default().bg(BG).fg(TEXT)), area);
+    // One line of chrome, not six. The wordmark used to be rendered as a five-row
+    // ASCII logo on every screen, which spent a fifth of an 80x24 terminal on
+    // decoration that says the same thing each frame.
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(if area.height >= 24 { 6 } else { 3 }),
-        Constraint::Min(8),
+        Constraint::Length(2),
+        Constraint::Min(6),
         Constraint::Length(2),
     ])
     .areas(area);
@@ -29,37 +32,45 @@ pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>) {
 
 impl App {
     fn draw_header(&self, frame: &mut Frame<'_>, area: Rect) {
-        if area.height >= 6 && area.width >= 100 {
-            let [brand, context] =
-                Layout::horizontal([Constraint::Length(60), Constraint::Min(10)])
-                    .areas(area.inner(Margin::new(2, 0)));
-            let logo = BigText::builder()
-                .pixel_size(PixelSize::HalfHeight)
-                .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
-                .lines(vec![Line::from("SFUMATO")])
-                .build();
-            frame.render_widget(logo, brand);
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from(Span::styled(
-                        "STUDY RESOURCE ENGINE",
-                        Style::default().fg(CYAN),
-                    )),
-                    Line::from(Span::styled(self.breadcrumb(), Style::default().fg(MUTED))),
-                ])
-                .alignment(Alignment::Right),
-                context,
-            );
-        } else {
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(" SFUMATO ", Style::default().fg(BG).bg(ACCENT).bold()),
-                    Span::raw("  "),
-                    Span::styled(self.breadcrumb(), Style::default().fg(MUTED)),
-                ])),
-                area,
-            );
+        let [line, rule] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
+            .areas(area.inner(Margin::new(2, 0)));
+        // Left: who and where. Right: which project and theme the next action uses,
+        // which is the context a caller most often gets wrong.
+        let mut left = vec![
+            Span::styled("sfumato", Style::default().fg(ACCENT).bold()),
+            Span::styled("  ·  ", Style::default().fg(PANEL)),
+            Span::styled(self.breadcrumb(), Style::default().fg(TEXT)),
+        ];
+        if self.snapshot.project.is_none() {
+            left.push(Span::styled("  (no project)", Style::default().fg(RED)));
         }
+        let context = match self
+            .snapshot
+            .project
+            .as_ref()
+            .and_then(|p| p.theme.as_deref())
+        {
+            Some(theme) => format!("{} ▸ {theme}", self.snapshot.project_name()),
+            None => self.snapshot.project_name().to_string(),
+        };
+        let [left_area, right_area] =
+            Layout::horizontal([Constraint::Min(20), Constraint::Length(40)]).areas(line);
+        frame.render_widget(Paragraph::new(Line::from(left)), left_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                compact(&context, right_area.width as usize),
+                Style::default().fg(MUTED),
+            )))
+            .alignment(Alignment::Right),
+            right_area,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "─".repeat(rule.width as usize),
+                Style::default().fg(PANEL),
+            ))),
+            rule,
+        );
     }
 
     fn breadcrumb(&self) -> String {
@@ -91,78 +102,115 @@ impl App {
     }
 
     fn draw_home(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        let [menu_area, context_area] =
-            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
-                .areas(area.inner(Margin::new(2, 0)));
-        let items = NAV_ITEMS
-            .iter()
-            .enumerate()
-            .map(|(index, (title, subtitle))| {
-                let marker = if index == self.nav_index { ">" } else { " " };
-                ListItem::new(vec![
-                    Line::from(vec![
-                        Span::styled(format!("{marker} "), Style::default().fg(ACCENT)),
-                        Span::styled(*title, Style::default().fg(TEXT).bold()),
-                    ]),
-                    Line::from(Span::styled(
-                        format!("   {subtitle}"),
-                        Style::default().fg(MUTED),
-                    )),
-                ])
-            })
-            .collect::<Vec<_>>();
-        let mut state = ListState::default().with_selected(Some(self.nav_index));
-        frame.render_stateful_widget(
-            List::new(items)
-                .highlight_style(Style::default().bg(PANEL))
-                .block(panel("WORKSPACE")),
-            menu_area,
-            &mut state,
-        );
-
-        let project = self
-            .application
-            .list_projects()
-            .ok()
-            .and_then(|projects| projects.into_iter().find(|project| project.active));
-        let project_name = project
-            .as_ref()
-            .map(|project| project.name.as_str())
-            .unwrap_or("No active project");
-        let project_path = project
-            .as_ref()
-            .map(|project| project.path.display().to_string())
-            .unwrap_or_else(|| "Create or activate a project".to_string());
-        let models = self
-            .application
-            .list_models()
-            .map(|models| models.len())
-            .unwrap_or(0);
-        let connectors = self
-            .application
-            .list_connectors()
-            .map(|connectors| connectors.len())
-            .unwrap_or(0);
-        let themes = self
-            .application
-            .list_themes()
-            .map(|themes| themes.len())
-            .unwrap_or(0);
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "ACTIVE PROJECT",
-                    Style::default().fg(CYAN).bold(),
-                )),
-                Line::from(Span::styled(project_name, Style::default().fg(TEXT).bold())),
-                Line::from(Span::styled(project_path, Style::default().fg(MUTED))),
-                Line::from(""),
-                metric_line("Model profiles", models),
-                metric_line("Connectors", connectors),
-                metric_line("Themes", themes),
+        let inner = area.inner(Margin::new(2, 0));
+        // The menu carries its own group headings, so it needs no border. The right
+        // column only appears when there is width for it; below that the workspace
+        // facts move into the header, which already carries the project.
+        // The menu's own widest row is 4 + 15 + 27 = 46 columns, so the side panel
+        // only appears when both fit without the hints bleeding into it. Below that
+        // the workspace facts are still in the header, which carries the project.
+        const MENU_WIDTH: u16 = 46;
+        const CONTEXT_WIDTH: u16 = 34;
+        let (menu_area, context_area) = if inner.width >= MENU_WIDTH + CONTEXT_WIDTH {
+            let [menu, context] = Layout::horizontal([
+                Constraint::Min(MENU_WIDTH),
+                Constraint::Length(CONTEXT_WIDTH),
             ])
-            .wrap(Wrap { trim: true })
-            .block(panel("CONTEXT")),
+            .areas(inner);
+            (menu, Some(context))
+        } else {
+            (inner, None)
+        };
+
+        let mut lines = Vec::new();
+        let mut row_of_item = Vec::new();
+        let mut group = None;
+        for (index, item) in NAV_ITEMS.iter().enumerate() {
+            if group != Some(item.group) {
+                if group.is_some() {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled(
+                    item.group.title(),
+                    Style::default().fg(CYAN).bold(),
+                )));
+                group = Some(item.group);
+            }
+            let selected = index == self.nav_index;
+            row_of_item.push(lines.len());
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if selected { "  › " } else { "    " },
+                    Style::default().fg(ACCENT),
+                ),
+                Span::styled(
+                    format!("{:<15}", item.title),
+                    if selected {
+                        Style::default().fg(TEXT).bold()
+                    } else {
+                        Style::default().fg(TEXT)
+                    },
+                ),
+                // Truncated to what is left, so a long hint can never run into the
+                // panel beside it.
+                Span::styled(
+                    compact(
+                        item.hint,
+                        menu_area.width.saturating_sub(19).max(1) as usize,
+                    ),
+                    Style::default().fg(MUTED),
+                ),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(lines), menu_area);
+
+        let Some(context_area) = context_area else {
+            return;
+        };
+        let mut context = vec![Line::from(Span::styled(
+            "WORKSPACE",
+            Style::default().fg(CYAN).bold(),
+        ))];
+        for (label, value) in [
+            ("projects", self.snapshot.projects),
+            ("models", self.snapshot.models),
+            ("connectors", self.snapshot.connectors),
+            ("themes", self.snapshot.themes),
+        ] {
+            context.push(Line::from(vec![
+                Span::styled(format!("{value:>4}  "), Style::default().fg(TEXT).bold()),
+                Span::styled(label, Style::default().fg(MUTED)),
+            ]));
+        }
+        if let Some(project) = &self.snapshot.project {
+            context.push(Line::from(""));
+            context.push(Line::from(Span::styled(
+                "ACTIVE PROJECT",
+                Style::default().fg(CYAN).bold(),
+            )));
+            context.push(Line::from(Span::styled(
+                project.name.clone(),
+                Style::default().fg(TEXT).bold(),
+            )));
+            context.push(Line::from(Span::styled(
+                project.path.display().to_string(),
+                Style::default().fg(MUTED),
+            )));
+        }
+        // Problems reach the screen instead of being swallowed: the previous code
+        // used `.ok()` per call, so a broken registry rendered as zero of everything.
+        if let Some(hint) = self.snapshot.project_hint() {
+            context.push(Line::from(""));
+            context.push(Line::from(Span::styled(hint, Style::default().fg(ACCENT))));
+        }
+        for problem in self.snapshot.problems.iter().take(3) {
+            context.push(Line::from(Span::styled(
+                compact(problem, context_area.width as usize),
+                Style::default().fg(RED),
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(context).wrap(Wrap { trim: true }),
             context_area,
         );
     }
@@ -501,32 +549,94 @@ impl App {
         }
     }
 
+    /// Keys that do something on the current screen, in the order they matter.
+    ///
+    /// The footer used to show only a status word, so every binding had to be
+    /// guessed. Listing them is what makes a keyboard UI discoverable at all.
+    fn key_hints(&self) -> Vec<(&'static str, &'static str)> {
+        if self.operation.is_some() {
+            return vec![
+                ("↑↓", "field"),
+                ("enter", "confirm"),
+                ("esc", "cancel"),
+                ("?", "help"),
+            ];
+        }
+        let mut hints: Vec<(&'static str, &'static str)> = match self.screen {
+            Screen::Home => vec![("↑↓", "move"), ("enter", "open")],
+            Screen::Browse(_) => vec![
+                ("↑↓", "move"),
+                ("←→", "actions"),
+                ("enter", "run"),
+                ("esc", "back"),
+            ],
+            Screen::Generate | Screen::Edit => vec![
+                ("↑↓", "field"),
+                ("space", "toggle"),
+                ("enter", "start"),
+                ("esc", "back"),
+            ],
+            Screen::Running => vec![("↑↓", "scroll"), ("esc", "cancel")],
+            Screen::Complete => vec![("↑↓", "scroll"), ("enter", "home")],
+        };
+        hints.push(("?", "help"));
+        hints.push(("q", "quit"));
+        hints
+    }
+
     fn draw_footer(&self, frame: &mut Frame<'_>, area: Rect) {
+        let [status_area, keys_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
+                .areas(area.inner(Margin::new(2, 0)));
+
         let (message, error) = self.status.as_ref().map_or_else(
             || {
                 let message = match self.screen {
-                    Screen::Running => "Resource operation is running".to_string(),
+                    Screen::Running => self
+                        .current_stage
+                        .map(|stage| format!("{}...", stage_label(stage)))
+                        .unwrap_or_else(|| "working...".to_string()),
                     Screen::Complete if self.result.is_some() => self
                         .result
                         .as_ref()
-                        .map(|result| format!("Artifact: {}", result.markdown_path().display()))
+                        .map(|result| result.markdown_path().display().to_string())
                         .unwrap_or_default(),
-                    _ => "Ready".to_string(),
+                    _ => String::new(),
                 };
                 (message, false)
             },
             |(message, error)| (message.clone(), *error),
         );
+        if !message.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        if error { "x " } else { "> " },
+                        Style::default().fg(if error { RED } else { CYAN }),
+                    ),
+                    Span::styled(
+                        compact(&message, status_area.width.saturating_sub(2) as usize),
+                        Style::default().fg(if error { RED } else { MUTED }),
+                    ),
+                ])),
+                status_area,
+            );
+        }
+
+        let mut spans = Vec::new();
+        for (key, action) in self.key_hints() {
+            if !spans.is_empty() {
+                spans.push(Span::styled("   ", Style::default().fg(PANEL)));
+            }
+            spans.push(Span::styled(key, Style::default().fg(TEXT).bold()));
+            spans.push(Span::styled(
+                format!(" {action}"),
+                Style::default().fg(MUTED),
+            ));
+        }
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(" ", Style::default().bg(if error { RED } else { CYAN })),
-                Span::raw(" "),
-                Span::styled(
-                    compact(&message, area.width.saturating_sub(4) as usize),
-                    Style::default().fg(if error { RED } else { MUTED }),
-                ),
-            ])),
-            area,
+            Paragraph::new(Line::from(truncate_spans(spans, keys_area.width as usize))),
+            keys_area,
         );
     }
 }
@@ -825,12 +935,6 @@ fn field_block(label: &'static str, selected: bool) -> Block<'static> {
         .border_style(Style::default().fg(if selected { ACCENT } else { MUTED }))
 }
 
-fn metric_line(label: &str, value: usize) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{value:>3}"), Style::default().fg(ACCENT).bold()),
-        Span::styled(format!("  {label}"), Style::default().fg(MUTED)),
-    ])
-}
 
 pub(super) fn stage_label(stage: GenerationStage) -> &'static str {
     match stage {

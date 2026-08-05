@@ -1479,6 +1479,12 @@ pub(super) struct App {
     /// must not cancel a running generation, and `Esc` in the browse view must
     /// not have to wait on one.
     pub(super) connector_query: Option<ConnectorQuery>,
+    /// Workspace state the chrome and home screen render from.
+    ///
+    /// Refreshed by `refresh_snapshot`, never during a draw: the values only change
+    /// when this process performs an action, and reading them per frame made the
+    /// render loop do filesystem work.
+    pub(super) snapshot: WorkspaceSnapshot,
     pub(super) picker: Picker,
     pub(super) image: Option<StatefulProtocol>,
     pub(super) effects: EffectManager<&'static str>,

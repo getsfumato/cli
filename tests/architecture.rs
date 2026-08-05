@@ -174,3 +174,32 @@ fn every_http_client_declares_a_request_timeout() {
         violations.join("\n  ")
     );
 }
+
+/// The render path must not talk to the application facade.
+///
+/// `draw_home` used to call `list_projects`, `list_models`, `list_connectors`, and
+/// `list_themes` while drawing, so sitting idle on that screen re-read and re-parsed
+/// four TOML documents at the tick rate — twelve times a second. The values cannot
+/// change without an action this process performed, so they belong in a snapshot
+/// collected on transition.
+///
+/// This also keeps rendering decoupled from `SfumatoApplication`, which is what lets
+/// the same view model be served by an API later: a view that calls the facade
+/// directly cannot be moved behind one.
+#[test]
+fn the_tui_render_path_reads_no_application_state() {
+    let view = workspace_root().join("src/tui/view.rs");
+    let contents = fs::read_to_string(&view)
+        .unwrap_or_else(|error| panic!("could not read {}: {error}", view.display()));
+    // `.application` on its own line is how the previous calls were formatted, so
+    // match the receiver rather than any one method name.
+    let violations: Vec<&str> = contents
+        .lines()
+        .filter(|line| line.trim() == ".application" || line.contains("self.application."))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "the view reaches the application facade:\n  {}",
+        violations.join("\n  ")
+    );
+}

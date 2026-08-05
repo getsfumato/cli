@@ -118,6 +118,8 @@ impl App {
             })
             .map(|plugin| plugin.id)
             .collect();
+        // Collected before the struct takes ownership of the facade.
+        let snapshot = WorkspaceSnapshot::collect(&application);
         Self {
             application,
             screen: Screen::Home,
@@ -145,6 +147,7 @@ impl App {
             jobs: OperationLifecycle::default(),
             active_task: None,
             connector_query: None,
+            snapshot,
             picker,
             image: None,
             effects: EffectManager::default(),
@@ -159,8 +162,19 @@ impl App {
 
     pub(super) fn transition(&mut self, screen: Screen) {
         self.screen = screen;
+        // Refreshed on the way into a screen, not while drawing one. Transitions are
+        // user-driven and rare; draws happen at the tick rate.
+        self.refresh_snapshot();
         self.effects.add_unique_effect("screen", fx::coalesce(260));
         self.dirty = true;
+    }
+
+    /// Re-reads the workspace state the chrome and home screen display.
+    ///
+    /// Call after anything that could change it — activating a project, finishing a
+    /// setup or a generation — so the views never have to ask mid-frame.
+    pub(super) fn refresh_snapshot(&mut self) {
+        self.snapshot = WorkspaceSnapshot::collect(&self.application);
     }
 
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
