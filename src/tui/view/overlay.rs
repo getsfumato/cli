@@ -131,13 +131,16 @@ impl App {
                 }
                 lines.push(Line::from(Span::styled(
                     "  del clears · esc cancels",
-                    Style::default().fg(PANEL),
+                    Style::default().fg(MUTED),
                 )));
                 frame.render_widget(Paragraph::new(lines), inner);
             }
             Overlay::Quit => {
                 let running = self.screen == Screen::Running;
-                let card = centered_rect(52, if running { 7 } else { 6 }, area);
+                // Sized to what it says: the plain question is three rows, and the
+                // fourth the card used to carry left a band of dead space between
+                // the question and the answer keys.
+                let card = centered_rect(52, if running { 7 } else { 5 }, area);
                 frame.render_widget(Clear, card);
                 let block = Block::new()
                     .title(" LEAVE SFUMATO ")
@@ -163,13 +166,11 @@ impl App {
                         "  its staged artifacts discarded.",
                         Style::default().fg(MUTED),
                     )));
-                } else {
-                    lines.push(Line::from(""));
                 }
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  y leaves · any other key stays",
-                    Style::default().fg(PANEL),
+                    Style::default().fg(MUTED),
                 )));
                 frame.render_widget(Paragraph::new(lines), inner);
             }
@@ -196,7 +197,7 @@ impl App {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "  any key to close",
-                    Style::default().fg(PANEL),
+                    Style::default().fg(MUTED),
                 )));
                 frame.render_widget(Paragraph::new(lines), inner);
             }

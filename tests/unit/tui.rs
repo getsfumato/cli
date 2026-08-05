@@ -1127,16 +1127,22 @@ fn an_unlabelled_operation_stage_names_itself() {
     }
 }
 
-/// Renders one screen to text so its layout can be inspected.
+/// Renders one screen and hands back the raw cells, styles included.
 #[cfg(test)]
-fn render_screen(app: &mut App, width: u16, height: u16) -> String {
+fn render_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
     use ratatui::{Terminal, backend::TestBackend};
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     // Several frames, so the transition effect finishes and the layout is legible.
     for _ in 0..40 {
         terminal.draw(|frame| view::draw(app, frame)).unwrap();
     }
-    let buffer = terminal.backend().buffer().clone();
+    terminal.backend().buffer().clone()
+}
+
+/// Renders one screen to text so its layout can be inspected.
+#[cfg(test)]
+fn render_screen(app: &mut App, width: u16, height: u16) -> String {
+    let buffer = render_buffer(app, width, height);
     (0..height)
         .map(|y| {
             (0..width)
@@ -2131,6 +2137,61 @@ async fn the_exit_prompt_reaches_past_an_open_form() {
     app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
 
     assert_eq!(app.overlay, Some(Overlay::Quit));
+}
+
+/// WCAG relative luminance, so contrast can be argued about rather than eyeballed.
+#[cfg(test)]
+fn luminance(colour: ratatui::style::Color) -> Option<f64> {
+    let ratatui::style::Color::Rgb(red, green, blue) = colour else {
+        return None;
+    };
+    let channel = |value: u8| {
+        let value = f64::from(value) / 255.0;
+        if value <= 0.031_308 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    Some(0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue))
+}
+
+/// The exit prompt's answer keys were drawn in `PANEL`, which is a panel's *fill*
+/// colour, over the window background — a contrast ratio of about 1.1:1, so the one
+/// line that says how to answer the question was the line that could not be read.
+#[tokio::test]
+async fn the_exit_prompt_is_legible_including_the_keys_that_answer_it() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.overlay = Some(Overlay::Quit);
+    let buffer = render_buffer(&mut app, 100, 32);
+
+    let mut checked = 0;
+    for y in 0..buffer.area.height {
+        let row = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<String>();
+        if !row.contains("y leaves") && !row.contains("Close the session?") {
+            continue;
+        }
+        for x in 0..buffer.area.width {
+            let cell = &buffer[(x, y)];
+            if cell.symbol().trim().is_empty() {
+                continue;
+            }
+            let (Some(foreground), Some(background)) = (luminance(cell.fg), luminance(cell.bg))
+            else {
+                continue;
+            };
+            let ratio = (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
+            assert!(
+                ratio >= 2.0,
+                "'{}' at {x},{y} sits at {ratio:.2}:1 against its own background",
+                cell.symbol()
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the prompt drew nothing to check");
 }
 
 #[tokio::test]
