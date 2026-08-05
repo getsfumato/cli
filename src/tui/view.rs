@@ -410,25 +410,29 @@ impl App {
 
     fn draw_generation(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let inner = area.inner(Margin::new(2, 0));
-        let [stages_area, main_area] =
-            Layout::horizontal([Constraint::Length(24), Constraint::Min(30)]).areas(inner);
-        self.draw_stages(frame, stages_area);
-        let has_image = self.image.is_some() && main_area.width >= 70;
+        // Two rows of progress, then the feed. The pipeline used to be a
+        // twenty-four-column box down the full height, so seven stage names occupied
+        // a quarter of the width and most of it was empty — while the activity feed,
+        // which is the part that changes, was squeezed beside it.
+        let [progress_area, feed_area] =
+            Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).areas(inner);
+        self.draw_stages(frame, progress_area);
+
+        let has_image = self.image.is_some() && feed_area.width >= 70;
         let [activity_area, preview_area] = if has_image {
-            Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
-                .areas(main_area)
+            Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .areas(feed_area)
         } else {
-            [main_area, Rect::default()]
+            [feed_area, Rect::default()]
         };
         self.draw_activity(frame, activity_area);
         if has_image {
             let preview = Block::new()
-                .title(" IMAGE PREVIEW ")
+                .title(" PREVIEW ")
                 .title_style(Style::default().fg(MAGENTA).bold())
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(MUTED));
-            let content = preview.inner(preview_area).inner(Margin::new(1, 1));
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(PANEL));
+            let content = preview.inner(preview_area).inner(Margin::new(1, 0));
             frame.render_widget(preview, preview_area);
             if let Some(image) = &mut self.image {
                 StatefulImage::default().resize(Resize::Fit(None)).render(
@@ -438,6 +442,15 @@ impl App {
                 );
             }
         }
+    }
+
+    /// Formats the elapsed run time as `m:ss`.
+    fn elapsed(&self) -> String {
+        let seconds = self
+            .started_at
+            .map(|start| start.elapsed().as_secs())
+            .unwrap_or(0);
+        format!("{}:{:02}", seconds / 60, seconds % 60)
     }
 
     fn draw_stages(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -481,30 +494,73 @@ impl App {
             .unwrap_or(0);
         let running = self.screen == Screen::Running;
         let completed = self.screen == Screen::Complete && !self.generation_failed;
-        let spinner = ["|", "/", "-", "\\"][self.tick % 4];
-        let lines = stages
-            .iter()
-            .enumerate()
-            .map(|(index, stage)| {
-                let (marker, color) = if index < current || completed {
-                    ("+", GREEN)
-                } else if index == current && running {
-                    (spinner, ACCENT)
-                } else if index == current && self.generation_failed {
-                    ("!", RED)
-                } else {
-                    (".", MUTED)
-                };
-                Line::from(vec![
-                    Span::styled(format!(" {marker} "), Style::default().fg(color).bold()),
-                    Span::styled(
-                        stage_label(*stage),
-                        Style::default().fg(if index <= current { TEXT } else { MUTED }),
-                    ),
-                ])
-            })
-            .collect::<Vec<_>>();
-        frame.render_widget(Paragraph::new(lines).block(panel("PIPELINE")), area);
+        // Braille spinner rather than `|/-\\`: it reads as motion instead of as
+        // punctuation, which matters when it is the only thing moving on screen.
+        let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][self.tick % 10];
+
+        let (marker, marker_colour) = if self.generation_failed {
+            ("✗", RED)
+        } else if completed {
+            ("✓", GREEN)
+        } else {
+            (spinner, ACCENT)
+        };
+        let stage_name = stages
+            .get(current)
+            .map(|stage| stage_label(*stage))
+            .unwrap_or("Working");
+        let [headline, dots, _] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+
+        let counter = format!("step {}/{}", current + 1, stages.len());
+        let elapsed = self.elapsed();
+        let right = format!("{counter}   {elapsed}");
+        let [name_area, right_area] = Layout::horizontal([
+            Constraint::Min(10),
+            Constraint::Length(right.len() as u16 + 2),
+        ])
+        .areas(headline);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{marker} "),
+                    Style::default().fg(marker_colour).bold(),
+                ),
+                Span::styled(stage_name, Style::default().fg(TEXT).bold()),
+            ])),
+            name_area,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(right, Style::default().fg(MUTED))))
+                .alignment(Alignment::Right),
+            right_area,
+        );
+
+        // One glyph per stage: the whole pipeline at a glance, in one row, instead of
+        // one labelled row per stage down a column.
+        let mut spans = Vec::new();
+        for (index, stage) in stages.iter().enumerate() {
+            let (glyph, colour) = if index < current || completed {
+                ("●", GREEN)
+            } else if index == current && self.generation_failed {
+                ("●", RED)
+            } else if index == current && running {
+                ("◐", ACCENT)
+            } else {
+                ("○", PANEL)
+            };
+            spans.push(Span::styled(glyph, Style::default().fg(colour)));
+            spans.push(Span::raw(" "));
+            let _ = stage;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(truncate_spans(spans, dots.width as usize))),
+            dots,
+        );
     }
 
     fn draw_activity(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -525,16 +581,47 @@ impl App {
                 ])
             })
             .collect::<Vec<_>>();
+        if items.is_empty() {
+            let waiting = if self.screen == Screen::Running {
+                self.current_stage
+                    .map(|stage| format!("{}...", stage_label(stage)))
+                    .unwrap_or_else(|| "starting...".to_string())
+            } else {
+                "nothing was recorded".to_string()
+            };
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        if self.screen == Screen::Running {
+                            "ACTIVITY"
+                        } else {
+                            "RESULT"
+                        },
+                        Style::default().fg(CYAN).bold(),
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled(waiting, Style::default().fg(MUTED))),
+                ]),
+                area,
+            );
+            return;
+        }
         let mut state = ListState::default()
             .with_selected((!self.activities.is_empty()).then_some(self.activity_index));
         frame.render_stateful_widget(
             List::new(items)
                 .highlight_style(Style::default().bg(PANEL))
-                .block(panel(if self.screen == Screen::Running {
-                    "ACTIVITY"
-                } else {
-                    "RESULT"
-                })),
+                .block(
+                    Block::new()
+                        .title(if self.screen == Screen::Running {
+                            " ACTIVITY "
+                        } else {
+                            " RESULT "
+                        })
+                        .title_style(Style::default().fg(CYAN).bold())
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(PANEL)),
+                ),
             area,
             &mut state,
         );
@@ -980,13 +1067,19 @@ pub(super) fn stage_label(stage: GenerationStage) -> &'static str {
     }
 }
 
+/// Marker and colour for one feed entry.
+///
+/// Distinct glyphs per kind: `Stage` and `ToolCall` both used `>` and `ToolResult`
+/// and `Success` both used `+`, so the feed could not be skimmed by shape — only by
+/// colour, which is exactly what is lost when the output is piped or the user cannot
+/// distinguish the hues.
 fn activity_style(kind: ActivityKind) -> (&'static str, Color) {
     match kind {
-        ActivityKind::Stage => (">", ACCENT),
-        ActivityKind::Model => ("~", CYAN),
-        ActivityKind::ToolCall => (">", MAGENTA),
-        ActivityKind::ToolResult => ("+", GREEN),
-        ActivityKind::Warning => ("!", RED),
-        ActivityKind::Success => ("+", GREEN),
+        ActivityKind::Stage => ("▸", ACCENT),
+        ActivityKind::Model => ("◆", CYAN),
+        ActivityKind::ToolCall => ("⚙", MAGENTA),
+        ActivityKind::ToolResult => ("↳", GREEN),
+        ActivityKind::Warning => ("⚠", RED),
+        ActivityKind::Success => ("✓", GREEN),
     }
 }

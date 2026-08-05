@@ -925,6 +925,34 @@ fn dump_every_screen() {
         println!("\n╔══════ GENERATE/Video ══════ (100x32)");
         println!("{}", render_screen(&mut video, 100, 32));
     }
+    // A running screen with a populated feed, which is what a user actually watches.
+    {
+        let mut busy = App::new(Picker::halfblocks(), test_application());
+        busy.screen = Screen::Running;
+        busy.current_stage = Some(GenerationStage::SemanticReview);
+        busy.activities = vec![
+            Activity {
+                kind: ActivityKind::Stage,
+                title: "Drafting deck".to_string(),
+                detail: "local-text · 12 slides planned".to_string(),
+                image_path: None,
+            },
+            Activity {
+                kind: ActivityKind::ToolCall,
+                title: "chart_generation".to_string(),
+                detail: "plotted the convergence of the partial sums".to_string(),
+                image_path: None,
+            },
+            Activity {
+                kind: ActivityKind::Warning,
+                title: "Layout repair".to_string(),
+                detail: "slide 7 overflowed and was reflowed".to_string(),
+                image_path: None,
+            },
+        ];
+        println!("\n╔══════ RUNNING/busy ══════ (100x20)");
+        println!("{}", render_screen(&mut busy, 100, 20));
+    }
     for (name, screen) in [
         ("HOME", Screen::Home),
         ("BROWSE/Projects", Screen::Browse(Section::Projects)),

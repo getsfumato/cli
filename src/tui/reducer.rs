@@ -148,6 +148,7 @@ impl App {
             active_task: None,
             connector_query: None,
             snapshot,
+            started_at: None,
             picker,
             image: None,
             effects: EffectManager::default(),
@@ -969,6 +970,7 @@ impl App {
 
     pub(super) fn begin_job(&mut self) -> (u64, OperationContext) {
         self.cancel_active_job();
+        self.started_at = Some(std::time::Instant::now());
         let job_id = self.jobs.next_job_id();
         let events = effects::operation_event_sink(job_id, self.sender.clone());
         self.jobs.begin(events)

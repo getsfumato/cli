@@ -1485,6 +1485,11 @@ pub(super) struct App {
     /// when this process performs an action, and reading them per frame made the
     /// render loop do filesystem work.
     pub(super) snapshot: WorkspaceSnapshot,
+    /// When the running operation started, for the elapsed clock.
+    ///
+    /// A long video render can run for minutes; without a clock there is no way to
+    /// tell a slow stage from a stuck one.
+    pub(super) started_at: Option<std::time::Instant>,
     pub(super) picker: Picker,
     pub(super) image: Option<StatefulProtocol>,
     pub(super) effects: EffectManager<&'static str>,
