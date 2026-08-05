@@ -187,9 +187,13 @@ impl App {
     }
 
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.cancel_active_job();
-            self.should_quit = true;
+        // Checked before the overlay and form dispatch below, so the exit gesture
+        // works from every screen — including one with a form or a picker open,
+        // which would otherwise swallow the key as input.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('q') | KeyCode::Char('c'))
+        {
+            self.request_quit();
             return;
         }
         // The overlay owns every key while it is open, so a jump cannot half-apply to
@@ -232,6 +236,20 @@ impl App {
         let Some(overlay) = self.overlay.take() else {
             return;
         };
+        if overlay == Overlay::Quit {
+            match key.code {
+                // Enter is deliberately not a confirmation: it is the key that
+                // submits every form in this UI, so accepting it here would make a
+                // stray enter end the session.
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.cancel_active_job();
+                    self.should_quit = true;
+                }
+                // Anything else keeps the session, so a mistyped key cannot leave.
+                _ => self.status = None,
+            }
+            return;
+        }
         // The field picker shares the palette's matching and keys; only the list it
         // offers and where the answer goes differ.
         if let Overlay::Choice {
@@ -425,9 +443,26 @@ impl App {
                 self.nav_index = (self.nav_index + 1).min(NAV_ITEMS.len() - 1);
             }
             KeyCode::Enter => self.open_nav_index(),
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            // The home screen is the one place with nothing to go back to, so `Esc`
+            // only clears the last message. It used to end the session from here,
+            // which made backing out of a form one key away from losing the run.
+            KeyCode::Esc => self.status = None,
             _ => {}
         }
+    }
+
+    /// Asks whether the user means to leave, naming what leaving would interrupt.
+    pub(super) fn request_quit(&mut self) {
+        self.status = Some((
+            if self.screen == Screen::Running {
+                "Leaving now cancels the running operation".to_string()
+            } else {
+                "Press y to leave sfumato".to_string()
+            },
+            false,
+        ));
+        self.overlay = Some(Overlay::Quit);
+        self.dirty = true;
     }
 
     pub(super) fn open_section(&mut self, section: Section) {

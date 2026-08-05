@@ -1839,3 +1839,73 @@ fn a_discarded_preview_is_explained_rather_than_reported_as_an_error() {
     assert!(message.contains("no longer on disk"), "{message}");
     assert!(app.image.is_none());
 }
+
+#[tokio::test]
+async fn escape_never_leaves_the_session() {
+    // `Esc` on the home screen used to set `should_quit`, so the key that backs out
+    // of a form ended the session one screen later — and took the running
+    // generation with it. It now only clears the last message.
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.status = Some(("something happened".to_string(), false));
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(!app.should_quit, "escape must not leave the session");
+    assert_eq!(app.screen, Screen::Home);
+    assert!(app.status.is_none(), "escape clears the message");
+}
+
+#[tokio::test]
+async fn q_types_a_character_instead_of_leaving() {
+    // `q` was a global exit, which made it unusable as form input and made leaving
+    // an accident away on every screen.
+    let mut app = App::new(Picker::halfblocks(), test_application());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+
+    assert!(!app.should_quit, "a bare q must not leave the session");
+}
+
+#[tokio::test]
+async fn leaving_asks_first_and_a_stray_key_stays() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+    assert_eq!(app.overlay, Some(Overlay::Quit));
+    assert!(!app.should_quit, "asking is not leaving");
+
+    // Enter is deliberately not a confirmation: it submits every form in this UI.
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!app.should_quit, "enter must not confirm the exit");
+    assert!(app.overlay.is_none(), "the prompt closes either way");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    assert!(app.should_quit, "y leaves");
+}
+
+#[tokio::test]
+async fn the_exit_prompt_reaches_past_an_open_form() {
+    // The overlay and form dispatch consume every key, so the exit gesture is
+    // checked ahead of them or a form becomes a place with no way out.
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Generate;
+    app.overlay = Some(Overlay::choice(ChoiceTarget::Generate(
+        GenerateFieldId::Theme,
+    )));
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+
+    assert_eq!(app.overlay, Some(Overlay::Quit));
+}
+
+#[tokio::test]
+async fn the_exit_prompt_names_the_run_it_would_cancel() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Running;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+
+    let (message, _) = app.status.clone().expect("a status was set");
+    assert!(message.contains("cancels the running operation"), "{message}");
+}

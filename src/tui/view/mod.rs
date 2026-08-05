@@ -132,6 +132,9 @@ impl App {
     pub(super) fn key_hints(&self) -> Vec<(&'static str, &'static str)> {
         // The overlay owns the keyboard while it is up, so the footer must describe
         // it rather than the screen it covers.
+        if let Some(Overlay::Quit) = self.overlay {
+            return vec![("y", "leave"), ("any key", "stay")];
+        }
         if let Some(Overlay::Choice { .. }) = self.overlay {
             return vec![
                 ("type", "filter"),
@@ -184,7 +187,9 @@ impl App {
         };
         hints.push(("ctrl+k", "jump"));
         hints.push(("?", "help"));
-        hints.push(("q", "quit"));
+        // Named with its modifier because it is now the only way out: `Esc` backs out
+        // of a screen and `q` types a `q`, so neither can end the session by accident.
+        hints.push(("ctrl+q", "quit"));
         hints
     }
 

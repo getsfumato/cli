@@ -18,6 +18,13 @@ pub(super) enum Overlay {
     Palette { query: String, selected: usize },
     /// The key reference for the screen underneath.
     Help,
+    /// Confirmation that the user means to leave the TUI.
+    ///
+    /// Leaving used to be what `Esc` did on the home screen and what `q` did from
+    /// anywhere, so the key that backs out of a form was one screen away from
+    /// ending the session — and a running generation died with it. Exit is now a
+    /// single deliberate gesture that says what it will interrupt.
+    Quit,
     /// Values for one form field, filtered as the user types.
     ///
     /// Carries the field it will write back to, so the picker can be opened from any

@@ -135,6 +135,44 @@ impl App {
                 )));
                 frame.render_widget(Paragraph::new(lines), inner);
             }
+            Overlay::Quit => {
+                let running = self.screen == Screen::Running;
+                let card = centered_rect(52, if running { 7 } else { 6 }, area);
+                frame.render_widget(Clear, card);
+                let block = Block::new()
+                    .title(" LEAVE SFUMATO ")
+                    .title_style(Style::default().fg(RED).bold())
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(RED))
+                    .style(Style::default().bg(BG));
+                let inner = block.inner(card);
+                frame.render_widget(block, card);
+                let mut lines = vec![Line::from(Span::styled(
+                    "  Close the session?",
+                    Style::default().fg(TEXT).bold(),
+                ))];
+                if running {
+                    // The cost of leaving is the run, so it is stated here rather
+                    // than discovered after the terminal has already been restored.
+                    lines.push(Line::from(Span::styled(
+                        "  The running operation will be cancelled and",
+                        Style::default().fg(MUTED),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "  its staged artifacts discarded.",
+                        Style::default().fg(MUTED),
+                    )));
+                } else {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  y leaves · any other key stays",
+                    Style::default().fg(PANEL),
+                )));
+                frame.render_widget(Paragraph::new(lines), inner);
+            }
             Overlay::Help => {
                 let hints = self.key_hints();
                 let card = centered_rect(44, hints.len() as u16 + 4, area);
