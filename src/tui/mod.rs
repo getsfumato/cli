@@ -35,6 +35,8 @@ mod reducer;
 mod view;
 
 #[cfg(test)]
+use reducer::reroot_previews;
+#[cfg(test)]
 use view::{select_line, stage_label, visible_field_range};
 
 use effects::{execute_operation, load_section, spawn_connector_query};

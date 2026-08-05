@@ -1119,3 +1119,144 @@ async fn typing_in_the_palette_does_not_reach_the_screen_underneath() {
         other => panic!("expected a palette holding the query, got {other:?}"),
     }
 }
+
+#[test]
+fn a_refused_path_is_readable_instead_of_clipped_at_the_panel_edge() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Running;
+    app.activities
+        .push(Activity::from_event(&TextGenerationEvent::ToolCallFailed {
+            name: "sfumato_read_file".to_string(),
+            error: "Refusing to read /Users/someone/.codex/plugins/cache/openai-bundled/\
+                    visualize/1.0.16/skills/visualize/SKILL.md because it is outside the \
+                    allowed generation roots. Readable roots for this operation: \
+                    /work/university."
+                .to_string(),
+        }));
+
+    let screen = render_screen(&mut app, 80, 24);
+
+    // The reason, not just the fact — the whole point of the entry.
+    assert!(
+        screen.contains("outside the"),
+        "the refusal's reason must survive the panel width:\n{screen}"
+    );
+    assert!(
+        screen.contains("Readable roots") || screen.contains("Readable"),
+        "the allowed roots must be visible so the path can be corrected:\n{screen}"
+    );
+    assert!(
+        screen.lines().all(|line| line.chars().count() <= 80),
+        "nothing may overflow the terminal:\n{screen}"
+    );
+}
+
+#[test]
+fn wrapping_a_detail_hard_splits_a_long_path_and_marks_what_it_dropped() {
+    // A path has no spaces, so breaking on words alone would show only its first row.
+    let wrapped = view::wrap_detail(&"a".repeat(90), 20, 4);
+
+    assert_eq!(wrapped.len(), 4);
+    assert!(wrapped.iter().all(|line| line.chars().count() <= 20));
+    assert!(
+        wrapped.last().unwrap().ends_with('…'),
+        "running out of rows must not read as the end of the message: {wrapped:?}"
+    );
+}
+
+#[test]
+fn an_entry_without_a_detail_keeps_its_spacing_row() {
+    assert_eq!(view::wrap_detail("", 40, 4), vec![String::new()]);
+    assert_eq!(view::wrap_detail("short", 40, 1), vec!["short".to_string()]);
+}
+
+#[test]
+fn a_committed_run_repoints_its_previews_at_the_revision() {
+    let directory = tempfile::tempdir().unwrap();
+    let staging = directory
+        .path()
+        .join(".staging/job-58890-18c8ed96ea0a8548/assets/images");
+    let revision = directory
+        .path()
+        .join("revisions/rev-18c8ed96ea0a8548/assets/images");
+    std::fs::create_dir_all(&revision).unwrap();
+    std::fs::write(revision.join("chart.png"), b"x").unwrap();
+    let mut activities = vec![Activity {
+        kind: ActivityKind::ToolResult,
+        title: "sfumato chart gen complete".to_string(),
+        detail: String::new(),
+        // The path the tool reported, before the commit moved the tree.
+        image_path: Some(staging.join("chart.png")),
+    }];
+
+    reroot_previews(
+        &mut activities,
+        &directory
+            .path()
+            .join("revisions/rev-18c8ed96ea0a8548/index.html"),
+    );
+
+    assert_eq!(
+        activities[0].image_path.as_deref(),
+        Some(revision.join("chart.png").as_path()),
+        "the asset exists one directory over, so the preview must follow it"
+    );
+}
+
+#[test]
+fn a_preview_with_no_committed_counterpart_is_left_untouched() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory
+        .path()
+        .join(".staging/job-1/assets/images/chart.png");
+    let mut activities = vec![Activity {
+        kind: ActivityKind::ToolResult,
+        title: "chart".to_string(),
+        detail: String::new(),
+        image_path: Some(missing.clone()),
+    }];
+
+    reroot_previews(
+        &mut activities,
+        &directory.path().join("revisions/rev-1/index.html"),
+    );
+
+    // Guessing a path would report an error about a file the tool never named.
+    assert_eq!(activities[0].image_path.as_deref(), Some(missing.as_path()));
+}
+
+#[test]
+fn a_discarded_preview_is_explained_rather_than_reported_as_an_error() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+
+    app.load_image(std::path::Path::new(
+        "/nonexistent/.staging/job-1/assets/images/chart.png",
+    ));
+
+    let (message, is_error) = app.status.clone().expect("a status was set");
+    assert!(!is_error, "a by-design discard is not a fault: {message}");
+    assert!(message.contains("no longer on disk"), "{message}");
+    assert!(app.image.is_none());
+}
+
+#[test]
+#[ignore = "prints a refused-path warning for inspection"]
+fn dump_refusal_warning() {
+    let mut app = App::new(Picker::halfblocks(), test_application());
+    app.screen = Screen::Running;
+    app.activities.push(Activity::from_event(
+        &TextGenerationEvent::ToolCallRequested {
+            name: "sfumato_read_file".to_string(),
+            arguments: serde_json::json!({
+                "path": "/Users/someone/.codex/plugins/cache/openai-bundled/visualize/1.0.16/skills/visualize/SKILL.md"
+            }),
+        },
+    ));
+    app.activities.push(Activity::from_event(
+        &TextGenerationEvent::ToolCallFailed {
+            name: "sfumato_read_file".to_string(),
+            error: "Refusing to read /Users/someone/.codex/plugins/cache/openai-bundled/visualize/1.0.16/skills/visualize/SKILL.md because it is outside the allowed generation roots. Readable roots for this operation: /Users/someone/Documents/Notebook/Facultad. Only the project and the sources given to it can be read.".to_string(),
+        },
+    ));
+    println!("{}", render_screen(&mut app, 96, 22));
+}

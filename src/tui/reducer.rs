@@ -43,6 +43,13 @@ pub(super) fn reduce_message(app: &mut App, message: UiMessage) {
                             image_path: None,
                         });
                     }
+                    // Every preview path in the feed points into the staging directory
+                    // the tool wrote to, and committing moves that tree into an
+                    // immutable revision and deletes the staging root. So the paths the
+                    // feed collected are all dead by the time this screen is drawn, and
+                    // selecting a chart reported "Could not preview" for a file that
+                    // exists — one directory over.
+                    reroot_previews(&mut app.activities, result.markdown_path());
                     app.status = Some((result.completion_message().to_string(), false));
                     app.result = Some(result);
                 }
@@ -1149,11 +1156,65 @@ impl App {
             Ok(image) => self.image = Some(self.picker.new_resize_protocol(image)),
             Err(error) => {
                 self.image = None;
-                self.status = Some((
-                    format!("Could not preview {}: {error}", path.display()),
-                    true,
-                ));
+                // A run that failed has already deleted its staging tree, so its assets
+                // are gone by design. Reporting that as an error made a correct discard
+                // read like a second fault on top of the first.
+                self.status = Some(if path.exists() {
+                    (
+                        format!("Could not preview {}: {error}", path.display()),
+                        true,
+                    )
+                } else {
+                    (
+                        "That preview is no longer on disk: an unfinished run discards \
+                         everything it generated"
+                            .to_string(),
+                        false,
+                    )
+                });
             }
         }
     }
+}
+
+/// Rewrites staging preview paths onto the revision the run committed.
+///
+/// A generation writes assets into `.staging/<job-id>/…` and commits by moving that tree
+/// to `revisions/<rev-id>/…`, so the suffix after the job directory is preserved exactly.
+/// `committed` is any file inside the new revision — the resource's own output — and its
+/// parent is the revision root.
+///
+/// A path that cannot be re-rooted is left as it is rather than guessed at: an unchanged
+/// path fails with the name the tool actually reported, which is the more useful error.
+pub(super) fn reroot_previews(activities: &mut [Activity], committed: &std::path::Path) {
+    let Some(revision_root) = committed.parent() else {
+        return;
+    };
+    for activity in activities {
+        let Some(path) = activity.image_path.as_ref() else {
+            continue;
+        };
+        if path.exists() {
+            continue;
+        }
+        if let Some(relative) = staging_suffix(path) {
+            let candidate = revision_root.join(relative);
+            if candidate.exists() {
+                activity.image_path = Some(candidate);
+            }
+        }
+    }
+}
+
+/// The part of a staging path below its job directory.
+///
+/// Matched on the `.staging` component rather than on a prefix, because the caller knows
+/// the revision root but not the job root, and the two share only this suffix.
+fn staging_suffix(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut components = path.components();
+    components.find(|component| component.as_os_str() == ".staging")?;
+    // Immediately after `.staging` comes the job directory, which the revision replaces.
+    components.next()?;
+    let suffix: std::path::PathBuf = components.collect();
+    (!suffix.as_os_str().is_empty()).then_some(suffix)
 }

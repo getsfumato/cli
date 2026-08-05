@@ -17,6 +17,8 @@ use super::*;
 // stage names without rendering anything.
 pub(super) use form::{field_height, multi_select_line, select_line, visible_field_range};
 pub(super) use run::stage_label;
+#[cfg(test)]
+pub(super) use run::wrap_detail;
 
 pub(super) fn draw(app: &mut App, frame: &mut Frame<'_>) {
     let area = frame.area();

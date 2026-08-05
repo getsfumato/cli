@@ -159,21 +159,36 @@ impl App {
     }
 
     pub(super) fn draw_activity(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        // Two spaces of indent under the marker, and the border column the list keeps.
+        let detail_width = area.width.saturating_sub(3).max(20) as usize;
         let items = self
             .activities
             .iter()
             .map(|activity| {
                 let (marker, color) = activity_style(activity.kind);
-                ListItem::new(vec![
-                    Line::from(vec![
-                        Span::styled(format!("{marker} "), Style::default().fg(color).bold()),
-                        Span::styled(&activity.title, Style::default().fg(TEXT).bold()),
-                    ]),
-                    Line::from(Span::styled(
-                        format!("  {}", compact(&activity.detail, 180)),
-                        Style::default().fg(MUTED),
-                    )),
-                ])
+                let mut lines = vec![Line::from(vec![
+                    Span::styled(format!("{marker} "), Style::default().fg(color).bold()),
+                    Span::styled(&activity.title, Style::default().fg(TEXT).bold()),
+                ])];
+                // A warning used to be clipped at the panel edge, which meant the one
+                // kind of entry whose whole point is its text was the one you could not
+                // read — a refused path told you it was refused and not why. Wrapping
+                // costs rows, so only the entries that carry a reason get them.
+                let allowance = match activity.kind {
+                    ActivityKind::Warning => 4,
+                    _ => 1,
+                };
+                lines.extend(
+                    wrap_detail(&activity.detail, detail_width, allowance)
+                        .into_iter()
+                        .map(|line| {
+                            Line::from(Span::styled(
+                                format!("  {line}"),
+                                Style::default().fg(MUTED),
+                            ))
+                        }),
+                );
+                ListItem::new(lines)
             })
             .collect::<Vec<_>>();
         if items.is_empty() {
@@ -278,4 +293,58 @@ pub(super) fn activity_style(kind: ActivityKind) -> (&'static str, Color) {
         ActivityKind::Warning => ("⚠", RED),
         ActivityKind::Success => ("✓", GREEN),
     }
+}
+
+/// Splits a detail line onto at most `rows` rows of `width`, breaking on spaces.
+///
+/// Always returns at least one row, so an entry without a detail keeps the blank line
+/// that separates it from the next — the feed reads as pairs, and dropping the row for
+/// empty details would make the spacing jump around as entries arrive.
+pub(in crate::tui) fn wrap_detail(detail: &str, width: usize, rows: usize) -> Vec<String> {
+    if detail.is_empty() || rows == 0 {
+        return vec![String::new()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in detail.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.chars().count() + 1 + word.chars().count() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+            if lines.len() == rows {
+                break;
+            }
+        }
+        // A path with no spaces in it is one long word, and hard-splitting it is the
+        // only way the tail is ever seen.
+        while current.chars().count() > width {
+            let head: String = current.chars().take(width).collect();
+            current = current.chars().skip(width).collect();
+            lines.push(head);
+            if lines.len() == rows {
+                break;
+            }
+        }
+        if lines.len() == rows {
+            break;
+        }
+    }
+    if lines.len() < rows && !current.is_empty() {
+        lines.push(current);
+    } else if lines.len() == rows && !current.is_empty() {
+        // Out of room with text left: say so rather than ending mid-word as if that
+        // were the whole message.
+        if let Some(last) = lines.last_mut() {
+            let keep = width.saturating_sub(1);
+            *last = last.chars().take(keep).collect::<String>() + "…";
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
