@@ -287,13 +287,78 @@ fn context_compaction_event_has_a_readable_activity() {
 
 #[test]
 fn compact_viewport_keeps_the_selected_form_control_visible() {
+    // The invariant: whatever the viewport height, the focused control is on screen.
     let mut form = GenerateForm::default();
     form.selected = form.fields.len() - 1;
 
+    for height in [4, 8, 16] {
+        let visible = visible_field_range(&form.fields, form.selected, height);
+        assert!(
+            visible.contains(&form.selected),
+            "the focused field scrolled out of a {height}-row viewport"
+        );
+    }
+}
+
+#[test]
+fn a_form_costs_one_row_per_field() {
+    // Each field used to be a three-row bordered box, so the video form needed about
+    // sixty rows in a terminal that has twenty-four. The slides form now fits in a
+    // sixteen-row viewport with no scrolling at all.
+    let form = GenerateForm::default();
     let visible = visible_field_range(&form.fields, form.selected, 16);
 
+    assert_eq!(visible.start, 0, "the shortest form should not scroll");
+    assert_eq!(
+        visible.end,
+        form.fields.len(),
+        "every field should be visible"
+    );
+}
+
+#[test]
+fn the_longest_form_still_scrolls_when_it_has_to() {
+    // Density is not the same as unbounded: a form taller than the viewport must
+    // still page, and the focused field must still be the one on screen.
+    let mut form = GenerateForm::default();
+    if let FormField::Select { selected, .. } = &mut form.fields[0] {
+        *selected = 2;
+    }
+    form.switch_resource_from_selector();
+    form.selected = form.fields.len() - 1;
+
+    let visible = visible_field_range(&form.fields, form.selected, 10);
+
     assert!(visible.contains(&form.selected));
-    assert!(visible.start > 0);
+    assert!(
+        visible.start > 0,
+        "a form of {} fields in 10 rows must scroll",
+        form.fields.len()
+    );
+}
+
+#[test]
+fn no_two_fields_in_one_form_share_a_label() {
+    // Compacting the layout exposed two fields both labelled "Narration" — the
+    // Hyperframe narration policy and the speech tool switch — which differ in what
+    // they do. Identical labels in one form are indistinguishable to the user.
+    for resource_index in 0..3 {
+        let mut form = GenerateForm::default();
+        if let FormField::Select { selected, .. } = &mut form.fields[0] {
+            *selected = resource_index;
+        }
+        form.switch_resource_from_selector();
+
+        let mut labels: Vec<&str> = form.fields.iter().map(|field| field.label()).collect();
+        let total = labels.len();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            total,
+            "duplicate label in resource {resource_index}"
+        );
+    }
 }
 
 #[test]
@@ -849,6 +914,17 @@ fn render_screen(app: &mut App, width: u16, height: u16) -> String {
 #[ignore = "prints the current layout for inspection"]
 fn dump_every_screen() {
     let mut app = App::new(Picker::halfblocks(), test_application());
+    // The video form is the density worst case, so dump it explicitly.
+    {
+        let mut video = App::new(Picker::halfblocks(), test_application());
+        if let FormField::Select { selected, .. } = &mut video.form.fields[0] {
+            *selected = 2;
+        }
+        video.form.switch_resource_from_selector();
+        video.screen = Screen::Generate;
+        println!("\n╔══════ GENERATE/Video ══════ (100x32)");
+        println!("{}", render_screen(&mut video, 100, 32));
+    }
     for (name, screen) in [
         ("HOME", Screen::Home),
         ("BROWSE/Projects", Screen::Browse(Section::Projects)),

@@ -641,13 +641,22 @@ impl App {
     }
 }
 
+/// Renders a form as one row per field.
+///
+/// Each field used to be its own bordered box: three rows of chrome around one line
+/// of content, so the video form needed about sixty rows in a terminal that has
+/// twenty-four. The label now sits in a fixed left column and the value beside it,
+/// with focus shown by a marker and a highlight instead of a border — which also
+/// makes the focused field easier to find than a box among boxes.
 fn draw_resource_form(
     frame: &mut Frame<'_>,
     area: Rect,
     fields: &[FormField],
     selected_index: usize,
 ) {
-    let form_area = area.inner(Margin::new(3, 0));
+    /// Width of the label column, sized to the longest label the forms use.
+    const LABEL_WIDTH: usize = 18;
+    let form_area = area.inner(Margin::new(2, 0));
     let range = visible_field_range(fields, selected_index, form_area.height);
     let visible_fields = &fields[range.clone()];
     let rows = Layout::vertical(
@@ -657,87 +666,87 @@ fn draw_resource_form(
             .collect::<Vec<_>>(),
     )
     .split(form_area);
+    let value_width = form_area.width.saturating_sub(LABEL_WIDTH as u16 + 4);
+
     for (offset, (field, row)) in visible_fields.iter().zip(rows.iter()).enumerate() {
         let index = range.start + offset;
         let selected = index == selected_index;
+
+        if let FormField::Submit { .. } = field {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("  {}  ", field.label()),
+                    Style::default()
+                        .fg(if selected { BG } else { TEXT })
+                        .bg(if selected { ACCENT } else { PANEL })
+                        .bold(),
+                ))),
+                *row,
+            );
+            continue;
+        }
+
+        let marker = Span::styled(
+            if selected { "› " } else { "  " },
+            Style::default().fg(ACCENT).bold(),
+        );
+        // Truncated to leave a gap, so a label as long as the column cannot run
+        // into its own value.
+        let label = Span::styled(
+            format!("{:<LABEL_WIDTH$}", compact(field.label(), LABEL_WIDTH - 1)),
+            if selected {
+                Style::default().fg(TEXT).bold()
+            } else {
+                Style::default().fg(MUTED)
+            },
+        );
+        let mut line = vec![marker, label];
+
         match field {
             FormField::Text {
-                label,
                 value,
                 placeholder,
+                multiline,
                 ..
             } => {
-                let text = if value.is_empty() {
-                    Span::styled(*placeholder, Style::default().fg(MUTED))
+                let shown = if value.is_empty() {
+                    Span::styled(*placeholder, Style::default().fg(PANEL))
                 } else {
-                    Span::styled(value.as_str(), Style::default().fg(TEXT))
+                    Span::styled(
+                        compact(value, value_width as usize),
+                        Style::default().fg(TEXT),
+                    )
                 };
-                frame.render_widget(
-                    Paragraph::new(text)
-                        .wrap(Wrap { trim: false })
-                        .block(field_block(label, selected)),
-                    *row,
-                );
+                let _ = multiline;
+                line.push(shown);
             }
-            FormField::Toggle { label, value } => {
-                let symbol = if *value { "[x]" } else { "[ ]" };
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled(
-                            symbol,
-                            Style::default().fg(if *value { GREEN } else { MUTED }),
-                        ),
-                        Span::raw(" "),
-                        Span::styled(*label, Style::default().fg(TEXT)),
-                    ]))
-                    .block(field_block("OPTION", selected)),
-                    *row,
-                );
-            }
+            FormField::Toggle { value, .. } => line.push(Span::styled(
+                if *value { "on" } else { "off" },
+                Style::default().fg(if *value { GREEN } else { MUTED }),
+            )),
             FormField::Select {
-                label,
                 options,
                 selected: choice,
-            } => {
-                frame.render_widget(
-                    Paragraph::new(select_line(options, *choice, row.width.saturating_sub(2)))
-                        .block(field_block(label, selected)),
-                    *row,
-                );
-            }
+                ..
+            } => line.extend(select_line(options, *choice, value_width).spans),
             FormField::MultiSelect {
-                label,
                 options,
                 cursor,
                 selected: choices,
-            } => {
-                frame.render_widget(
-                    Paragraph::new(multi_select_line(options, *cursor, choices))
-                        .block(field_block(label, selected)),
-                    *row,
-                );
-            }
-            FormField::Submit { .. } => {
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        field.label(),
-                        Style::default().fg(if selected { BG } else { TEXT }).bold(),
-                    )))
-                    .alignment(Alignment::Center)
-                    .style(if selected {
-                        Style::default().bg(ACCENT)
-                    } else {
-                        Style::default().bg(PANEL)
-                    })
-                    .block(
-                        Block::new()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded),
-                    ),
-                    *row,
-                );
-            }
+                ..
+            } => line.extend(multi_select_line(options, *cursor, choices).spans),
+            FormField::Submit { .. } => unreachable!("handled above"),
         }
+
+        let style = if selected {
+            Style::default().bg(PANEL)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(truncate_spans(line, row.width as usize))).style(style),
+            *row,
+        );
     }
 }
 
@@ -872,13 +881,18 @@ fn multi_select_line(
     )
 }
 
-fn field_height(field: &FormField) -> u16 {
-    match field {
-        FormField::Text {
-            multiline: true, ..
-        } => 4,
-        _ => 3,
-    }
+/// Rows one field occupies.
+///
+/// One, where it used to be three: the border is gone, so a field costs exactly the
+/// line it displays. A multiline text field keeps a second row for its overflow.
+/// Rows one field occupies.
+///
+/// One, where it used to be three: the border is gone, so a field costs exactly the
+/// line it displays. A multiline field is no taller — reserving a second row left a
+/// blank line under it far more often than it showed anything, and the value is held
+/// in full by the field regardless of how much of it fits on screen.
+fn field_height(_field: &FormField) -> u16 {
+    1
 }
 
 pub(super) fn visible_field_range(
@@ -934,7 +948,6 @@ fn field_block(label: &'static str, selected: bool) -> Block<'static> {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if selected { ACCENT } else { MUTED }))
 }
-
 
 pub(super) fn stage_label(stage: GenerationStage) -> &'static str {
     match stage {

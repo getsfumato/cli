@@ -851,7 +851,7 @@ fn build_generation_fields(
             ),
             (
                 GenerateFieldId::Duration,
-                text_generate_value("Duration (seconds)", "required", "15"),
+                text_generate_value("Duration (s)", "required", "15"),
             ),
             (
                 GenerateFieldId::Resolution,
@@ -927,7 +927,7 @@ fn build_generation_fields(
         pairs.push((GenerateFieldId::VideoTool, tool_select("Video generation")));
     }
     if matches!(resource, GenerateResource::Page | GenerateResource::Video) {
-        pairs.push((GenerateFieldId::AudioTool, tool_select("Narration")));
+        pairs.push((GenerateFieldId::AudioTool, tool_select("Speech generation")));
     }
     pairs.extend([
         (
