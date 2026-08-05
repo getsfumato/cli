@@ -22,6 +22,10 @@ use ratatui::{
 use ratatui_image::{Resize, StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use serde_json::Value;
 mod effects;
+mod forms;
+use forms::{EditForm, FormField, GenerateFieldId, GenerateForm, GenerateResource};
+mod jobs;
+use jobs::{ConnectorQuery, OperationLifecycle};
 mod model;
 mod palette;
 mod snapshot;

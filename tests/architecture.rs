@@ -188,15 +188,32 @@ fn every_http_client_declares_a_request_timeout() {
 /// directly cannot be moved behind one.
 #[test]
 fn the_tui_render_path_reads_no_application_state() {
-    let view = workspace_root().join("src/tui/view.rs");
-    let contents = fs::read_to_string(&view)
-        .unwrap_or_else(|error| panic!("could not read {}: {error}", view.display()));
-    // `.application` on its own line is how the previous calls were formatted, so
-    // match the receiver rather than any one method name.
-    let violations: Vec<&str> = contents
-        .lines()
-        .filter(|line| line.trim() == ".application" || line.contains("self.application."))
-        .collect();
+    // Every screen module, not one file: the view was split per screen, and a new
+    // screen must inherit the rule rather than escape it.
+    let view_root = workspace_root().join("src/tui/view");
+    let sources = rust_sources(&view_root);
+    assert!(
+        !sources.is_empty(),
+        "no view sources found under {}",
+        view_root.display()
+    );
+    let mut violations = Vec::new();
+    for source in sources {
+        let contents = fs::read_to_string(&source)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", source.display()));
+        // `.application` on its own line is how the previous calls were formatted, so
+        // match the receiver rather than any one method name.
+        for (number, line) in contents.lines().enumerate() {
+            if line.trim() == ".application" || line.contains("self.application.") {
+                violations.push(format!(
+                    "{}:{}: {}",
+                    source.display(),
+                    number + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
     assert!(
         violations.is_empty(),
         "the view reaches the application facade:\n  {}",
