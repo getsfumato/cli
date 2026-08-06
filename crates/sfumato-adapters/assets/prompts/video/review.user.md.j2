@@ -1,7 +1,9 @@
 Instruction: {{ instruction }}
 Theme: {{ theme_name }} ({{ theme_colors }}; {{ theme_fonts }})
 Project instructions: {{ project_instructions }}
-Sources: {{ source_bundle }}
+
+{% include "shared/source-index.md.j2" %}
+
 {% if engine == "hyperframe" %}
 Managed Hyperframe catalog: {{ catalog }}
 {% endif %}

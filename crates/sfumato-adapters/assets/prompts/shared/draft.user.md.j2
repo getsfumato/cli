@@ -60,11 +60,12 @@ Template source (read-only structure):
 - Do not use raw HTML, inline SVG, or HTML wrapper tags.
 - Include a short learning objective slide.
 - Explain the source material for a student.
-- Use examples from the provided files.
+- Use examples from the files you read.
 - Add presenter notes with short teaching cues when useful.
-- You may call Sfumato filesystem tools to list allowed directories or read allowed text files when more context is needed.
-- When calling filesystem tools, prefer absolute paths under the allowed filesystem root.
-- Explore selectively. After reading the most relevant files, stop calling tools and produce the final deck.
 
-Source material:
+{% if compact %}
+Source material (compact excerpts, already supplied because this retry has no tools):
 {{ source_bundle }}
+{% else %}
+{% include "shared/source-index.md.j2" %}
+{% endif %}

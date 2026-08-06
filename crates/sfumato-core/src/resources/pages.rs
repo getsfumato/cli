@@ -45,7 +45,7 @@ use crate::{
 };
 
 use super::{
-    DryRunImageProvider, DryRunSpeechProvider, DryRunVideoProvider,
+    DryRunImageProvider, DryRunSpeechProvider, DryRunVideoProvider, build_source_index,
     project_assets::{
         PrepareProjectAssetsRequest, prepare_project_assets, referenced_generated_assets,
         retain_referenced_generated_assets,
@@ -215,7 +215,9 @@ pub(crate) async fn generate_page(
     );
     let project_instructions = source_reader.project_instructions(&config.project_root)?;
     let documents = source_reader.collect(&request.sources)?;
-    let source_bundle = build_source_bundle(&documents, 48_000);
+    // An index for the tool-bearing prompts, content only for the compacted
+    // retry, which runs without tools and so cannot go and read anything.
+    let source_bundle = build_source_index(&documents);
     let compact_source_bundle = build_source_bundle(&documents, 12_000);
     operation.emit(
         OperationStage::ReadSources,

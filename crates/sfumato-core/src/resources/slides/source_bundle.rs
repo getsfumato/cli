@@ -1,27 +1,17 @@
 //! Deterministic source budgeting before the first provider call.
 
-use crate::sources::SourceDocument;
+use crate::{resources::build_source_index, sources::SourceDocument};
 
-use super::{MAX_SOURCE_BUNDLE_CHARS, excerpt};
+use super::excerpt;
 
+/// Indexes the sources so the model chooses what to read.
+///
+/// Every stage that receives this bundle also carries the filesystem tools, so
+/// the paths listed here are reachable in full. The excerpt-based bundle this
+/// replaces is still built, but only for the compacted retry below, which runs
+/// without tools and therefore has to carry content itself.
 pub(super) fn build_source_bundle(documents: &[SourceDocument]) -> String {
-    if documents.is_empty() {
-        return "No explicit source files were supplied.".to_string();
-    }
-    let per_document = (MAX_SOURCE_BUNDLE_CHARS / documents.len().max(1)).clamp(500, 6_000);
-    let bundle = documents
-        .iter()
-        .map(|document| {
-            let excerpt = excerpt(&document.content, per_document);
-            format!(
-                "\n--- SOURCE: {} ---\n{}\n",
-                document.path.display(),
-                excerpt
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    excerpt(&bundle, MAX_SOURCE_BUNDLE_CHARS)
+    build_source_index(documents)
 }
 
 pub(super) fn build_compact_source_bundle(

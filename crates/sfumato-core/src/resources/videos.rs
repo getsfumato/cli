@@ -14,7 +14,7 @@ use sfumato_domain::{
 use sha2::{Digest, Sha256};
 use slug::slugify;
 
-use crate::resources::excerpt;
+use crate::resources::{build_source_index, excerpt};
 use crate::{
     artifacts::{
         ArtifactResourceKind, ArtifactStore, ResourceArtifactFile, ResourceArtifactManifest,
@@ -44,7 +44,7 @@ use crate::{
         VideoCatalog, VideoCatalogViolation, VideoInspection, VideoRenderRequest, VideoRenderer,
     },
     repositories::ThemeRepository,
-    sources::{SourceDocument, SourceReader},
+    sources::SourceReader,
     themes::ThemePackage,
     tools::{
         ChartToolConfig, GenerationToolFactory, GenerationToolsRequest, ImageToolConfig,
@@ -607,7 +607,9 @@ pub(crate) async fn generate_video(
 
     let project_instructions = source_reader.project_instructions(&config.project_root)?;
     let documents = source_reader.collect(&request.sources)?;
-    let source_bundle = build_source_bundle(&documents, 48_000);
+    // Every stage that receives this carries the filesystem tools, so the plan is
+    // written from files the model chose to read rather than from a dump.
+    let source_bundle = build_source_index(&documents);
     let image_tool_enabled = config.generation_tool_enabled(GenerationToolKind::ImageGen);
     let image_selection = image_tool_enabled
         .then(|| config.resolve_model(Capability::Image))
@@ -3115,24 +3117,6 @@ fn artifact_file(root: &Path, path: &Path) -> Result<ResourceArtifactFile> {
         kind,
         media_type,
     })
-}
-
-fn build_source_bundle(documents: &[SourceDocument], limit: usize) -> String {
-    let mut output = String::new();
-    for document in documents {
-        let header = format!("\n\n## {}\n", document.path.display());
-        if output.chars().count() + header.chars().count() >= limit {
-            break;
-        }
-        output.push_str(&header);
-        let remaining = limit.saturating_sub(output.chars().count());
-        output.extend(document.content.chars().take(remaining));
-    }
-    if output.is_empty() {
-        "No source files were supplied.".into()
-    } else {
-        output
-    }
 }
 
 fn summarize_tools(tools: &[ToolDefinition]) -> Vec<GenerationToolSummary> {

@@ -17,8 +17,7 @@ Theme {{ theme_name }}:
 Project instructions:
 {{ project_instructions }}
 
-Grounding sources:
-{{ source_bundle }}
+{% include "shared/source-index.md.j2" %}
 
 Reusable artifacts:
 {% if reusable_assets %}

@@ -23,14 +23,13 @@ Review requirements:
 - Preserve useful explanations instead of deleting them merely to save space.
 - Keep MathJax math and Mermaid fences valid. Do not add inline CSS, raw HTML, or inline SVG.
 {% include "shared/marp-math-contract.md.j2" %}
-- Use the filesystem tools only when a claim cannot be checked from the supplied source excerpts.
+- Read the source files that a claim depends on before judging it. The prompt carries no source text, only the index below.
 - Return `[]` when no changes are needed.
 {% if retry_present %}
 {% include "shared/review-retry.md.j2" %}
 {% endif %}
 
-Source material:
-{{ source_bundle }}
+{% include "shared/source-index.md.j2" %}
 
 Structured review snapshot:
 {{ deck_snapshot }}

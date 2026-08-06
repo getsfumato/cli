@@ -16,7 +16,7 @@ use serde::Serialize;
 use sfumato_domain::ArtifactKind;
 use slug::slugify;
 
-use crate::resources::excerpt;
+use crate::resources::{build_source_index, excerpt};
 use crate::sfumato_bail as bail;
 use crate::{
     artifacts::{
@@ -75,7 +75,13 @@ use prompting::*;
 /// after a handful the remaining ones are usually the same wide table reported
 /// on consecutive pages.
 const MAX_FORMAT_REPAIRS: usize = 6;
-const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
+/// Source content carried by the compacted retry, in characters.
+///
+/// Only the compacted prompt inlines sources at all. The normal prompt sends an
+/// index and lets the model read what it needs, but compaction is what runs when
+/// the context limit was already hit, and it drops the tools — so it has to carry
+/// enough of the sources itself to stay grounded.
+const COMPACT_SOURCE_BUNDLE_CHARS: usize = 12_000;
 
 pub(crate) struct GenerateDocumentOptions {
     pub operation: OperationContext,
@@ -329,7 +335,7 @@ pub(crate) async fn generate_document(
         theme_fonts: format_tokens(&theme.manifest.tokens.fonts),
         instruction: request.instruction.clone(),
         project_instructions: project_instructions_prompt.clone(),
-        source_bundle: build_source_bundle(&documents, MAX_SOURCE_BUNDLE_CHARS),
+        source_bundle: build_source_index(&documents),
         title: title_override.clone().unwrap_or_default(),
         title_provided: title_override.is_some(),
         page_size: setup.page_size.as_str().to_string(),
@@ -411,11 +417,15 @@ pub(crate) async fn generate_document(
         BTreeMap::from([("model".to_string(), draft_profile_name.to_string())]),
     );
     let provider = provider_factory.text(&config, draft_profile)?;
+    // The compacted prompt runs without tools, so it is the one place that still
+    // inlines source content rather than pointing at it.
+    let mut compact_context = context.clone();
+    compact_context.source_bundle = build_source_bundle(&documents, COMPACT_SOURCE_BUNDLE_CHARS);
     let compact_request = render_pair(
         prompt_catalog.as_ref(),
         PromptId::DocumentCompactDraftSystem,
         PromptId::DocumentCompactDraftUser,
-        &context,
+        &compact_context,
     )?;
     let compact_provenance = compact_request.prompt_provenance.clone();
     let outcome = generate_with_compact_retry(
@@ -573,11 +583,13 @@ pub(crate) async fn generate_document(
                 review_request.tool_executor = Some(tool_set.executor.clone());
                 review_request.event_sink = event_sink.clone();
                 prompts.extend(review_request.prompt_provenance.clone());
+                compact_context.document_snapshot = context.document_snapshot.clone();
+                compact_context.max_tool_rounds = context.max_tool_rounds;
                 let compact_review = render_pair(
                     prompt_catalog.as_ref(),
                     PromptId::DocumentCompactReviewSystem,
                     PromptId::DocumentCompactReviewUser,
-                    &context,
+                    &compact_context,
                 )?;
                 let compact_review_provenance = compact_review.prompt_provenance.clone();
                 operation.checkpoint(OperationStage::Review)?;

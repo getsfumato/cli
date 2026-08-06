@@ -67,9 +67,5 @@ Content requirements:
   - **{{ asset.name }}** — {{ asset.description }}; path=`{{ asset.reference }}`; theme=`{{ asset.theme }}`; type=`{{ asset.media_type }}`; alt=`{{ asset.alt_text }}`; tags=`{{ asset.tags | join(", ") }}`
 {% endfor %}
 {% endif %}
-- You may call Sfumato filesystem tools to list allowed directories or read allowed text files when more context is needed.
-- When calling filesystem tools, prefer absolute paths under the allowed filesystem root.
-- Explore selectively. After reading the most relevant files, stop calling tools and produce the final document.
 
-Source material:
-{{ source_bundle }}
+{% include "shared/source-index.md.j2" %}

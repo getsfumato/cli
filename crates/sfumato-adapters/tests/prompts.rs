@@ -57,6 +57,9 @@ fn representative_variables() -> PromptVariables {
             "source_bundle",
             json!("SOURCE: notes.md\nGrounded evidence"),
         ),
+        // The normal draft indexes its sources and lets the model read them; the
+        // compacted retry has no tools, so it inlines excerpts instead.
+        ("compact", json!(false)),
         ("validation_error", json!("missing title")),
         ("diagram_error", json!("Parse error on line 4")),
         ("headings", json!(["Periodic signals", "Spectrum"])),
@@ -539,7 +542,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "b08e03c13f10d0e324be32a65fabd4cb8dced0404dd794d4161beecef59200d8"
+        "eb640d5ea68196017aa38dcbe1d618bf3c0443f70c41656f8286bb5caa8b8644"
     );
 }
 

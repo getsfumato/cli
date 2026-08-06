@@ -41,9 +41,22 @@ Preflight limits are deterministic:
 - content is reduced to the longest valid UTF-8 prefix after the per-file byte
   cap, so an invalid/truncated suffix is not injected into a prompt.
 
-The prompt pipeline later compacts this material into stage-specific bounded
-source bundles. The model may also use read-only filesystem tools inside the
-project and explicitly supplied source roots.
+The prompt does not carry this material. It carries an **index** of it — a
+directory tree naming every supplied file with its size — and the model reads
+what it needs through the read-only filesystem tools, scoped to the project and
+the explicitly supplied source roots.
+
+That is a deliberate inversion of the obvious design. Inlining every source
+spends the context window before the model has read a word, forces each file to
+be truncated to fit, and — because the agent loop resends the conversation on
+every tool round — pays for the whole dump again on each round. None of that
+cost buys relevance: most files supplied to a request have nothing to do with
+it. Pointing at the corpus and letting the model open the handful it needs makes
+the cost track the request instead of the vault.
+
+The one exception is the compacted retry, which runs after a context limit was
+already hit and drops the tools; it inlines bounded excerpts, because it has no
+way to go and read anything.
 
 ## Flags
 

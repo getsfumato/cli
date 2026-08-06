@@ -1,0 +1,14 @@
+## Source material
+
+The listing below is an **index of the available files, not their contents**. None of the source text is in this prompt.
+
+Read before you write. You have filesystem tools for exactly this:
+
+- Call `sfumato_read_file` with a path from the index to read that file in full.
+- Call `sfumato_list_directory` on any directory shown here to see files the index did not list.
+- Prefer absolute paths under the allowed filesystem root.
+- Choose by relevance to the instruction, using each entry's name, size, and title. Read every file the instruction actually depends on — usually several, rarely all of them.
+- Never write from filenames alone. A file you did not read is one you cannot quote, define, or explain, and inventing its contents is worse than omitting the topic.
+- Once you have read what the instruction needs, stop calling tools and produce the final output.
+
+{{ source_bundle }}

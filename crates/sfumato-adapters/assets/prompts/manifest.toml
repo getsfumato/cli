@@ -59,6 +59,7 @@ required = [
   "title_provided",
   "image_generation_available",
   "source_bundle",
+  "compact",
 ]
 
 [[prompts]]
@@ -86,6 +87,7 @@ required = [
   "title_provided",
   "image_generation_available",
   "source_bundle",
+  "compact",
 ]
 
 [[prompts]]

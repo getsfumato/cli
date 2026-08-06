@@ -79,7 +79,6 @@ use super::{
 };
 
 const GENERATED_IMAGE_MARP_HEIGHT: &str = "420px";
-const MAX_SOURCE_BUNDLE_CHARS: usize = 48_000;
 
 pub(crate) struct GenerateSlidesOptions {
     pub operation: OperationContext,
