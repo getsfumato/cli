@@ -4,8 +4,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn workspace_root() -> PathBuf {
+/// The `sfumato` package directory, which is the workspace's `cli` member.
+fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The workspace root, one level above this package.
+///
+/// The binary used to be the workspace root package, so `CARGO_MANIFEST_DIR` was
+/// both. It now lives in `cli/`, and the layering assertions below reach sideways
+/// into `crates/`, so the two have to be told apart.
+fn workspace_root() -> PathBuf {
+    crate_root()
+        .parent()
+        .expect("the cli package always has a workspace root above it")
+        .to_path_buf()
 }
 
 fn dependency_names(manifest: &Path) -> BTreeSet<String> {
@@ -190,7 +203,7 @@ fn every_http_client_declares_a_request_timeout() {
 fn the_tui_render_path_reads_no_application_state() {
     // Every screen module, not one file: the view was split per screen, and a new
     // screen must inherit the rule rather than escape it.
-    let view_root = workspace_root().join("src/tui/view");
+    let view_root = crate_root().join("src/tui/view");
     let sources = rust_sources(&view_root);
     assert!(
         !sources.is_empty(),
