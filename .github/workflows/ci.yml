@@ -1,0 +1,186 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  # The gate documented in docs/reference/testing.md, on both platforms users run.
+  # macOS is not redundant: `keyring` resolves to a different backend there
+  # (apple-native vs zbus-secret-service), and browser discovery has a different
+  # last resort.
+  gate:
+    name: gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gate-${{ matrix.os }}
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Never add --all-features: it turns on `real-renderers`, which executes
+      # marp, mmdc, ffmpeg, curl and a browser. The guard job below enforces it.
+      - run: cargo test --workspace --locked
+      - run: cargo build --workspace --locked
+      - run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # `rust-version` is a promise to consumers, and an unverified one is worse than
+  # none: the first release declared 1.85 by inheriting it from edition 2024,
+  # while the code was already using APIs stable in 1.89 and 1.91.
+  msrv:
+    name: msrv (${{ env.MSRV }})
+    runs-on: ubuntu-24.04
+    env:
+      MSRV: 1.91.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: every crate must declare the rust-version this job pins
+        run: |
+          # Otherwise the job silently stops testing what the manifests promise.
+          grep -qxF 'rust-version = "1.91"' Cargo.toml || {
+            echo "::error::Cargo.toml does not declare rust-version 1.91; update this job with it"
+            exit 1
+          }
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.MSRV }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo check --workspace --all-targets --locked
+
+  guards:
+    name: guards
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: no cargo invocation may run the opt-in tests
+        run: |
+          # `real-renderers` gates tests that execute marp, mmdc, ffmpeg, curl and
+          # a browser; the #[ignore] ones need real credentials or the network.
+          # Both are reachable by accident, from a well-meant "--all-features" or
+          # "--include-ignored".
+          #
+          # Matches a cargo command carrying the flag rather than any mention of
+          # it, so that this guard — and the comments explaining it — are not
+          # themselves violations. Excluding this file instead would have been
+          # worse: the likeliest place for a real violation is the gate job.
+          if grep -rnE '^[^#]*cargo[^#]*(--all-features|--include-ignored|--features[ =]*.?real-renderers)' \
+              .github/workflows; then
+            echo "::error::a cargo invocation above enables the opt-in test suites"
+            exit 1
+          fi
+          echo "no cargo invocation enables real-renderers or ignored tests"
+
+  packaging:
+    name: crates.io packaging shape
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: packaging
+
+      # Has no internal dependencies, so this is the one crate that can be fully
+      # verified before anything is published: `cargo package` compiles the
+      # extracted copy. core and adapters cannot be, because their dependencies
+      # are not on crates.io yet; that check belongs between their publishes,
+      # where it needs no override to work.
+      - run: cargo package -p sfumato-domain --locked
+
+      - name: every compiled-in asset must be packaged
+        run: |
+          set -eu
+          cargo package -p sfumato-adapters --list > /tmp/pkg.txt
+
+          # include_str!/include_bytes! would fail the build if these went
+          # missing, but finding out here takes seconds instead of a release.
+          for path in \
+            assets/page-plugin-registry.json \
+            assets/document-runtimes/default-print.css \
+            assets/python-environments/manifest.toml \
+            assets/themes/sfumato-default/theme.toml \
+            assets/themes/sfumato-default/marp/theme.css \
+            assets/themes/sfumato-default/html/page.html \
+            assets/themes/sfumato-default/html/style.css \
+            assets/themes/sfumato-default/html/script.js \
+            assets/themes/sfumato-default/document/print.css \
+            assets/video-renderers/manifest.toml \
+            assets/video-catalog/manifest.json \
+            assets/page-runtimes/mathjax/runtime.js \
+            assets/page-runtimes/mathjax/LICENSE
+          do
+            grep -qxF "$path" /tmp/pkg.txt || { echo "::error::not packaged: $path"; exit 1; }
+          done
+
+          # The one that needs counting. `include_dir!` yields an EMPTY Dir when
+          # its directory is absent and still compiles, so a bad `include` would
+          # publish a crate with no prompts at all and pass every other check.
+          repo=$(git ls-files 'crates/sfumato-adapters/assets/prompts/*' | wc -l | tr -d ' ')
+          packaged=$(grep -c '^assets/prompts/' /tmp/pkg.txt || true)
+          echo "prompts: repo=$repo packaged=$packaged"
+          [ "$packaged" = "$repo" ] || {
+            echo "::error::the prompt tree is truncated by include/exclude"; exit 1; }
+
+          # src modules pull their tests in with #[path = "../../tests/unit/..."],
+          # so dropping tests/ would publish a crate nobody can test. The list is
+          # read out of the sources rather than written here, so it cannot drift.
+          git ls-files 'crates/sfumato-adapters/src/**/*.rs' 'crates/sfumato-adapters/src/*.rs' \
+            | xargs sed -nE 's;.*#\[path = "(\.\./)+(tests/unit/[^"]+)"\].*;\2;p' \
+            | sort -u > /tmp/wanted.txt
+          echo "test modules referenced from src: $(wc -l < /tmp/wanted.txt)"
+          test -s /tmp/wanted.txt || { echo "::error::found no #[path] test modules to check"; exit 1; }
+          while read -r path; do
+            grep -qxF "$path" /tmp/pkg.txt || { echo "::error::not packaged: $path"; exit 1; }
+          done < /tmp/wanted.txt
+
+      - name: internal dependency versions must match the workspace version
+        run: |
+          # `cargo publish --dry-run` resolves internal dependencies through their
+          # path, so it cannot see a stale `version` beside that path — and
+          # publishing one is irreversible.
+          cargo metadata --no-deps --format-version 1 --locked > /tmp/meta.json
+          python3 - <<'PY'
+          import json, sys
+          meta = json.load(open("/tmp/meta.json"))
+          versions = {p["name"]: p["version"] for p in meta["packages"]}
+          bad = []
+          for package in meta["packages"]:
+              for dep in package["dependencies"]:
+                  if dep["name"].startswith("sfumato"):
+                      want = "^" + versions[dep["name"]]
+                      if dep["req"] != want:
+                          bad.append(f'{package["name"]} -> {dep["name"]} {dep["req"]} (want {want})')
+          if bad:
+              print("::error::stale internal dependency requirements: " + "; ".join(bad))
+              sys.exit(1)
+          print("internal dependency requirements agree:", sorted(set(versions.values())))
+          PY
