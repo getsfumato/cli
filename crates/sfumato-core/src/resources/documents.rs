@@ -16,7 +16,9 @@ use serde::Serialize;
 use sfumato_domain::ArtifactKind;
 use slug::slugify;
 
-use crate::resources::{build_source_index, excerpt};
+use crate::resources::{
+    BrainRetryContext, build_brain_card, build_source_index, compact_source_material, excerpt,
+};
 use crate::sfumato_bail as bail;
 use crate::{
     artifacts::{
@@ -32,6 +34,7 @@ use crate::{
         DocumentFormatIssue, DocumentGenerationOutput, DocumentPageSetup, DocumentPageSize,
         DocumentReviewSummary, GenerationRequest, GenerationToolSummary, ReviewStatus,
     },
+    knowledge::{BrainCardRequest, BrainClient, resolve_grounding},
     operation::{OperationContext, OperationEventKind},
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
@@ -102,6 +105,7 @@ pub(crate) struct GenerateDocumentOptions {
     pub document_assembler: Arc<dyn DocumentAssembler>,
     pub document_renderer: Arc<dyn DocumentRenderer>,
     pub source_reader: Arc<dyn SourceReader>,
+    pub brain: Arc<dyn BrainClient>,
     pub tool_factory: Arc<dyn GenerationToolFactory>,
     /// Managed Python environments backing the local charting tool.
     pub python_runtime: Arc<dyn PythonRuntime>,
@@ -141,6 +145,8 @@ pub(crate) struct DocumentPromptContext {
     pub instruction: String,
     pub project_instructions: String,
     pub source_bundle: String,
+    /// Which knowledge source grounds the run; read by the shared partials.
+    pub knowledge_backend: String,
     pub title: String,
     pub title_provided: bool,
     pub page_size: String,
@@ -186,6 +192,7 @@ pub(crate) async fn generate_document(
         document_assembler,
         document_renderer,
         source_reader,
+        brain,
         tool_factory,
         python_runtime,
         theme_repository,
@@ -234,12 +241,52 @@ pub(crate) async fn generate_document(
     let project_instructions_path = project_instructions
         .as_ref()
         .map(|value| value.path.clone());
-    let documents = source_reader.collect(&request.sources)?;
-    operation.emit(
-        OperationStage::ReadSources,
-        OperationEventKind::Completed,
-        BTreeMap::from([("documents".to_string(), documents.len().to_string())]),
-    );
+    // Resolved before anything is read, because it decides whether reading
+    // happens at all — and because it is where a brain-backed project refuses
+    // source paths rather than silently ignoring them.
+    let grounding = resolve_grounding(&config, &request.sources, &brain)?;
+    let brain_retry = BrainRetryContext::from_grounding(&grounding);
+    let mut warnings: Vec<String> = Vec::new();
+    let mut documents = Vec::new();
+    let source_bundle = match &brain_retry {
+        None => {
+            documents = source_reader.collect(&request.sources)?;
+            operation.emit(
+                OperationStage::ReadSources,
+                OperationEventKind::Completed,
+                BTreeMap::from([("documents".to_string(), documents.len().to_string())]),
+            );
+            build_source_index(&documents)
+        }
+        Some(retry) => {
+            let card = brain
+                .card(
+                    BrainCardRequest {
+                        binding: retry.binding.clone(),
+                    },
+                    &operation,
+                    OperationStage::ReadSources,
+                )
+                .await?;
+            warnings.extend(card.warnings.iter().cloned());
+            operation.emit(
+                OperationStage::ReadSources,
+                OperationEventKind::Completed,
+                BTreeMap::from([
+                    ("modules".to_string(), card.modules.len().to_string()),
+                    (
+                        "blocks".to_string(),
+                        card.modules
+                            .iter()
+                            .map(|module| module.block_count)
+                            .sum::<u64>()
+                            .to_string(),
+                    ),
+                ]),
+            );
+            build_brain_card(&card)
+        }
+    };
 
     let image_selection = config
         .generation_tool_enabled(GenerationToolKind::ImageGen)
@@ -296,7 +343,7 @@ pub(crate) async fn generate_document(
     let chart_generation_available = chart_tool.is_some();
     let tool_set = tool_factory.create(GenerationToolsRequest {
         project_root: config.project_root.clone(),
-        sources: request.sources.clone(),
+        grounding,
         image: image_tool,
         video: None,
         // Neither a deck nor a printable document has a timeline to hang audio
@@ -335,7 +382,8 @@ pub(crate) async fn generate_document(
         theme_fonts: format_tokens(&theme.manifest.tokens.fonts),
         instruction: request.instruction.clone(),
         project_instructions: project_instructions_prompt.clone(),
-        source_bundle: build_source_index(&documents),
+        source_bundle,
+        knowledge_backend: config.knowledge.backend.as_str().to_string(),
         title: title_override.clone().unwrap_or_default(),
         title_provided: title_override.is_some(),
         page_size: setup.page_size.as_str().to_string(),
@@ -361,7 +409,7 @@ pub(crate) async fn generate_document(
     } else {
         DocumentReviewSummary::disabled()
     };
-    let mut warnings = prepared_assets.warnings.clone();
+    warnings.extend(prepared_assets.warnings.iter().cloned());
     // A charting tool the project enabled but the Python gate withheld leaves no
     // other trace: the resource simply comes back without charts.
     warnings.extend(chart_tool_gate_warning(&config, allow_code_execution));
@@ -418,20 +466,36 @@ pub(crate) async fn generate_document(
     );
     let provider = provider_factory.text(&config, draft_profile)?;
     // The compacted prompt runs without tools, so it is the one place that still
-    // inlines source content rather than pointing at it.
+    // carries source content rather than pointing at it. Under a brain that
+    // content is whatever the model retrieved, so it is built only on demand.
+    let filesystem_compaction = build_source_bundle(&documents, COMPACT_SOURCE_BUNDLE_CHARS);
+    let mut compact_cache: Option<String> = None;
     let mut compact_context = context.clone();
-    compact_context.source_bundle = build_source_bundle(&documents, COMPACT_SOURCE_BUNDLE_CHARS);
-    let compact_request = render_pair(
-        prompt_catalog.as_ref(),
-        PromptId::DocumentCompactDraftSystem,
-        PromptId::DocumentCompactDraftUser,
-        &compact_context,
-    )?;
-    let compact_provenance = compact_request.prompt_provenance.clone();
+    let mut compact_provenance = Vec::new();
     let outcome = generate_with_compact_retry(
         provider.as_ref(),
         draft_request,
-        compact_request,
+        async || {
+            compact_context.source_bundle = compact_source_material(
+                &mut compact_cache,
+                &filesystem_compaction,
+                brain_retry.as_ref(),
+                &tool_set,
+                &request.instruction,
+                COMPACT_SOURCE_BUNDLE_CHARS,
+                &operation,
+                OperationStage::Draft,
+            )
+            .await;
+            let compact_request = render_pair(
+                prompt_catalog.as_ref(),
+                PromptId::DocumentCompactDraftSystem,
+                PromptId::DocumentCompactDraftUser,
+                &compact_context,
+            )?;
+            compact_provenance = compact_request.prompt_provenance.clone();
+            Ok(compact_request)
+        },
         &operation,
         OperationStage::Draft,
     )
@@ -585,18 +649,32 @@ pub(crate) async fn generate_document(
                 prompts.extend(review_request.prompt_provenance.clone());
                 compact_context.document_snapshot = context.document_snapshot.clone();
                 compact_context.max_tool_rounds = context.max_tool_rounds;
-                let compact_review = render_pair(
-                    prompt_catalog.as_ref(),
-                    PromptId::DocumentCompactReviewSystem,
-                    PromptId::DocumentCompactReviewUser,
-                    &compact_context,
-                )?;
-                let compact_review_provenance = compact_review.prompt_provenance.clone();
+                let mut compact_review_provenance = Vec::new();
                 operation.checkpoint(OperationStage::Review)?;
                 match generate_with_compact_retry(
                     reviewer.as_ref(),
                     review_request,
-                    compact_review,
+                    async || {
+                        compact_context.source_bundle = compact_source_material(
+                            &mut compact_cache,
+                            &filesystem_compaction,
+                            brain_retry.as_ref(),
+                            &tool_set,
+                            &request.instruction,
+                            COMPACT_SOURCE_BUNDLE_CHARS,
+                            &operation,
+                            OperationStage::Review,
+                        )
+                        .await;
+                        let compact_review = render_pair(
+                            prompt_catalog.as_ref(),
+                            PromptId::DocumentCompactReviewSystem,
+                            PromptId::DocumentCompactReviewUser,
+                            &compact_context,
+                        )?;
+                        compact_review_provenance = compact_review.prompt_provenance.clone();
+                        Ok(compact_review)
+                    },
                     &operation,
                     OperationStage::Review,
                 )

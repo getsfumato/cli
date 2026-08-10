@@ -1,4 +1,4 @@
-## Source material
+{% if knowledge_backend == "vitruvio" %}{% include "shared/brain-card.md.j2" %}{% else %}## Source material
 
 The listing below is an **index of the available files, not their contents**. None of the source text is in this prompt.
 
@@ -12,3 +12,4 @@ Read before you write. You have filesystem tools for exactly this:
 - Once you have read what the instruction needs, stop calling tools and produce the final output.
 
 {{ source_bundle }}
+{% endif %}

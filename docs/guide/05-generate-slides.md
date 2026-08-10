@@ -58,6 +58,35 @@ The one exception is the compacted retry, which runs after a context limit was
 already hit and drops the tools; it inlines bounded excerpts, because it has no
 way to go and read anything.
 
+### Grounded In A Brain Instead
+
+None of the above applies when the project sets `knowledge.backend = "vitruvio"`
+(see the configuration guide). Nothing is read from disk, source paths are
+refused rather than ignored, and in place of the file index the prompt carries an
+inventory of the brain: its memory modules, how many blocks each holds, and which
+columns can be filtered on. The deck is then produced exactly as it is from
+files — only where the material came from is different.
+
+A brain-grounded run looks like this in the event stream:
+
+```text
+Ask the brain  how does Jacobi iteration converge
+  7 matches, 7 verified
+Ask the brain  where does Jacobi fail to converge
+  4 matches, 4 verified, truncated
+Ask the brain  a worked Jacobi example
+  3 matches, 3 verified
+```
+
+Several distinct questions, not one, is the expected shape: the prompt asks the
+model to approach the instruction from different angles and to vary
+`memory_types` rather than only rewording. A run that made a single search
+answered only the question it already knew how to ask.
+
+The compacted retry has no brain to query either, so it carries the evidence the
+model already retrieved — minus anything unverified or superseded, which it was
+never allowed to write from.
+
 ## Flags
 
 | Flag | Meaning |
@@ -159,15 +188,26 @@ one stage-specific compact retry:
 Partial/truncated Markdown is never accepted as a valid deck. JSON output reports
 compaction status under `review.context_compaction`.
 
-## Filesystem And Image Tools
+## Reading And Image Tools
 
-Every slide drafter receives:
+Every slide drafter receives the reading tools its grounding provides. Under the
+default filesystem grounding those are:
 
 - `sfumato_list_directory`;
 - `sfumato_read_file`.
 
-They are read-only and path-restricted. The default model tool budget is eight
-rounds and can be changed through profile `max_tool_rounds`.
+They are read-only and path-restricted. Under a Vitruvio brain neither exists —
+there are no files — and the drafter receives `sfumato_search_brain` instead,
+which takes a question plus optional `memory_types`, `subject`, `tags`, a time
+window, a retrieval `mode`, and a `limit` the project caps. It returns matches
+with their provenance: `verified`, `resolvable`, `superseded_by`, the canonical
+blocks each cites, and a `score` that is agreement between retrieval strategies
+rather than a confidence. Anything the model must act on — truncation,
+unverified matches, a superseded block, a degraded retrieval — is also restated
+as a sentence in the result, so it cannot be skipped.
+
+The default model tool budget is eight rounds under either grounding and can be
+changed through profile `max_tool_rounds`.
 
 When `image-gen` is enabled and an image profile resolves, the drafter also
 receives `sfumato_image_gen`. Sfumato augments its prompt with active theme

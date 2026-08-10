@@ -639,6 +639,11 @@ pub enum DocumentPageSizeArg {
 
 #[derive(Clone, Debug, Args)]
 pub struct DocumentArgs {
+    /// Source files or directories to ground the resource in.
+    ///
+    /// Refused when the project is grounded in a knowledge brain: nothing is
+    /// read from disk there, and ignoring the paths would leave you believing
+    /// a file shaped the result when nothing did.
     pub inputs: Vec<PathBuf>,
 
     #[arg(long, required = true)]
@@ -722,6 +727,11 @@ pub struct DocumentArgs {
 
 #[derive(Clone, Debug, Args)]
 pub struct SlidesArgs {
+    /// Source files or directories to ground the resource in.
+    ///
+    /// Refused when the project is grounded in a knowledge brain: nothing is
+    /// read from disk there, and ignoring the paths would leave you believing
+    /// a file shaped the result when nothing did.
     pub inputs: Vec<PathBuf>,
 
     #[arg(long, required = true)]
@@ -796,6 +806,11 @@ pub struct SlidesArgs {
 
 #[derive(Clone, Debug, Args)]
 pub struct PageArgs {
+    /// Source files or directories to ground the resource in.
+    ///
+    /// Refused when the project is grounded in a knowledge brain: nothing is
+    /// read from disk there, and ignoring the paths would leave you believing
+    /// a file shaped the result when nothing did.
     pub inputs: Vec<PathBuf>,
 
     #[arg(long, required = true)]
@@ -907,6 +922,11 @@ pub enum VideoWorkflowArg {
 
 #[derive(Clone, Debug, Args)]
 pub struct VideoArgs {
+    /// Source files or directories to ground the resource in.
+    ///
+    /// Refused when the project is grounded in a knowledge brain: nothing is
+    /// read from disk there, and ignoring the paths would leave you believing
+    /// a file shaped the result when nothing did.
     pub inputs: Vec<PathBuf>,
     #[arg(
         long = "url",

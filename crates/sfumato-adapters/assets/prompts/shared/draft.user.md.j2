@@ -64,8 +64,7 @@ Template source (read-only structure):
 - Add presenter notes with short teaching cues when useful.
 
 {% if compact %}
-Source material (compact excerpts, already supplied because this retry has no tools):
-{{ source_bundle }}
+{% include "shared/compact-sources.md.j2" %}
 {% else %}
 {% include "shared/source-index.md.j2" %}
 {% endif %}

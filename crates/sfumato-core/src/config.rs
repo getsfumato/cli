@@ -75,6 +75,9 @@ pub struct ProjectConfig {
     /// Explicit trust decisions for local generated-code renderers.
     #[serde(default)]
     pub security: ProjectSecurityConfig,
+    /// Where this project's resources may draw their claims from.
+    #[serde(default)]
+    pub knowledge: KnowledgeConfig,
     #[serde(default)]
     pub marp: Option<MarpConfig>,
 }
@@ -283,6 +286,159 @@ impl FromStr for GenerationToolKind {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct GenerationToolDefaults(pub BTreeMap<GenerationToolKind, bool>);
+
+/// Where a project's resources may draw their claims from.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeBackend {
+    /// Local files, read by the model through the filesystem tools.
+    #[default]
+    Filesystem,
+    /// A Vitruvio brain, queried through a single search tool.
+    Vitruvio,
+}
+
+impl KnowledgeBackend {
+    /// Every backend, in presentation order.
+    pub const ALL: [Self; 2] = [Self::Filesystem, Self::Vitruvio];
+
+    /// Stable CLI and configuration identifier.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Filesystem => "filesystem",
+            Self::Vitruvio => "vitruvio",
+        }
+    }
+}
+
+impl std::fmt::Display for KnowledgeBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for KnowledgeBackend {
+    type Err = SfumatoError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|backend| backend.as_str() == value.trim().to_ascii_lowercase())
+            .ok_or_else(|| {
+                SfumatoError::validation(format!(
+                    "Unknown knowledge backend '{value}'. Use filesystem or vitruvio."
+                ))
+            })
+    }
+}
+
+/// Project settings for the knowledge source behind resource generation.
+///
+/// Project-scoped rather than global: a brain belongs to the work, not to the
+/// machine, and two projects on one machine routinely ground differently.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct KnowledgeConfig {
+    /// Which knowledge source grounds this project.
+    #[serde(default)]
+    pub backend: KnowledgeBackend,
+    /// Brain name from the project's `vitruvio.toml`, or a path to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brain: Option<String>,
+    /// Optional explicit Vitruvio configuration file.
+    #[serde(default, rename = "config", skip_serializing_if = "Option::is_none")]
+    pub config_file: Option<PathBuf>,
+    /// Optional explicit brain executable, for one not on `PATH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<PathBuf>,
+    /// Actor identity recorded against each query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Modules every query is restricted to unless the model says otherwise.
+    #[serde(default)]
+    pub memory_types: Vec<crate::knowledge::MemoryType>,
+    /// Whether replaced blocks are returned by default.
+    #[serde(default)]
+    pub include_superseded: bool,
+    /// Matches a query returns when the model asks for no particular number.
+    #[serde(default = "default_query_limit")]
+    pub default_limit: usize,
+    /// Ceiling the model's own `limit` is clamped to.
+    #[serde(default = "default_query_maximum")]
+    pub max_limit: usize,
+    /// Wall-clock bound for one brain invocation.
+    #[serde(default = "default_query_timeout")]
+    pub timeout_seconds: u64,
+}
+
+const fn default_query_limit() -> usize {
+    10
+}
+
+const fn default_query_maximum() -> usize {
+    50
+}
+
+const fn default_query_timeout() -> u64 {
+    60
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self {
+            backend: KnowledgeBackend::default(),
+            brain: None,
+            config_file: None,
+            executable: None,
+            actor: None,
+            memory_types: Vec::new(),
+            include_superseded: false,
+            default_limit: default_query_limit(),
+            max_limit: default_query_maximum(),
+            timeout_seconds: default_query_timeout(),
+        }
+    }
+}
+
+impl KnowledgeConfig {
+    /// Whether resources in this project are grounded in a brain.
+    pub const fn uses_brain(&self) -> bool {
+        matches!(self.backend, KnowledgeBackend::Vitruvio)
+    }
+
+    /// Rejects a knowledge table that cannot describe a reachable brain.
+    pub fn validate(&self) -> Result<()> {
+        if self.default_limit == 0 {
+            bail!("knowledge.default_limit must be at least 1");
+        }
+        if self.max_limit < self.default_limit {
+            bail!(
+                "knowledge.max_limit ({}) cannot be below knowledge.default_limit ({})",
+                self.max_limit,
+                self.default_limit
+            );
+        }
+        if self.max_limit > 200 {
+            bail!("knowledge.max_limit cannot exceed 200");
+        }
+        if self.timeout_seconds == 0 {
+            bail!("knowledge.timeout_seconds must be at least 1");
+        }
+        if !self.uses_brain() {
+            return Ok(());
+        }
+        match self.brain.as_deref().map(str::trim) {
+            Some(brain) if !brain.is_empty() => Ok(()),
+            // Checked here rather than mid-generation: a brain-backed project
+            // that cannot name its brain has nothing to draft from, and finding
+            // that out after a model call has already been paid for is worse
+            // than finding it out while editing the config.
+            _ => bail!(
+                "knowledge.backend is \"vitruvio\" but no brain is named. \
+                 Set knowledge.brain in .sfumato/project.toml."
+            ),
+        }
+    }
+}
 
 /// Project trust settings for generated-code renderers.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -702,6 +858,8 @@ pub struct EffectiveConfig {
     pub generation_tools: GenerationToolDefaults,
     /// Project trust decisions for generated code.
     pub security: ProjectSecurityConfig,
+    /// Where this project's resources may draw their claims from.
+    pub knowledge: KnowledgeConfig,
     pub marp: MarpConfig,
 }
 
@@ -934,6 +1092,7 @@ impl ProjectConfig {
         for requirement in &self.security.python_packages {
             crate::python::validate_requirement(requirement)?;
         }
+        self.knowledge.validate()?;
         Ok(())
     }
 }
@@ -1002,7 +1161,40 @@ impl EffectiveConfig {
                 overrides.tool_overrides,
             )),
             security: project.security,
+            knowledge: project.knowledge,
             marp,
+        })
+    }
+
+    /// Builds the binding one brain invocation needs, or says why it cannot.
+    ///
+    /// The single place configuration becomes a value the knowledge port
+    /// accepts, so a project that is not brain-backed cannot silently produce a
+    /// binding that names no brain.
+    pub fn brain_binding(&self) -> Result<crate::knowledge::BrainBinding> {
+        if !self.knowledge.uses_brain() {
+            bail!(
+                "Project '{}' is not grounded in a brain. \
+                 Set knowledge.backend = \"vitruvio\" in .sfumato/project.toml.",
+                self.project_name
+            );
+        }
+        let brain = self
+            .knowledge
+            .brain
+            .as_deref()
+            .map(str::trim)
+            .filter(|brain| !brain.is_empty())
+            .context(
+                "knowledge.backend is \"vitruvio\" but no brain is named. \
+                 Set knowledge.brain in .sfumato/project.toml.",
+            )?;
+        Ok(crate::knowledge::BrainBinding {
+            brain: brain.to_string(),
+            config_file: self.knowledge.config_file.clone(),
+            executable: self.knowledge.executable.clone(),
+            actor: self.knowledge.actor.clone(),
+            timeout_seconds: self.knowledge.timeout_seconds,
         })
     }
 

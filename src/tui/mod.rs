@@ -370,6 +370,7 @@ fn tool_name(name: &str) -> String {
         "sfumato_list_directory" => "List directory".to_string(),
         "sfumato_read_file" => "Read file".to_string(),
         "sfumato_image_gen" => "Generate image".to_string(),
+        "sfumato_search_brain" => "Ask the brain".to_string(),
         _ => name.replace('_', " "),
     }
 }
@@ -381,6 +382,9 @@ fn format_tool_arguments(arguments: &Value) -> String {
     }
     if let Some(prompt) = arguments.get("prompt").and_then(Value::as_str) {
         return compact(prompt, 220);
+    }
+    if let Some(question) = arguments.get("question").and_then(Value::as_str) {
+        return compact(question, 220);
     }
     compact(&arguments.to_string(), 220)
 }
@@ -398,6 +402,9 @@ fn format_tool_result(name: &str, result: &str) -> (String, Option<PathBuf>) {
     if name == "sfumato_read_file" || value.get("content").is_some() {
         return (summarize_file(&value), None);
     }
+    if name == "sfumato_search_brain" || value.get("matches").is_some() {
+        return (summarize_brain_search(&value), None);
+    }
     if name == "sfumato_image_gen" || value.get("markdown_path").is_some() {
         let markdown_path = value
             .get("markdown_path")
@@ -412,6 +419,26 @@ fn format_tool_result(name: &str, result: &str) -> (String, Option<PathBuf>) {
         return (format!("Created {markdown_path}{profile}"), path);
     }
     (compact(result, 260), None)
+}
+
+/// Summarizes one brain query: how much came back, and how much is usable.
+fn summarize_brain_search(value: &Value) -> String {
+    let matches = value
+        .get("matches")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let verified = matches
+        .iter()
+        .filter(|matched| matched.get("verified").and_then(Value::as_bool) == Some(true))
+        .count();
+    let mut summary = format!("{} matches, {verified} verified", matches.len());
+    if value.get("truncated").and_then(Value::as_bool) == Some(true) {
+        // Said plainly, because a truncated answer read as a complete one is
+        // how a resource ends up quietly missing what the brain actually held.
+        summary.push_str(", truncated");
+    }
+    summary
 }
 
 fn summarize_directory(value: &Value) -> String {

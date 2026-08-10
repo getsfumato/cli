@@ -1,0 +1,13 @@
+{
+  "search": "Search the project's knowledge brain and return evidence with its provenance. This is the only way to reach this project's source material: there are no files to list or read. Every call is one question, so ask several different ones — the brain answers what you asked, not what you meant.",
+  "question": "One question, in natural language or as terms. Ask about a single thing: a definition, a mechanism, an example, a failure case, a contrast, or when something was recorded. A broad question returns a broad ranking and buries what you needed.",
+  "memory_types": "Which memory modules to search. `canonical` holds evidence as it was registered, `semantic` holds facts and claims, `episodic` holds what happened and when, `procedural` holds goals and steps, `provenance` holds who derived what. This is the filter that matters most: without it, episodes compete with definitions in one ranking. Omit it only when you genuinely do not know which module holds the answer.",
+  "subject": "Restrict to one subject. Use the subjects named on the brain card.",
+  "tags": "Require every one of these tags. Narrow, so use it when you already know the vocabulary.",
+  "since": "RFC3339 lower bound on when a block occurred. A block with no timestamp cannot satisfy a time window.",
+  "until": "RFC3339 upper bound on when a block occurred.",
+  "mode": "A retrieval hint, not a choice of index: `exact` for an identity lookup, `lexical` for term matching, `semantic` for meaning, `associative` to follow relationships, `auto` to let the brain decide. Leave it out unless one question is clearly of one kind.",
+  "limit": "How many matches to return. The project caps this; a larger request is clamped and you are told so.",
+  "expand_depth": "How far to follow relationships out from the strongest matches. Use 1 or 2 when you want what surrounds an answer rather than the answer itself.",
+  "include_superseded": "Return blocks a newer one has replaced. Off by default, and worth turning on only when you are deliberately asking what an account used to say."
+}

@@ -122,6 +122,7 @@ fn project(name: &str) -> ProjectConfig {
         page: crate::config::PageDefaults::default(),
         generation_tools: crate::config::GenerationToolDefaults::default(),
         security: crate::config::ProjectSecurityConfig::default(),
+        knowledge: Default::default(),
         marp: None,
     }
 }

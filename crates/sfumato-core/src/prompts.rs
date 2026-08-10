@@ -77,6 +77,8 @@ pub enum PromptId {
     ProjectAssetRegenerationUser,
     /// Model-facing descriptions for the generation tool registry.
     ToolsGenerationDescriptions,
+    /// Model-facing descriptions for the brain search tool.
+    ToolsBrainDescriptions,
     /// System prompt for a standalone page draft.
     PageDraftSystem,
     /// User prompt for a standalone page draft.
@@ -191,6 +193,7 @@ impl PromptId {
             Self::VideoGenerationUser,
             Self::ProjectAssetRegenerationUser,
             Self::ToolsGenerationDescriptions,
+            Self::ToolsBrainDescriptions,
             Self::PageDraftSystem,
             Self::PageDraftUser,
             Self::PageCompactDraftSystem,
@@ -266,6 +269,7 @@ impl PromptId {
             Self::VideoGenerationUser => "video.generation.user",
             Self::ProjectAssetRegenerationUser => "artifact.regeneration.user",
             Self::ToolsGenerationDescriptions => "tools.generation.descriptions",
+            Self::ToolsBrainDescriptions => "tools.brain.descriptions",
             Self::PageDraftSystem => "page.draft.system",
             Self::PageDraftUser => "page.draft.user",
             Self::PageCompactDraftSystem => "page.compact-draft.system",

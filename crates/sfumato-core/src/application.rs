@@ -21,6 +21,7 @@ use crate::{
     errors::{ErrorCode, OperationStage, SfumatoError, SfumatoResult},
     filesystem::WorkspaceFileSystem,
     generation::{DocumentPageSize, GenerationRequest},
+    knowledge::BrainClient,
     models::{ModelDefaultChanged, ModelService, ModelSummary},
     operation::OperationContext,
     page_plugins::{
@@ -253,6 +254,8 @@ pub struct SfumatoApplicationDependencies {
     pub project_assets: Arc<dyn ProjectAssetCatalog>,
     /// Source material reader.
     pub sources: Arc<dyn SourceReader>,
+    /// Knowledge brain a project may be grounded in instead of files.
+    pub brain: Arc<dyn BrainClient>,
     /// Generation tool factory.
     pub tools: Arc<dyn GenerationToolFactory>,
     /// Theme repository.
@@ -297,6 +300,7 @@ pub struct SfumatoApplication {
     templates: Arc<dyn GenerationTemplateCatalog>,
     project_assets: Arc<dyn ProjectAssetCatalog>,
     sources: Arc<dyn SourceReader>,
+    brain: Arc<dyn BrainClient>,
     tools: Arc<dyn GenerationToolFactory>,
     themes: Arc<dyn ThemeRepository>,
     projects: Arc<dyn ProjectRepository>,
@@ -384,6 +388,7 @@ impl SfumatoApplication {
             templates,
             project_assets,
             sources,
+            brain,
             tools,
             themes,
             projects,
@@ -415,6 +420,7 @@ impl SfumatoApplication {
             templates,
             project_assets,
             sources,
+            brain,
             tools,
             themes,
             projects,
@@ -461,6 +467,7 @@ impl SfumatoApplication {
                 diagram_renderer: Arc::clone(&self.diagrams),
                 slide_renderer: Arc::clone(&self.slides),
                 source_reader: Arc::clone(&self.sources),
+                brain: Arc::clone(&self.brain),
                 tool_factory: Arc::clone(&self.tools),
                 python_runtime: Arc::clone(&self.python_runtime),
                 theme_repository: Arc::clone(&self.themes),
@@ -508,6 +515,7 @@ impl SfumatoApplication {
                 document_assembler: Arc::clone(&self.document_assembler),
                 document_renderer: Arc::clone(&self.document_renderer),
                 source_reader: Arc::clone(&self.sources),
+                brain: Arc::clone(&self.brain),
                 tool_factory: Arc::clone(&self.tools),
                 python_runtime: Arc::clone(&self.python_runtime),
                 theme_repository: Arc::clone(&self.themes),
@@ -558,6 +566,7 @@ impl SfumatoApplication {
                 artifact_store: Arc::clone(&self.artifacts),
                 provider_factory: Arc::clone(&self.providers),
                 source_reader: Arc::clone(&self.sources),
+                brain: Arc::clone(&self.brain),
                 tool_factory: Arc::clone(&self.tools),
                 python_runtime: Arc::clone(&self.python_runtime),
                 theme_repository: Arc::clone(&self.themes),
@@ -597,6 +606,7 @@ impl SfumatoApplication {
                 artifact_store: Arc::clone(&self.artifacts),
                 provider_factory: Arc::clone(&self.providers),
                 source_reader: Arc::clone(&self.sources),
+                brain: Arc::clone(&self.brain),
                 tool_factory: Arc::clone(&self.tools),
                 python_runtime: Arc::clone(&self.python_runtime),
                 theme_repository: Arc::clone(&self.themes),
@@ -984,6 +994,9 @@ impl SfumatoApplication {
                 provider_factory: Arc::clone(&self.providers),
                 diagram_renderer: Arc::clone(&self.diagrams),
                 slide_renderer: Arc::clone(&self.slides),
+                // No brain here: a focused edit rewrites slides that already
+                // exist and reads no source material, only the project's own
+                // instructions.
                 source_reader: Arc::clone(&self.sources),
                 theme_repository: Arc::clone(&self.themes),
                 workspace: Arc::clone(&self.workspace),

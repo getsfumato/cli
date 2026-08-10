@@ -60,6 +60,9 @@ fn representative_variables() -> PromptVariables {
         // The normal draft indexes its sources and lets the model read them; the
         // compacted retry has no tools, so it inlines excerpts instead.
         ("compact", json!(false)),
+        // The default grounding. The brain variant of every shared partial is
+        // exercised separately, by rendering the same prompts with "vitruvio".
+        ("knowledge_backend", json!("filesystem")),
         ("validation_error", json!("missing title")),
         ("diagram_error", json!("Parse error on line 4")),
         ("headings", json!(["Periodic signals", "Spectrum"])),
@@ -542,7 +545,7 @@ fn bundled_prompt_rendering_matches_the_reviewed_aggregate_snapshot() {
 
     assert_eq!(
         format!("{:x}", Sha256::digest(aggregate.as_bytes())),
-        "eb640d5ea68196017aa38dcbe1d618bf3c0443f70c41656f8286bb5caa8b8644"
+        "d20a5ac0c7bda226269cd979bed67c0bda0e42e4074b2d97659ecd9865504ad9"
     );
 }
 
@@ -964,4 +967,141 @@ fn the_page_prompt_says_what_to_do_instead_of_loading_a_library() {
     // "Do not use remote URLs" alone left no offline path for interactivity.
     assert!(rendered.text.contains("cannot be loaded from a CDN"));
     assert!(rendered.text.contains("plain DOM, CSS, SVG, or canvas"));
+}
+
+fn variables_grounded_in(backend: &str) -> PromptVariables {
+    let mut variables = representative_variables();
+    variables
+        .0
+        .insert("knowledge_backend".to_string(), json!(backend));
+    variables
+}
+
+fn render_grounded_in(backend: &str, id: PromptId) -> String {
+    LayeredPromptCatalog::new(None, None)
+        .render(PromptRenderRequest {
+            id,
+            variables: variables_grounded_in(backend),
+        })
+        .unwrap_or_else(|error| panic!("could not render {id} for {backend}: {error}"))
+        .text
+}
+
+/// Every tool-bearing prompt that can carry source material.
+///
+/// The compacted variants are excluded on purpose: they run without tools, so
+/// naming one would be a lie in either grounding. They are covered separately.
+const GROUNDED_PROMPTS: [PromptId; 7] = [
+    PromptId::SlidesDraftUser,
+    PromptId::SlidesReviewUser,
+    PromptId::PageDraftUser,
+    PromptId::PageReviewUser,
+    PromptId::DocumentDraftUser,
+    PromptId::DocumentReviewUser,
+    PromptId::VideoPlanUser,
+];
+
+#[test]
+fn the_brain_card_replaces_the_source_index_when_the_backend_is_vitruvio() {
+    for id in GROUNDED_PROMPTS {
+        let rendered = render_grounded_in("vitruvio", id);
+        assert!(
+            rendered.contains("sfumato_search_brain"),
+            "{id} must name the only tool that reaches the sources"
+        );
+        assert!(
+            !rendered.contains("sfumato_read_file"),
+            "{id} must not offer a file tool that does not exist under a brain"
+        );
+        assert!(
+            !rendered.contains("sfumato_list_directory"),
+            "{id} must not offer a directory tool that does not exist under a brain"
+        );
+    }
+}
+
+#[test]
+fn the_filesystem_backend_is_never_told_about_a_brain() {
+    for id in GROUNDED_PROMPTS {
+        let rendered = render_grounded_in("filesystem", id);
+        assert!(
+            !rendered.contains("sfumato_search_brain"),
+            "{id} must not mention a brain a filesystem project does not have"
+        );
+        assert!(
+            rendered.contains("sfumato_read_file"),
+            "{id} must still point the model at the files it may read"
+        );
+    }
+}
+
+#[test]
+fn the_brain_card_tells_the_model_to_ask_several_distinct_questions() {
+    // The whole reason the tool is a plain search: asking well is the model's
+    // job, so the discipline has to live in the prompt or it lives nowhere.
+    let rendered = render_grounded_in("vitruvio", PromptId::SlidesDraftUser);
+    assert!(
+        rendered.contains("One question is never enough"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("distinct"), "{rendered}");
+    assert!(rendered.contains("memory_types"), "{rendered}");
+}
+
+#[test]
+fn the_brain_card_forbids_writing_from_unverified_or_superseded_matches() {
+    let rendered = render_grounded_in("vitruvio", PromptId::SlidesDraftUser);
+    assert!(rendered.contains("\"verified\": false"), "{rendered}");
+    assert!(rendered.contains("superseded_by"), "{rendered}");
+    assert!(
+        rendered.contains("not confidence"),
+        "a score presented as confidence is the failure the brain exists to avoid: {rendered}"
+    );
+}
+
+#[test]
+fn a_tool_less_retry_says_which_grounding_its_material_came_from() {
+    let mut variables = variables_grounded_in("vitruvio");
+    variables.0.insert("compact".to_string(), json!(true));
+    let rendered = LayeredPromptCatalog::new(None, None)
+        .render(PromptRenderRequest {
+            id: PromptId::SlidesCompactDraftUser,
+            variables,
+        })
+        .unwrap()
+        .text;
+
+    assert!(rendered.contains("retrieved from the brain"), "{rendered}");
+    assert!(
+        rendered.contains("this is everything you have"),
+        "a retry that cannot ask again must be told so: {rendered}"
+    );
+}
+
+#[test]
+fn the_brain_tool_descriptions_render_as_one_json_object() {
+    let rendered = LayeredPromptCatalog::new(None, None)
+        .render(PromptRenderRequest {
+            id: PromptId::ToolsBrainDescriptions,
+            variables: PromptVariables::default(),
+        })
+        .unwrap()
+        .text;
+    let parsed: Value = serde_json::from_str(&rendered).expect("the descriptions are JSON");
+    let object = parsed.as_object().expect("and an object");
+    for key in [
+        "search",
+        "question",
+        "memory_types",
+        "subject",
+        "tags",
+        "since",
+        "until",
+        "mode",
+        "limit",
+        "expand_depth",
+        "include_superseded",
+    ] {
+        assert!(object.contains_key(key), "'{key}' is missing");
+    }
 }

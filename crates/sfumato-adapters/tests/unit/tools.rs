@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use sfumato_core::{
     config::ProjectSecurityConfig,
     errors::{OperationStage, SfumatoResult},
+    knowledge::BrainClient,
     operation::OperationContext,
     prompts::{PromptError, PromptOrigin, PromptProvenance, PromptValidation, RenderedPrompt},
     providers::{
@@ -11,6 +12,7 @@ use sfumato_core::{
         VideoGenerationRequest, VideoGenerationResponse,
     },
     themes::{THEME_SCHEMA_VERSION, ThemeAdapters, ThemeManifest, ThemePackage, ThemeTokens},
+    tools::BrainQueryDefaults,
 };
 use std::{collections::BTreeMap, sync::Mutex};
 
@@ -57,6 +59,30 @@ impl PromptCatalog for TestPromptCatalog {
                     origin: PromptOrigin::Bundled,
                     version: 1,
                     content_hash: "test-tools".to_string(),
+                },
+            });
+        }
+        if request.id == PromptId::ToolsBrainDescriptions {
+            return Ok(RenderedPrompt {
+                text: serde_json::json!({
+                    "search": "Search the brain.",
+                    "question": "One question.",
+                    "memory_types": "Which modules.",
+                    "subject": "One subject.",
+                    "tags": "Required tags.",
+                    "since": "Lower time bound.",
+                    "until": "Upper time bound.",
+                    "mode": "Retrieval hint.",
+                    "limit": "How many matches.",
+                    "expand_depth": "How far to expand.",
+                    "include_superseded": "Include replaced blocks."
+                })
+                .to_string(),
+                provenance: PromptProvenance {
+                    id: request.id,
+                    origin: PromptOrigin::Bundled,
+                    version: 1,
+                    content_hash: "test-brain-tools".to_string(),
                 },
             });
         }
@@ -225,10 +251,12 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
             },
         },
     };
-    let tools = FilesystemGenerationToolFactory
+    let tools = ProjectGenerationToolFactory
         .create(GenerationToolsRequest {
             project_root: temp.path().to_path_buf(),
-            sources: Vec::new(),
+            grounding: Grounding::Filesystem {
+                sources: Vec::new(),
+            },
             image: Some(ImageToolConfig {
                 provider: Arc::new(MockImageProvider {
                     prompts: prompts.clone(),
@@ -285,10 +313,12 @@ async fn image_tool_injects_theme_and_tracks_the_artifact() {
 #[test]
 fn filesystem_only_tools_do_not_declare_image_generation() {
     let temp = tempfile::tempdir().unwrap();
-    let tools = FilesystemGenerationToolFactory
+    let tools = ProjectGenerationToolFactory
         .create(GenerationToolsRequest {
             project_root: temp.path().to_path_buf(),
-            sources: Vec::new(),
+            grounding: Grounding::Filesystem {
+                sources: Vec::new(),
+            },
             image: None,
             video: None,
             audio: None,
@@ -326,10 +356,12 @@ async fn page_video_tool_injects_theme_tracks_mp4_and_allows_one_call() {
             },
         },
     };
-    let tools = FilesystemGenerationToolFactory
+    let tools = ProjectGenerationToolFactory
         .create(GenerationToolsRequest {
             project_root: temp.path().to_path_buf(),
-            sources: Vec::new(),
+            grounding: Grounding::Filesystem {
+                sources: Vec::new(),
+            },
             image: None,
             video: Some(VideoToolConfig {
                 provider: Arc::new(MockVideoProvider {
@@ -854,5 +886,294 @@ fn an_unresolvable_root_is_still_reported_with_its_path() {
     assert!(
         format!("{error:#}").contains("/definitely/not/here/at/all"),
         "the message must name the root: {error:#}"
+    );
+}
+
+/// A brain that answers every question with one fixed bundle.
+struct StubBrainClient {
+    questions: Arc<Mutex<Vec<BrainSearchRequest>>>,
+    bundle: EvidenceBundle,
+}
+
+#[async_trait]
+impl BrainClient for StubBrainClient {
+    async fn card(
+        &self,
+        _request: sfumato_core::knowledge::BrainCardRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
+    ) -> SfumatoResult<sfumato_core::knowledge::BrainCard> {
+        Ok(Default::default())
+    }
+
+    async fn search(
+        &self,
+        request: BrainSearchRequest,
+        _operation: &OperationContext,
+        _stage: OperationStage,
+    ) -> SfumatoResult<EvidenceBundle> {
+        self.questions.lock().unwrap().push(request);
+        Ok(self.bundle.clone())
+    }
+}
+
+fn brain_tool_set(
+    bundle: EvidenceBundle,
+    max_limit: usize,
+) -> (ToolSet, Arc<Mutex<Vec<BrainSearchRequest>>>) {
+    let questions = Arc::new(Mutex::new(Vec::new()));
+    let tools = ProjectGenerationToolFactory
+        .create(GenerationToolsRequest {
+            project_root: PathBuf::from("/tmp"),
+            grounding: Grounding::Brain(BrainToolConfig {
+                client: Arc::new(StubBrainClient {
+                    questions: questions.clone(),
+                    bundle,
+                }),
+                binding: sfumato_core::knowledge::BrainBinding {
+                    brain: "algebra".into(),
+                    config_file: None,
+                    executable: None,
+                    actor: None,
+                    timeout_seconds: 10,
+                },
+                defaults: BrainQueryDefaults {
+                    memory_types: vec![MemoryType::Canonical],
+                    include_superseded: false,
+                    default_limit: 10,
+                    max_limit,
+                },
+            }),
+            image: None,
+            video: None,
+            audio: None,
+            chart: None,
+            prompt_catalog: Arc::new(TestPromptCatalog),
+        })
+        .unwrap();
+    (tools, questions)
+}
+
+fn one_match(verified: bool, superseded_by: Option<&str>) -> EvidenceMatch {
+    EvidenceMatch {
+        block_id: "sha256:aa".into(),
+        memory_type: MemoryType::Canonical,
+        content: serde_json::json!({"statement": "Jacobi converges"}),
+        score: "0.87".into(),
+        sources: Vec::new(),
+        verified,
+        resolvable: true,
+        superseded_by: superseded_by.map(ToString::to_string),
+    }
+}
+
+async fn ask(tools: &ToolSet, arguments: Value) -> SfumatoResult<String> {
+    let (_, operation) =
+        OperationContext::create(None, Arc::new(sfumato_core::operation::DiscardEvents));
+    tools
+        .executor
+        .execute(
+            ToolExecutionRequest {
+                name: "sfumato_search_brain".into(),
+                arguments,
+            },
+            &operation,
+            OperationStage::Draft,
+        )
+        .await
+}
+
+#[test]
+fn the_brain_backend_offers_no_directory_or_file_tools() {
+    let (tools, _) = brain_tool_set(EvidenceBundle::default(), 50);
+
+    let names = tools
+        .definitions
+        .iter()
+        .map(|tool| tool.function.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["sfumato_search_brain"]);
+}
+
+#[test]
+fn the_filesystem_backend_offers_no_brain_tool() {
+    let temp = tempfile::tempdir().unwrap();
+    let tools = ProjectGenerationToolFactory
+        .create(GenerationToolsRequest {
+            project_root: temp.path().to_path_buf(),
+            grounding: Grounding::Filesystem {
+                sources: Vec::new(),
+            },
+            image: None,
+            video: None,
+            audio: None,
+            chart: None,
+            prompt_catalog: Arc::new(TestPromptCatalog),
+        })
+        .unwrap();
+
+    assert!(
+        tools
+            .definitions
+            .iter()
+            .all(|tool| tool.function.name != "sfumato_search_brain")
+    );
+}
+
+#[tokio::test]
+async fn a_question_inherits_the_project_memory_types_when_the_model_names_none() {
+    let (tools, questions) = brain_tool_set(EvidenceBundle::default(), 50);
+
+    ask(
+        &tools,
+        serde_json::json!({"question": "how does Jacobi converge"}),
+    )
+    .await
+    .unwrap();
+
+    let asked = questions.lock().unwrap();
+    assert_eq!(asked[0].memory_types, vec![MemoryType::Canonical]);
+    assert_eq!(asked[0].limit, 10);
+}
+
+#[tokio::test]
+async fn an_unknown_memory_type_is_refused_with_the_valid_ones_named() {
+    let (tools, _) = brain_tool_set(EvidenceBundle::default(), 50);
+
+    let error = ask(
+        &tools,
+        serde_json::json!({"question": "x", "memory_types": ["episodes"]}),
+    )
+    .await
+    .expect_err("'episodes' is not a module");
+
+    // A refusal a model cannot act on costs a whole round; the valid values are
+    // the only part of this message that shortens the next turn.
+    assert!(error.message.contains("episodic"), "{}", error.message);
+    assert!(error.message.contains("semantic"), "{}", error.message);
+}
+
+#[tokio::test]
+async fn a_limit_above_the_project_maximum_is_clamped_and_says_so() {
+    let (tools, questions) = brain_tool_set(EvidenceBundle::default(), 25);
+
+    let result = ask(&tools, serde_json::json!({"question": "x", "limit": 200}))
+        .await
+        .unwrap();
+
+    assert_eq!(questions.lock().unwrap()[0].limit, 25);
+    let payload: Value = serde_json::from_str(&result).unwrap();
+    let notes = payload["notes"].as_array().unwrap();
+    assert!(
+        notes.iter().any(|note| note
+            .as_str()
+            .is_some_and(|note| note.contains("caps it at 25"))),
+        "a silent clamp reads as a brain with little to say: {notes:?}"
+    );
+}
+
+#[tokio::test]
+async fn truncation_and_unverified_matches_are_stated_in_prose() {
+    let bundle = EvidenceBundle {
+        matches: vec![one_match(false, None)],
+        truncated: true,
+        ..EvidenceBundle::default()
+    };
+    let (tools, _) = brain_tool_set(bundle, 50);
+
+    let result = ask(&tools, serde_json::json!({"question": "x"}))
+        .await
+        .unwrap();
+
+    let payload: Value = serde_json::from_str(&result).unwrap();
+    let notes = payload["notes"].as_array().unwrap();
+    let joined = notes
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(joined.contains("truncated"), "{joined}");
+    assert!(joined.contains("unverified"), "{joined}");
+}
+
+#[tokio::test]
+async fn a_superseded_match_names_the_block_that_replaced_it() {
+    let bundle = EvidenceBundle {
+        matches: vec![one_match(true, Some("sha256:cc"))],
+        ..EvidenceBundle::default()
+    };
+    let (tools, _) = brain_tool_set(bundle, 50);
+
+    let result = ask(&tools, serde_json::json!({"question": "x"}))
+        .await
+        .unwrap();
+
+    assert!(result.contains("sha256:cc"), "{result}");
+}
+
+#[tokio::test]
+async fn the_score_reaches_the_model_as_the_string_the_brain_printed() {
+    let bundle = EvidenceBundle {
+        matches: vec![one_match(true, None)],
+        ..EvidenceBundle::default()
+    };
+    let (tools, _) = brain_tool_set(bundle, 50);
+
+    let result = ask(&tools, serde_json::json!({"question": "x"}))
+        .await
+        .unwrap();
+
+    let payload: Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(payload["matches"][0]["score"], serde_json::json!("0.87"));
+}
+
+#[tokio::test]
+async fn every_search_is_recorded_for_the_tool_less_retry() {
+    let bundle = EvidenceBundle {
+        matches: vec![one_match(true, None)],
+        ..EvidenceBundle::default()
+    };
+    let (tools, _) = brain_tool_set(bundle, 50);
+
+    ask(&tools, serde_json::json!({"question": "first"}))
+        .await
+        .unwrap();
+    ask(&tools, serde_json::json!({"question": "second"}))
+        .await
+        .unwrap();
+
+    let recorded = tools.retrieved_evidence().unwrap();
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|record| record.question.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
+}
+
+#[tokio::test]
+async fn a_file_tool_call_under_a_brain_says_what_to_use_instead() {
+    let (tools, _) = brain_tool_set(EvidenceBundle::default(), 50);
+    let (_, operation) =
+        OperationContext::create(None, Arc::new(sfumato_core::operation::DiscardEvents));
+
+    let error = tools
+        .executor
+        .execute(
+            ToolExecutionRequest {
+                name: "sfumato_read_file".into(),
+                arguments: serde_json::json!({"path": "notes.md"}),
+            },
+            &operation,
+            OperationStage::Draft,
+        )
+        .await
+        .expect_err("there are no files to read under a brain");
+
+    assert!(
+        error.message.contains("sfumato_search_brain"),
+        "{}",
+        error.message
     );
 }

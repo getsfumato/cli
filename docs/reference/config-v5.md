@@ -50,6 +50,9 @@ audio_gen = true
 allow_python = false
 python_packages = []
 
+[knowledge]
+backend = "filesystem"
+
 [marp]
 pdf = true
 ```
@@ -78,6 +81,44 @@ boundary, not a strong sandbox.
 pinned base environments, matched by package name so a pin does not have to be
 repeated. It is empty by default: layering a package installs it from an index
 during generation, which is the project's decision rather than the model's.
+
+## Knowledge
+
+`[knowledge]` decides where a project's resources may draw their claims from. It
+is project-scoped and has no global counterpart: a brain belongs to the work, not
+to the machine, and two projects on one machine routinely ground differently. A
+project file without the table reads as `filesystem`, which is what every project
+did before the table existed.
+
+```toml
+[knowledge]
+backend = "vitruvio"                     # "filesystem" (default) | "vitruvio"
+brain = "algebra"                        # brain name from vitruvio.toml, or a path
+config = "../vitruvio/vitruvio.toml"     # optional explicit Vitruvio config
+executable = "~/.local/bin/vitruvio"     # optional; "vitruvio" on PATH otherwise
+actor = "sfumato"                        # recorded against each query
+memory_types = ["canonical", "semantic"] # default filter, optional
+include_superseded = false
+default_limit = 10
+max_limit = 50
+timeout_seconds = 60
+```
+
+With `backend = "vitruvio"`, `brain` is required and generation changes in
+exactly two places. The model is offered `sfumato_search_brain` instead of
+`sfumato_list_directory` and `sfumato_read_file`, and the prompt carries an
+inventory of the brain — its modules, their block counts, the filters available —
+instead of an index of files. Everything after that is identical: drafting,
+validation, diagrams, layout, review, rendering, and publishing.
+
+Source paths are **refused** under a brain rather than ignored. A silently
+dropped path would leave you believing a file grounded the resource when nothing
+did, and the resource looks the same either way.
+
+`default_limit` is used when the model asks for no particular number of matches;
+`max_limit` caps what it may ask for, and a clamp is reported back to the model
+rather than applied silently. `timeout_seconds` bounds one brain invocation, so a
+brain that hangs cannot hang the run.
 
 ## Model Options
 

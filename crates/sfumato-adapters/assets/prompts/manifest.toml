@@ -6,6 +6,11 @@ path = "tools/generation.descriptions.json.j2"
 required = []
 
 [[prompts]]
+id = "tools.brain.descriptions"
+path = "tools/brain.descriptions.json.j2"
+required = []
+
+[[prompts]]
 id = "image.generation.user"
 path = "image/generation.user.md.j2"
 required = [
@@ -48,6 +53,7 @@ required = ["learning_style"]
 id = "slides.draft.user"
 path = "slides/draft.user.md.j2"
 required = [
+  "knowledge_backend",
   "project",
   "project_root",
   "theme_name",
@@ -76,6 +82,7 @@ required = ["learning_style"]
 id = "slides.compact-draft.user"
 path = "slides/compact-draft.user.md.j2"
 required = [
+  "knowledge_backend",
   "project",
   "project_root",
   "theme_name",
@@ -135,6 +142,7 @@ required = []
 id = "slides.review.user"
 path = "slides/review.user.md.j2"
 required = [
+  "knowledge_backend",
   "instruction",
   "project",
   "theme_name",
@@ -295,6 +303,7 @@ required = ["learning_style"]
 id = "page.draft.user"
 path = "page/draft.user.md.j2"
 required = [
+  "knowledge_backend",
   "project",
   "project_root",
   "theme_name",
@@ -355,6 +364,7 @@ required = []
 id = "page.review.user"
 path = "page/review.user.md.j2"
 required = [
+  "knowledge_backend",
   "instruction",
   "project",
   "theme_name",
@@ -394,7 +404,7 @@ required = ["learning_style", "narration_available"]
 [[prompts]]
 id = "video.plan.user"
 path = "video/plan.user.md.j2"
-required = ["project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "engine", "duration_seconds", "resolution", "aspect_ratio", "title", "title_provided", "reusable_assets", "image_generation_available", "narration_available", "workflow", "urls", "catalog"]
+required = ["knowledge_backend", "project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "engine", "duration_seconds", "resolution", "aspect_ratio", "title", "title_provided", "reusable_assets", "image_generation_available", "narration_available", "workflow", "urls", "catalog"]
 
 [[prompts]]
 id = "video.review.system"
@@ -404,7 +414,7 @@ required = []
 [[prompts]]
 id = "video.review.user"
 path = "video/review.user.md.j2"
-required = ["instruction", "source_bundle", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "plan_snapshot", "engine", "catalog", "retry_present"]
+required = ["knowledge_backend", "instruction", "source_bundle", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "plan_snapshot", "engine", "catalog", "retry_present"]
 
 [[prompts]]
 id = "video.hyperframe-scene.system"
@@ -474,7 +484,7 @@ required = ["learning_style"]
 [[prompts]]
 id = "document.draft.user"
 path = "document/draft.user.md.j2"
-required = ["project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "title", "title_provided", "reusable_assets", "image_generation_available", "page_size", "table_of_contents"]
+required = ["knowledge_backend", "project", "project_root", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "title", "title_provided", "reusable_assets", "image_generation_available", "page_size", "table_of_contents"]
 
 [[prompts]]
 id = "document.compact-draft.system"
@@ -484,7 +494,7 @@ required = ["learning_style"]
 [[prompts]]
 id = "document.compact-draft.user"
 path = "document/compact-draft.user.md.j2"
-required = ["project", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "title", "title_provided", "page_size"]
+required = ["knowledge_backend", "project", "theme_name", "theme_colors", "theme_fonts", "instruction", "project_instructions", "source_bundle", "title", "title_provided", "page_size"]
 
 [[prompts]]
 id = "document.validation-repair.system"
@@ -514,7 +524,7 @@ required = []
 [[prompts]]
 id = "document.review.user"
 path = "document/review.user.md.j2"
-required = ["instruction", "project", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "source_bundle", "document_snapshot", "page_size"]
+required = ["knowledge_backend", "instruction", "project", "theme_name", "theme_colors", "theme_fonts", "project_instructions", "source_bundle", "document_snapshot", "page_size"]
 
 [[prompts]]
 id = "document.compact-review.system"

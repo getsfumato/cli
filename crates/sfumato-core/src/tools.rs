@@ -8,6 +8,7 @@ use std::{
 use crate::{
     config::{ProjectSecurityConfig, SpeechModelOptions, VideoModelOptions},
     errors::{SfumatoError, SfumatoResult},
+    knowledge::{BrainBinding, BrainClient, BrainEvidenceRecord, MemoryType},
     prompts::{PromptCatalog, PromptProvenance},
     providers::{
         ImageGenerationProvider, SpeechGenerationProvider, ToolDefinition, ToolExecutor,
@@ -28,6 +29,12 @@ pub struct ToolSet {
     pub artifacts: Arc<Mutex<Vec<PathBuf>>>,
     /// Prompt provenance populated by prompt-backed tools.
     pub prompts: Arc<Mutex<Vec<PromptProvenance>>>,
+    /// Evidence recorded by the brain tool, read by a tool-less retry.
+    ///
+    /// A third registry in the same shape as the two above. They want to be one
+    /// journal rather than three parallel mutexes, but folding them together is
+    /// a refactor of every tool at once and does not belong to this change.
+    pub evidence: Arc<Mutex<Vec<BrainEvidenceRecord>>>,
 }
 
 impl ToolSet {
@@ -45,6 +52,14 @@ impl ToolSet {
             .lock()
             .map(|prompts| prompts.clone())
             .map_err(|_| SfumatoError::internal("Generated prompt registry is unavailable"))
+    }
+
+    /// Returns what the brain answered during this operation.
+    pub fn retrieved_evidence(&self) -> SfumatoResult<Vec<BrainEvidenceRecord>> {
+        self.evidence
+            .lock()
+            .map(|evidence| evidence.clone())
+            .map_err(|_| SfumatoError::internal("Retrieved evidence registry is unavailable"))
     }
 }
 
@@ -190,12 +205,51 @@ pub fn chart_tool_gate_warning(
     })
 }
 
+/// Query defaults a project applies to every brain search.
+#[derive(Clone, Debug)]
+pub struct BrainQueryDefaults {
+    /// Modules a query is restricted to when the model names none.
+    pub memory_types: Vec<MemoryType>,
+    /// Whether replaced blocks are returned when the model does not ask.
+    pub include_superseded: bool,
+    /// Matches returned when the model requests no particular number.
+    pub default_limit: usize,
+    /// Ceiling the model's own `limit` is clamped to.
+    pub max_limit: usize,
+}
+
+/// The brain-backed grounding, and everything the search tool needs to use it.
+pub struct BrainToolConfig {
+    /// Client that reaches the brain.
+    pub client: Arc<dyn BrainClient>,
+    /// Which brain, and how to reach it.
+    pub binding: BrainBinding,
+    /// Project query defaults.
+    pub defaults: BrainQueryDefaults,
+}
+
+/// Where a resource's claims may come from.
+///
+/// One decision with one question behind it, which is why it is an enum rather
+/// than two optional fields: a tool set grounded in both a vault and a brain
+/// would let a model quietly fall back to files when the brain said nothing,
+/// and the whole point of a brain is that it does not.
+pub enum Grounding {
+    /// Local files, reachable through the directory and file tools.
+    Filesystem {
+        /// Explicit source paths whose roots are also readable.
+        sources: Vec<PathBuf>,
+    },
+    /// A brain, reachable through one search tool and nothing else.
+    Brain(BrainToolConfig),
+}
+
 /// Inputs required to construct one operation-scoped tool set.
 pub struct GenerationToolsRequest {
     /// Project working directory allowed to filesystem tools.
     pub project_root: PathBuf,
-    /// Explicit source paths whose roots are also readable.
-    pub sources: Vec<PathBuf>,
+    /// Where this operation's claims may come from.
+    pub grounding: Grounding,
     /// Optional image-generation tool configuration.
     pub image: Option<ImageToolConfig>,
     /// Optional page-only generated-video tool.

@@ -63,6 +63,10 @@ pub(super) struct SlidePromptContext {
     pub(super) image_generation_available: bool,
     pub(super) chart_generation_available: bool,
     pub(super) source_bundle: String,
+    /// Which knowledge source grounds the run, so the shared partials can
+    /// switch between a file index and a brain card without every template
+    /// that includes them being edited.
+    pub(super) knowledge_backend: String,
     pub(super) tools: Vec<GenerationToolSummary>,
     pub(super) deck_snapshot: String,
     pub(super) draft_markdown: String,
@@ -128,6 +132,7 @@ pub(super) fn review_prompt_context(
         instruction: instruction.to_string(),
         project_instructions,
         source_bundle,
+        knowledge_backend: config.knowledge.backend.as_str().to_string(),
         deck_snapshot,
         retry_present: retry.is_some(),
         retry_error: retry
@@ -198,6 +203,7 @@ pub(super) fn build_generation_request(
         image_generation_available: args.image_generation_available,
         chart_generation_available: args.chart_generation_available,
         source_bundle: args.source_bundle.to_string(),
+        knowledge_backend: args.config.knowledge.backend.as_str().to_string(),
         tools: args.tools.to_vec(),
         max_tool_rounds: args.max_tool_rounds,
         template_enabled: args.template.is_some(),
@@ -235,6 +241,7 @@ pub(super) fn build_compact_generation_request(
         title: args.title.unwrap_or_default().to_string(),
         title_provided: args.title.is_some(),
         source_bundle: args.source_bundle.to_string(),
+        knowledge_backend: args.config.knowledge.backend.as_str().to_string(),
         compact: true,
         max_tool_rounds: args.max_tool_rounds,
         template_enabled: args.template.is_some(),

@@ -15,6 +15,7 @@ fn effective_config() -> EffectiveConfig {
         page: PageDefaults::default(),
         generation_tools: GenerationToolDefaults::default(),
         security: ProjectSecurityConfig::default(),
+        knowledge: Default::default(),
         marp: global.marp,
     }
 }
@@ -232,6 +233,7 @@ fn a_malformed_allowlist_entry_is_reported_while_editing_the_project() {
             allow_python: true,
             python_packages: vec!["--index-url=http://evil".to_string()],
         },
+        knowledge: Default::default(),
         marp: None,
     };
     assert!(project.validate().is_err());

@@ -302,6 +302,7 @@ fn project_and_registry_versions_are_owned_by_persistence_dtos() {
         page: PageDefaults::default(),
         generation_tools: GenerationToolDefaults::default(),
         security: ProjectSecurityConfig::default(),
+        knowledge: Default::default(),
         marp: None,
     };
     let rendered = toml::to_string_pretty(&ProjectConfigDto::from_domain(&project)).unwrap();
@@ -356,6 +357,7 @@ fn security_settings_round_trip_under_the_current_spelling() {
             allow_python: true,
             python_packages: vec!["scipy==1.16.2".to_string()],
         },
+        knowledge: Default::default(),
         marp: None,
     };
     let rendered = toml::to_string_pretty(&ProjectConfigDto::from_domain(&project)).unwrap();
@@ -366,4 +368,108 @@ fn security_settings_round_trip_under_the_current_spelling() {
         .unwrap();
     assert!(restored.security.allow_python);
     assert_eq!(restored.security.python_packages, vec!["scipy==1.16.2"]);
+}
+
+#[test]
+fn a_project_without_a_knowledge_table_reads_as_filesystem() {
+    let document = r#"
+schema_version = 5
+name = "university"
+theme = "sfumato-default"
+"#;
+    let project = toml::from_str::<ProjectConfigDto>(document)
+        .expect("a project predating the knowledge table should parse")
+        .into_domain()
+        .expect("and should be valid");
+
+    assert!(!project.knowledge.uses_brain());
+    assert_eq!(project.knowledge.default_limit, 10);
+}
+
+#[test]
+fn a_filesystem_project_round_trips_without_growing_a_knowledge_table() {
+    // Project files are read back and rewritten by `sfumato config set`, so a
+    // default that serialized would appear in every existing project the first
+    // time anything unrelated was edited.
+    let project = ProjectConfig {
+        name: "university".to_string(),
+        theme: "sfumato-default".to_string(),
+        publish_dir: None,
+        model_defaults: BTreeMap::new(),
+        model_roles: BTreeMap::new(),
+        page: PageDefaults::default(),
+        generation_tools: GenerationToolDefaults::default(),
+        security: ProjectSecurityConfig::default(),
+        knowledge: Default::default(),
+        marp: None,
+    };
+
+    let rendered = toml::to_string_pretty(&ProjectConfigDto::from_domain(&project)).unwrap();
+
+    assert!(!rendered.contains("[knowledge]"), "{rendered}");
+}
+
+#[test]
+fn a_brain_backed_project_round_trips_its_whole_binding() {
+    let document = r#"
+schema_version = 5
+name = "university"
+theme = "sfumato-default"
+
+[knowledge]
+backend = "vitruvio"
+brain = "algebra"
+config = "../vitruvio/vitruvio.toml"
+memory_types = ["canonical", "semantic"]
+max_limit = 25
+"#;
+    let project = toml::from_str::<ProjectConfigDto>(document)
+        .expect("a brain-backed project should parse")
+        .into_domain()
+        .expect("and should be valid");
+
+    assert!(project.knowledge.uses_brain());
+    assert_eq!(project.knowledge.brain.as_deref(), Some("algebra"));
+    assert_eq!(project.knowledge.memory_types.len(), 2);
+    assert_eq!(project.knowledge.max_limit, 25);
+
+    let rendered = toml::to_string_pretty(&ProjectConfigDto::from_domain(&project)).unwrap();
+    let reparsed = toml::from_str::<ProjectConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+    assert_eq!(reparsed.knowledge, project.knowledge);
+}
+
+#[test]
+fn an_unknown_knowledge_key_is_rejected() {
+    let document = r#"
+schema_version = 5
+name = "university"
+theme = "sfumato-default"
+
+[knowledge]
+backend = "vitruvio"
+brain = "algebra"
+brian = "typo"
+"#;
+    assert!(toml::from_str::<ProjectConfigDto>(document).is_err());
+}
+
+#[test]
+fn a_vitruvio_project_that_names_no_brain_is_rejected_when_it_is_read() {
+    let document = r#"
+schema_version = 5
+name = "university"
+theme = "sfumato-default"
+
+[knowledge]
+backend = "vitruvio"
+"#;
+    let error = toml::from_str::<ProjectConfigDto>(document)
+        .expect("it parses")
+        .into_domain()
+        .expect_err("but it is not a usable project");
+
+    assert!(error.to_string().contains("knowledge.brain"), "{error}");
 }

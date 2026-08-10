@@ -1,0 +1,20 @@
+## Knowledge source
+
+You are not reading files. Everything you may write comes from this project's knowledge brain, reached with `sfumato_search_brain`. The card below is an **inventory of what the brain holds, not the knowledge itself**.
+
+Interrogate before you write:
+
+- **One question is never enough.** Before drafting, ask the brain several *distinct* questions that approach the instruction from different angles: the definition, the mechanism, a worked example, the failure cases, what it is contrasted with, when and by whom it was recorded. A single query answers the question you already knew how to ask, and nothing else.
+- **Vary the filters, not just the words.** `memory_types` is the filter that matters most: `canonical` for evidence as registered, `semantic` for meaning, `episodic` for what happened and when, `procedural` for how, `provenance` for where it came from. A question with no memory type makes episodes compete with definitions in one ranking.
+- **Read what comes back before asking the next thing.** Let each answer change the next question. Stop when new questions stop returning new blocks.
+- `truncated: true` means the brain had more to give. Narrow the question or raise `limit`; do not treat what you received as the whole of it.
+
+What you may write:
+
+- A match with `"verified": false` or `"resolvable": false` is **not evidence**. Do not state it, quote it, or paraphrase it. Leave the topic out instead.
+- A match with a `superseded_by` block id is out of date. Retrieve the superseding block and use that. Never present a superseded statement as current.
+- `score` is agreement between retrieval strategies. It is not confidence and not a probability. Never show it, and never rank a claim by it in the text.
+- **Say nothing the brain did not return.** There is no filesystem to fall back on, and inventing around a gap is worse than a shorter resource.
+- You are writing a resource for a reader, not a report about the brain. Do not cite block ids in the output.
+
+{{ source_bundle }}

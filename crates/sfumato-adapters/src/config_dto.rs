@@ -4,14 +4,17 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use sfumato_core::config::{
-    AnthropicConnectorConfig, Capability, CodexAppServerConnectorConfig, ConnectorConfig,
-    ElevenLabsConnectorConfig, GenerationToolDefaults, GenerationToolKind, GlobalConfig,
-    ImageModelOptions, LmStudioConnectorConfig, MarpConfig, ModelDefaults, ModelOptions,
-    ModelProfile, ModelRole, OllamaConnectorConfig, OpenAiCompatibleConnectorConfig,
-    OpenRouterConnectorConfig, PageDefaults, ProjectConfig, ProjectRegistry, ProjectSecurityConfig,
-    RegisteredProject, SecretRef, SpeechModelOptions, TextModelOptions, UserConfig, VideoAudioMode,
-    VideoModelOptions,
+use sfumato_core::{
+    config::{
+        AnthropicConnectorConfig, Capability, CodexAppServerConnectorConfig, ConnectorConfig,
+        ElevenLabsConnectorConfig, GenerationToolDefaults, GenerationToolKind, GlobalConfig,
+        ImageModelOptions, KnowledgeBackend, KnowledgeConfig, LmStudioConnectorConfig, MarpConfig,
+        ModelDefaults, ModelOptions, ModelProfile, ModelRole, OllamaConnectorConfig,
+        OpenAiCompatibleConnectorConfig, OpenRouterConnectorConfig, PageDefaults, ProjectConfig,
+        ProjectRegistry, ProjectSecurityConfig, RegisteredProject, SecretRef, SpeechModelOptions,
+        TextModelOptions, UserConfig, VideoAudioMode, VideoModelOptions,
+    },
+    knowledge::MemoryType,
 };
 
 /// Current persisted configuration schema.
@@ -180,6 +183,12 @@ pub(crate) struct ProjectConfigDto {
     generation_tools: BTreeMap<GenerationToolKind, bool>,
     #[serde(default)]
     security: ProjectSecurityDto,
+    // Skipped when it matches the shipped defaults, because project files are
+    // read back and rewritten by `sfumato config set`: without this, every
+    // existing project would grow an empty `[knowledge]` table the first time
+    // anything unrelated was edited.
+    #[serde(default, skip_serializing_if = "KnowledgeDto::is_default")]
+    knowledge: KnowledgeDto,
     #[serde(default)]
     marp: Option<MarpConfigDto>,
 }
@@ -202,6 +211,85 @@ struct ProjectSecurityDto {
     allow_python: bool,
     #[serde(default)]
     python_packages: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct KnowledgeDto {
+    #[serde(default)]
+    backend: KnowledgeBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    brain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executable: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    actor: Option<String>,
+    #[serde(default)]
+    memory_types: Vec<MemoryType>,
+    #[serde(default)]
+    include_superseded: bool,
+    #[serde(default = "default_knowledge_limit")]
+    default_limit: usize,
+    #[serde(default = "default_knowledge_maximum")]
+    max_limit: usize,
+    #[serde(default = "default_knowledge_timeout")]
+    timeout_seconds: u64,
+}
+
+fn default_knowledge_limit() -> usize {
+    KnowledgeConfig::default().default_limit
+}
+
+fn default_knowledge_maximum() -> usize {
+    KnowledgeConfig::default().max_limit
+}
+
+fn default_knowledge_timeout() -> u64 {
+    KnowledgeConfig::default().timeout_seconds
+}
+
+impl Default for KnowledgeDto {
+    fn default() -> Self {
+        Self::from_domain(&KnowledgeConfig::default())
+    }
+}
+
+impl KnowledgeDto {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn into_domain(self) -> KnowledgeConfig {
+        KnowledgeConfig {
+            backend: self.backend,
+            brain: self.brain,
+            config_file: self.config,
+            executable: self.executable,
+            actor: self.actor,
+            memory_types: self.memory_types,
+            include_superseded: self.include_superseded,
+            default_limit: self.default_limit,
+            max_limit: self.max_limit,
+            timeout_seconds: self.timeout_seconds,
+        }
+    }
+
+    fn from_domain(knowledge: &KnowledgeConfig) -> Self {
+        Self {
+            backend: knowledge.backend,
+            brain: knowledge.brain.clone(),
+            config: knowledge.config_file.clone(),
+            executable: knowledge.executable.clone(),
+            actor: knowledge.actor.clone(),
+            memory_types: knowledge.memory_types.clone(),
+            include_superseded: knowledge.include_superseded,
+            default_limit: knowledge.default_limit,
+            max_limit: knowledge.max_limit,
+            timeout_seconds: knowledge.timeout_seconds,
+        }
+    }
 }
 
 impl GlobalConfigDto {
@@ -492,6 +580,7 @@ impl ProjectConfigDto {
                 allow_python: self.security.allow_python,
                 python_packages: self.security.python_packages,
             },
+            knowledge: self.knowledge.into_domain(),
             marp: self.marp.map(Into::into),
         };
         project.validate()?;
@@ -515,6 +604,7 @@ impl ProjectConfigDto {
                 allow_python: project.security.allow_python,
                 python_packages: project.security.python_packages.clone(),
             },
+            knowledge: KnowledgeDto::from_domain(&project.knowledge),
             marp: project.marp.as_ref().map(MarpConfigDto::from),
         }
     }

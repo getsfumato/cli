@@ -20,6 +20,7 @@ use crate::{
     config_files::ConfigPaths,
     documents::PagedDocumentAssembler,
     filesystem::LocalWorkspaceFileSystem,
+    knowledge::VitruvioCliBrainClient,
     page_plugins::{CdnPagePluginSource, FilesystemPagePluginCatalog},
     pages::{ChromiumPageInspector, StandalonePageAssembler},
     project_assets::FilesystemProjectAssetCatalog,
@@ -32,7 +33,7 @@ use crate::{
     sources::FilesystemSourceReader,
     templates::FilesystemGenerationTemplateCatalog,
     themes::FilesystemThemeRepository,
-    tools::FilesystemGenerationToolFactory,
+    tools::ProjectGenerationToolFactory,
     videos::ManagedVideoRenderers,
 };
 
@@ -125,7 +126,11 @@ pub fn production_application() -> Result<SfumatoApplication> {
         templates: Arc::new(FilesystemGenerationTemplateCatalog::default_path()?),
         project_assets: Arc::new(FilesystemProjectAssetCatalog),
         sources: Arc::new(FilesystemSourceReader),
-        tools: Arc::new(FilesystemGenerationToolFactory),
+        // One instance serves every project because Vitruvio selects its brain
+        // per invocation, so there is no per-brain session to key by. A
+        // transport that needed one would make this a factory instead.
+        brain: Arc::new(VitruvioCliBrainClient),
+        tools: Arc::new(ProjectGenerationToolFactory),
         themes,
         projects,
         global_config,

@@ -22,6 +22,8 @@ pub mod filesystem;
 /// Provider-neutral generation request and result DTOs.
 #[allow(missing_docs)]
 pub mod generation;
+/// Knowledge-source ports: the brain a project may be grounded in.
+pub mod knowledge;
 /// Named model profile and default-management services.
 #[allow(missing_docs)]
 pub mod models;

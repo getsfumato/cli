@@ -23,6 +23,7 @@ fn effective_config() -> EffectiveConfig {
         page: crate::config::PageDefaults::default(),
         generation_tools: crate::config::GenerationToolDefaults::default(),
         security: crate::config::ProjectSecurityConfig::default(),
+        knowledge: Default::default(),
         marp: global.marp,
     }
 }
@@ -154,7 +155,12 @@ async fn token_limit_retries_once_with_the_compact_request() {
     let outcome = generate_with_compact_retry(
         &provider,
         TextGenerationRequest::new("system".into(), "full payload".into()),
-        TextGenerationRequest::new("system".into(), "compact payload".into()),
+        async || {
+            Ok(TextGenerationRequest::new(
+                "system".into(),
+                "compact payload".into(),
+            ))
+        },
         GenerationStage::SemanticReview,
         &OperationContext::detached(),
         OperationStage::Review,
@@ -192,7 +198,12 @@ async fn unrelated_provider_errors_do_not_trigger_compaction() {
     let error = generate_with_compact_retry(
         &provider,
         TextGenerationRequest::new("system".into(), "full payload".into()),
-        TextGenerationRequest::new("system".into(), "compact payload".into()),
+        async || {
+            Ok(TextGenerationRequest::new(
+                "system".into(),
+                "compact payload".into(),
+            ))
+        },
         GenerationStage::Draft,
         &OperationContext::detached(),
         OperationStage::Draft,

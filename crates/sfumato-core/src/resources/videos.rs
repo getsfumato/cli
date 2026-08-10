@@ -32,6 +32,7 @@ use crate::{
         VideoFrameDefectKind, VideoFrameMeasurement, VideoGenerationOutput, VideoNarrationSummary,
         VideoReviewSession, VideoReviewSummary, VideoVisualReport, VideoVisualReviewMode,
     },
+    knowledge::{BrainCardRequest, BrainClient, resolve_grounding},
     operation::OperationContext,
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
@@ -72,7 +73,7 @@ use super::narration::{
 };
 
 use super::{
-    DryRunImageProvider,
+    BrainRetryContext, DryRunImageProvider, build_brain_card,
     project_assets::{
         PrepareProjectAssetsRequest, prepare_project_assets, retain_referenced_generated_assets,
     },
@@ -131,6 +132,7 @@ pub(crate) struct GenerateVideoOptions {
     pub artifact_store: Arc<dyn ArtifactStore>,
     pub provider_factory: Arc<dyn ProviderFactory>,
     pub source_reader: Arc<dyn SourceReader>,
+    pub brain: Arc<dyn BrainClient>,
     pub tool_factory: Arc<dyn GenerationToolFactory>,
     /// Managed Python environments backing the local charting tool.
     pub python_runtime: Arc<dyn PythonRuntime>,
@@ -177,6 +179,8 @@ struct VideoPromptContext {
     instruction: String,
     project_instructions: String,
     source_bundle: String,
+    /// Which knowledge source grounds the run; read by the shared partials.
+    knowledge_backend: String,
     engine: String,
     duration_seconds: u32,
     resolution: String,
@@ -571,6 +575,7 @@ pub(crate) async fn generate_video(
         artifact_store,
         provider_factory,
         source_reader,
+        brain,
         tool_factory,
         python_runtime,
         theme_repository,
@@ -606,10 +611,29 @@ pub(crate) async fn generate_video(
     let audio_dir = asset_root.join("audio");
 
     let project_instructions = source_reader.project_instructions(&config.project_root)?;
-    let documents = source_reader.collect(&request.sources)?;
-    // Every stage that receives this carries the filesystem tools, so the plan is
-    // written from files the model chose to read rather than from a dump.
-    let source_bundle = build_source_index(&documents);
+    // Resolved before anything is read, because it decides whether reading
+    // happens at all — and because it is where a brain-backed project refuses
+    // source paths rather than silently ignoring them.
+    let grounding = resolve_grounding(&config, &request.sources, &brain)?;
+    let mut brain_warnings: Vec<String> = Vec::new();
+    // Every stage that receives this carries the reading tools, so the plan is
+    // written from what the model chose to read rather than from a dump.
+    let source_bundle = match BrainRetryContext::from_grounding(&grounding) {
+        None => build_source_index(&source_reader.collect(&request.sources)?),
+        Some(retry) => {
+            let card = brain
+                .card(
+                    BrainCardRequest {
+                        binding: retry.binding.clone(),
+                    },
+                    &operation,
+                    OperationStage::ReadSources,
+                )
+                .await?;
+            brain_warnings.extend(card.warnings.iter().cloned());
+            build_brain_card(&card)
+        }
+    };
     let image_tool_enabled = config.generation_tool_enabled(GenerationToolKind::ImageGen);
     let image_selection = image_tool_enabled
         .then(|| config.resolve_model(Capability::Image))
@@ -669,7 +693,7 @@ pub(crate) async fn generate_video(
     });
     let tool_set = tool_factory.create(GenerationToolsRequest {
         project_root: config.project_root.clone(),
-        sources: request.sources.clone(),
+        grounding,
         image,
         video: None,
         // Narration is not a tool here. The planner writes the spoken line for
@@ -820,7 +844,8 @@ pub(crate) async fn generate_video(
         video.workflow,
         managed_catalog.as_ref(),
     )?;
-    let mut warnings = prepared_assets.warnings.clone();
+    let mut warnings = brain_warnings;
+    warnings.extend(prepared_assets.warnings.iter().cloned());
     // A charting tool the project enabled but the Python gate withheld leaves no
     // other trace: the resource simply comes back without charts.
     warnings.extend(chart_tool_gate_warning(&config, video.allow_code_execution));
@@ -1598,6 +1623,7 @@ fn video_context(input: VideoContextInput<'_>) -> Result<VideoPromptContext> {
         instruction: request.instruction.clone(),
         project_instructions: project_instructions.into(),
         source_bundle: source_bundle.into(),
+        knowledge_backend: config.knowledge.backend.as_str().to_string(),
         engine: engine_name(video.engine).into(),
         duration_seconds: video.duration_seconds,
         resolution: video.resolution.clone(),

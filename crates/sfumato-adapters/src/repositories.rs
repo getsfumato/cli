@@ -247,6 +247,7 @@ impl ProjectRepository for FilesystemProjectRepository {
                 page: Default::default(),
                 generation_tools: Default::default(),
                 security: Default::default(),
+                knowledge: Default::default(),
                 marp: None,
             };
             self.edit_registry(|registry| {

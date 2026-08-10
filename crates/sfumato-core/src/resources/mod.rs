@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 
+use std::collections::BTreeSet;
+
 use crate::{
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
+    knowledge::{BrainCard, BrainEvidenceRecord, BrainFacet},
     operation::OperationContext,
     providers::{
         ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse,
@@ -121,6 +124,286 @@ pub(crate) fn build_source_index(documents: &[SourceDocument]) -> String {
             documents.len() - listed
         ));
     }
+    rendered
+}
+
+/// Largest brain card rendered into a prompt, in characters.
+///
+/// Smaller than the source index because a card is a fixed handful of rows —
+/// five modules and a facet line — rather than a listing that grows with the
+/// corpus. A brain that overruns this is reporting something unexpected, and
+/// clipping it is safer than letting it crowd out the instruction.
+const MAX_BRAIN_CARD_CHARS: usize = 4_000;
+
+/// Renders what the brain holds, in place of a listing of files.
+///
+/// The brain-backed counterpart to [`build_source_index`], and it answers the
+/// same question: what exists, so the model can decide what to ask for. It
+/// cannot be a listing — a brain has no paths — so it is an inventory. Block
+/// counts tell the model whether a module is worth interrogating at all, and
+/// facets tell it which filters will actually narrow anything.
+///
+/// Roots are shown because they are what makes a claim checkable afterwards,
+/// and a card that hid them would present the brain as an oracle rather than as
+/// evidence with a verifiable provenance.
+pub(crate) fn build_brain_card(card: &BrainCard) -> String {
+    let mut rendered = format!("Brain: {}", card.brain);
+    if let Some(snapshot) = &card.snapshot {
+        rendered.push_str(&format!(" ({snapshot})"));
+    }
+    rendered.push('\n');
+
+    if card.modules.is_empty() {
+        rendered.push_str(
+            "\nThis brain has no installed modules. It can be queried, but it holds nothing \
+             to answer with.\n",
+        );
+        return rendered;
+    }
+
+    rendered.push_str("\nmodule       blocks  indices\n");
+    for module in &card.modules {
+        let indices = if module.indices.is_empty() {
+            "(none)".to_string()
+        } else {
+            module.indices.join(", ")
+        };
+        rendered.push_str(&format!(
+            "{:<12} {:>6}  {indices}\n",
+            module.memory_type.as_str(),
+            module.block_count
+        ));
+    }
+
+    // A column with one distinct value cannot narrow anything, and the brain
+    // reports several of those as a matter of course — `memory_type`, and the
+    // internal flags of whatever happens to be stored. Listing them fills the
+    // card with filters that all return everything.
+    let facets = card
+        .facets
+        .iter()
+        .filter(|facet| facet.distinct > 1)
+        .map(describe_facet)
+        .collect::<Vec<_>>();
+    if !facets.is_empty() {
+        rendered.push_str(&format!("\nFilterable by: {}\n", facets.join(", ")));
+    }
+
+    // Named rather than left out: a module whose index was never built still
+    // answers, but it answers worse, and a model told nothing would read a thin
+    // result as an empty brain.
+    let unindexed = card
+        .modules
+        .iter()
+        .filter(|module| module.indices.is_empty() && module.block_count > 0)
+        .map(|module| module.memory_type.as_str())
+        .collect::<Vec<_>>();
+    if !unindexed.is_empty() {
+        rendered.push_str(&format!(
+            "\nNo index is built over {}, so searching there recalls less than it could.\n",
+            unindexed.join(", ")
+        ));
+    }
+
+    for warning in &card.warnings {
+        rendered.push_str(&format!("\n[{warning}]\n"));
+    }
+
+    excerpt(&rendered, MAX_BRAIN_CARD_CHARS)
+}
+
+/// Describes one filterable column, enumerating its values only when known.
+///
+/// Vitruvio reports a column as a count of distinct values today, so the honest
+/// rendering says how many there are rather than inventing examples. When it
+/// starts reporting the frequent values, they appear here without further work.
+fn describe_facet(facet: &BrainFacet) -> String {
+    if facet.top.is_empty() {
+        return format!("{} ({} values)", facet.name, facet.distinct);
+    }
+    let values = facet
+        .top
+        .iter()
+        .map(|(value, _)| value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if facet.top.len() as u64 >= facet.distinct {
+        format!("{} ({values})", facet.name)
+    } else {
+        format!(
+            "{} ({} values, most common: {values})",
+            facet.name, facet.distinct
+        )
+    }
+}
+
+/// Renders evidence already retrieved, for a retry that has no tools.
+///
+/// The compact retry drops the tools and the transcript and asks again from a
+/// clean prompt. Under a brain there is no file to inline in their place, so
+/// what the brain already answered is the only material there is.
+///
+/// Unverified and superseded matches are dropped first rather than budgeted
+/// alongside the rest: the prompt forbids writing from them either way, so
+/// spending characters on them would push out material the model may actually
+/// use.
+pub(crate) fn build_compact_evidence_bundle(
+    records: &[BrainEvidenceRecord],
+    max_chars: usize,
+) -> String {
+    let mut seen = BTreeSet::new();
+    let mut usable = Vec::new();
+    for record in records {
+        for matched in &record.bundle.matches {
+            if !matched.verified || !matched.resolvable || matched.superseded_by.is_some() {
+                continue;
+            }
+            if seen.insert(matched.block_id.clone()) {
+                usable.push(matched);
+            }
+        }
+    }
+
+    if usable.is_empty() {
+        return "No usable evidence was retrieved from the brain before this retry. \
+                Write only what the instruction and the brain card below already support, \
+                and leave out anything you cannot ground."
+            .to_string();
+    }
+
+    let questions = records
+        .iter()
+        .map(|record| record.question.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut rendered = format!(
+        "{} verified block(s) retrieved from the brain, in answer to: {questions}.\n",
+        usable.len()
+    );
+
+    // Split evenly rather than first-come: a single long block would otherwise
+    // consume the budget and silently hide every block after it.
+    let budget = max_chars.saturating_sub(rendered.chars().count());
+    let per_block = (budget / usable.len()).max(200);
+    for matched in usable {
+        let content = serde_json::to_string_pretty(&matched.content)
+            .unwrap_or_else(|_| matched.content.to_string());
+        rendered.push_str(&format!(
+            "\n[{} · {}]\n{}\n",
+            matched.memory_type.as_str(),
+            matched.block_id,
+            excerpt(&content, per_block)
+        ));
+    }
+    excerpt(&rendered, max_chars)
+}
+
+/// What a brain-grounded workflow keeps so it can rebuild a tool-less prompt.
+///
+/// The tool set is consumed by the draft request, but the compact retry is
+/// built afterwards and needs the brain again. Cloning the two cheap halves of
+/// the grounding is simpler than threading the whole tool config through.
+#[derive(Clone)]
+pub(crate) struct BrainRetryContext {
+    pub(crate) client: std::sync::Arc<dyn crate::knowledge::BrainClient>,
+    pub(crate) binding: crate::knowledge::BrainBinding,
+    pub(crate) defaults: crate::tools::BrainQueryDefaults,
+}
+
+impl BrainRetryContext {
+    /// Clones what a retry needs out of a grounding, when it is a brain.
+    pub(crate) fn from_grounding(grounding: &crate::tools::Grounding) -> Option<Self> {
+        match grounding {
+            crate::tools::Grounding::Filesystem { .. } => None,
+            crate::tools::Grounding::Brain(config) => Some(Self {
+                client: config.client.clone(),
+                binding: config.binding.clone(),
+                defaults: config.defaults.clone(),
+            }),
+        }
+    }
+
+    /// Renders the material a tool-less retry writes from.
+    ///
+    /// Normally that is whatever the model already retrieved. When it retrieved
+    /// nothing — the context limit was reached on the first round, before any
+    /// tool call — one deterministic query stands in, because a retry with an
+    /// empty prompt would draft from nothing at all.
+    ///
+    /// Never fails: a retry that cannot be grounded still runs, and says so, so
+    /// the model writes a short honest resource instead of an invented one.
+    pub(crate) async fn compact_bundle(
+        &self,
+        tool_set: &crate::tools::ToolSet,
+        instruction: &str,
+        max_chars: usize,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> String {
+        let mut records = tool_set.retrieved_evidence().unwrap_or_default();
+        if records.is_empty() {
+            let request = crate::knowledge::BrainSearchRequest {
+                binding: self.binding.clone(),
+                question: instruction.to_string(),
+                memory_types: self.defaults.memory_types.clone(),
+                subject: None,
+                tags: Vec::new(),
+                since: None,
+                until: None,
+                include_superseded: false,
+                mode: None,
+                limit: self.defaults.default_limit,
+                expand_depth: 0,
+            };
+            match self.client.search(request, operation, stage).await {
+                Ok(bundle) => records.push(crate::knowledge::BrainEvidenceRecord {
+                    question: instruction.to_string(),
+                    filters: Vec::new(),
+                    bundle,
+                }),
+                Err(error) => {
+                    return format!(
+                        "No evidence could be retrieved from the brain for this retry ({error}). \
+                         Write only what the instruction and the brain card support, and leave \
+                         out anything you cannot ground."
+                    );
+                }
+            }
+        }
+        build_compact_evidence_bundle(&records, max_chars)
+    }
+}
+
+/// Resolves the material a tool-less retry writes from, at most once.
+///
+/// Memoized because the same bundle feeds the draft retry and, later, the
+/// review retry, and under a brain the second call would otherwise re-query.
+/// `fallback` is the filesystem compaction each workflow already builds; it is
+/// cheap and pure, so it is computed eagerly and simply goes unused when the
+/// project is grounded in a brain.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn compact_source_material(
+    cache: &mut Option<String>,
+    fallback: &str,
+    brain: Option<&BrainRetryContext>,
+    tool_set: &crate::tools::ToolSet,
+    instruction: &str,
+    max_chars: usize,
+    operation: &OperationContext,
+    stage: OperationStage,
+) -> String {
+    if let Some(cached) = cache {
+        return cached.clone();
+    }
+    let rendered = match brain {
+        None => fallback.to_string(),
+        Some(retry) => {
+            retry
+                .compact_bundle(tool_set, instruction, max_chars, operation, stage)
+                .await
+        }
+    };
+    *cache = Some(rendered.clone());
     rendered
 }
 

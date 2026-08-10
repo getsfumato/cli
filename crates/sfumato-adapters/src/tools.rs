@@ -4,18 +4,23 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sfumato_core::{
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
+    knowledge::{
+        BrainEvidenceRecord, BrainSearchRequest, EvidenceBundle, EvidenceMatch, MemoryType,
+        RetrievalMode,
+    },
     operation::OperationContext,
     prompts::{PromptCatalog, PromptId, PromptProvenance, PromptRenderRequest, PromptVariables},
     providers::{
@@ -26,8 +31,8 @@ use sfumato_core::{
     resources::narration::{audio_extension, audio_media_type},
     themes::ThemePackage,
     tools::{
-        AudioToolConfig, ChartToolConfig, GenerationToolFactory, GenerationToolsRequest,
-        ImageToolConfig, ToolSet, VideoToolConfig,
+        AudioToolConfig, BrainToolConfig, ChartToolConfig, GenerationToolFactory,
+        GenerationToolsRequest, Grounding, ImageToolConfig, ToolSet, VideoToolConfig,
     },
 };
 use sha2::{Digest, Sha256};
@@ -41,9 +46,9 @@ const MAX_GENERATED_AUDIO_BYTES: usize = 64 * 1024 * 1024;
 /// before it is billed rather than after.
 const MAX_SPOKEN_CHARACTERS: usize = 5_000;
 
-/// Builds filesystem-backed tools for one generation operation.
+/// Builds the tool set for one generation operation, whatever grounds it.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct FilesystemGenerationToolFactory;
+pub struct ProjectGenerationToolFactory;
 
 #[derive(Clone, Debug)]
 struct FilesystemToolExecutor {
@@ -277,8 +282,230 @@ impl ImageGenerationTool {
     }
 }
 
+/// Queries the project's brain, and records what it answered.
+///
+/// The only way into the sources under a brain-backed project: there is no
+/// directory to list and no file to read, so this tool is the whole surface.
+struct BrainSearchTool {
+    config: BrainToolConfig,
+    evidence: Arc<Mutex<Vec<BrainEvidenceRecord>>>,
+}
+
+/// Most searches one run records before the log stops growing.
+///
+/// A cap rather than a budget: the log exists to feed a tool-less retry, and
+/// the first few dozen answers are already more than that retry can carry. It
+/// also means a model that loops cannot exhaust memory recording the loop.
+const MAX_RECORDED_SEARCHES: usize = 64;
+
+impl BrainSearchTool {
+    async fn execute(
+        &self,
+        arguments: &Value,
+        operation: &OperationContext,
+        stage: OperationStage,
+    ) -> Result<String> {
+        let defaults = &self.config.defaults;
+        let question = string_arg(arguments, "question")?;
+        if question.trim().is_empty() {
+            bail!("A brain search needs a question to ask.");
+        }
+
+        let mut notes = Vec::new();
+        let requested = optional_string_list_arg(arguments, "memory_types")?;
+        let memory_types = if requested.is_empty() {
+            defaults.memory_types.clone()
+        } else {
+            requested
+                .iter()
+                .map(|value| {
+                    MemoryType::from_str(value).map_err(|error| anyhow!("{}", error.message))
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let mode = optional_string_arg(arguments, "mode")?
+            .map(|value| {
+                RetrievalMode::from_str(&value).map_err(|error| anyhow!("{}", error.message))
+            })
+            .transpose()?;
+
+        let requested_limit = optional_usize_arg(arguments, "limit")?;
+        let limit = match requested_limit {
+            Some(limit) if limit > defaults.max_limit => {
+                // Reported rather than quietly applied: a model that asked for
+                // 200 and silently received 50 reads the short answer as the
+                // brain having little to say.
+                notes.push(format!(
+                    "A limit of {limit} was requested; this project caps it at {}.",
+                    defaults.max_limit
+                ));
+                defaults.max_limit
+            }
+            Some(0) | None => defaults.default_limit,
+            Some(limit) => limit,
+        };
+
+        let request = BrainSearchRequest {
+            binding: self.config.binding.clone(),
+            question: question.clone(),
+            memory_types: memory_types.clone(),
+            subject: optional_string_arg(arguments, "subject")?,
+            tags: optional_string_list_arg(arguments, "tags")?,
+            since: optional_string_arg(arguments, "since")?,
+            until: optional_string_arg(arguments, "until")?,
+            include_superseded: optional_bool_arg(arguments, "include_superseded")?
+                .unwrap_or(defaults.include_superseded),
+            mode,
+            limit,
+            expand_depth: optional_usize_arg(arguments, "expand_depth")?
+                .unwrap_or_default()
+                .min(3) as u8,
+        };
+        let filters = describe_filters(&request);
+
+        let bundle = self
+            .config
+            .client
+            .search(request, operation, stage)
+            .await
+            .map_err(anyhow::Error::from)?;
+
+        notes.extend(bundle_notes(&bundle));
+        let payload = json!({
+            "question": question,
+            "returned": bundle.matches.len(),
+            "limit": limit,
+            "truncated": bundle.truncated,
+            "all_verified": bundle.all_verified,
+            "verified_against": bundle
+                .verified_against
+                .iter()
+                .map(|(memory_type, root)| (memory_type.as_str().to_string(), root.clone()))
+                .collect::<BTreeMap<_, _>>(),
+            "matches": bundle.matches.iter().map(render_match).collect::<Vec<_>>(),
+            "notes": notes,
+        });
+
+        if let Ok(mut evidence) = self.evidence.lock()
+            && evidence.len() < MAX_RECORDED_SEARCHES
+        {
+            evidence.push(BrainEvidenceRecord {
+                question,
+                filters,
+                bundle,
+            });
+        }
+        Ok(payload.to_string())
+    }
+}
+
+/// Renders one match for the model, provenance intact.
+fn render_match(matched: &EvidenceMatch) -> Value {
+    json!({
+        "block_id": matched.block_id,
+        "memory_type": matched.memory_type.as_str(),
+        // A string, as the brain printed it. It is agreement between retrieval
+        // strategies, not a confidence, and a number here would be presented as
+        // one within a slide.
+        "score": matched.score,
+        "verified": matched.verified,
+        "resolvable": matched.resolvable,
+        "superseded_by": matched.superseded_by,
+        "sources": matched
+            .sources
+            .iter()
+            .map(|source| json!({ "block_id": source.block_id, "locator": source.locator }))
+            .collect::<Vec<_>>(),
+        "content": matched.content,
+    })
+}
+
+/// Turns everything a reader must act on into prose the model cannot skip.
+///
+/// Truncation, unverified matches, superseded ones and planner degradations all
+/// live in fields a model may never look at. Restating them as sentences in the
+/// same payload is what keeps them from being swallowed.
+fn bundle_notes(bundle: &EvidenceBundle) -> Vec<String> {
+    let mut notes = Vec::new();
+    if bundle.matches.is_empty() {
+        notes.push(
+            "The brain returned nothing for this question. Ask it differently, or from a \
+             different memory type, before concluding it holds nothing on the subject."
+                .to_string(),
+        );
+    }
+    if bundle.truncated {
+        notes.push(
+            "This result is truncated: candidates were dropped, so the brain has more to give. \
+             Narrow the question or raise limit before treating this as everything."
+                .to_string(),
+        );
+    }
+    let unwritable = bundle
+        .matches
+        .iter()
+        .filter(|matched| !matched.verified || !matched.resolvable)
+        .count();
+    if unwritable > 0 {
+        notes.push(format!(
+            "{unwritable} match(es) are unverified or unresolvable. They are not evidence: do not \
+             state, quote, or paraphrase them."
+        ));
+    }
+    for matched in &bundle.matches {
+        if let Some(successor) = &matched.superseded_by {
+            notes.push(format!(
+                "{} is superseded by {successor}. Retrieve the superseding block and use that \
+                 instead of presenting this one as current.",
+                matched.block_id
+            ));
+        }
+    }
+    if let Some(plan) = &bundle.plan {
+        for degradation in &plan.degradations {
+            notes.push(format!("Retrieval degraded: {degradation}"));
+        }
+    }
+    for warning in &bundle.warnings {
+        notes.push(format!("The brain warned: {warning}"));
+    }
+    notes
+}
+
+/// Summarizes how a query was narrowed, for the compact retry's header.
+fn describe_filters(request: &BrainSearchRequest) -> Vec<String> {
+    let mut filters = Vec::new();
+    if !request.memory_types.is_empty() {
+        filters.push(format!(
+            "memory types: {}",
+            request
+                .memory_types
+                .iter()
+                .map(|memory_type| memory_type.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let Some(subject) = &request.subject {
+        filters.push(format!("subject: {subject}"));
+    }
+    if !request.tags.is_empty() {
+        filters.push(format!("tags: {}", request.tags.join(", ")));
+    }
+    if let Some(mode) = request.mode {
+        filters.push(format!("mode: {mode}"));
+    }
+    filters
+}
+
+/// Dispatches to whichever grounding this operation was built with.
+enum GroundingExecutor {
+    Filesystem(FilesystemToolExecutor),
+    Brain(BrainSearchTool),
+}
+
 struct GenerationToolExecutor {
-    filesystem: FilesystemToolExecutor,
+    grounding: GroundingExecutor,
     image: Option<ImageGenerationTool>,
     video: Option<VideoGenerationTool>,
     audio: Option<AudioGenerationTool>,
@@ -892,7 +1119,29 @@ impl ToolExecutor for GenerationToolExecutor {
                 .await
                 .map_err(|error| tool_error(error, stage));
         }
-        self.filesystem.execute(request, operation, stage).await
+        match &self.grounding {
+            GroundingExecutor::Filesystem(filesystem) => {
+                filesystem.execute(request, operation, stage).await
+            }
+            GroundingExecutor::Brain(brain) => {
+                operation.checkpoint(stage)?;
+                if request.name != "sfumato_search_brain" {
+                    return Err(SfumatoError::tool(
+                        ErrorClass::Permanent,
+                        format!(
+                            "Unknown Sfumato tool '{}'. This project is grounded in a brain, so \
+                             there are no files to list or read: use sfumato_search_brain.",
+                            request.name
+                        ),
+                    )
+                    .at_stage(stage));
+                }
+                brain
+                    .execute(&request.arguments, operation, stage)
+                    .await
+                    .map_err(|error| tool_error(error, stage))
+            }
+        }
     }
 }
 
@@ -907,41 +1156,21 @@ fn tool_error(error: anyhow::Error, stage: OperationStage) -> SfumatoError {
     SfumatoError::tool(ErrorClass::Permanent, format_args!("{error:#}")).at_stage(stage)
 }
 
-impl GenerationToolFactory for FilesystemGenerationToolFactory {
+impl GenerationToolFactory for ProjectGenerationToolFactory {
     fn create(&self, request: GenerationToolsRequest) -> SfumatoResult<ToolSet> {
         let result: Result<ToolSet> = (|| {
             let GenerationToolsRequest {
                 project_root,
-                sources,
+                grounding,
                 image,
                 video,
                 audio,
                 chart,
                 prompt_catalog,
             } = request;
-            let mut roots = vec![project_root];
-            for source in sources {
-                if source.is_file() {
-                    // `Path::new("input.md").parent()` is `Some("")`, not `None`, so
-                    // a bare relative filename used to push an empty root that then
-                    // failed `canonicalize` — reporting `Could not resolve tool root
-                    // : No such file or directory` with nothing between the colons.
-                    // An empty parent means the file sits in the working directory,
-                    // which is what `.` names.
-                    if let Some(parent) = source.parent() {
-                        let parent = if parent.as_os_str().is_empty() {
-                            Path::new(".")
-                        } else {
-                            parent
-                        };
-                        roots.push(parent.to_path_buf());
-                    }
-                } else {
-                    roots.push(source);
-                }
-            }
 
             let artifacts = Arc::new(Mutex::new(Vec::new()));
+            let evidence = Arc::new(Mutex::new(Vec::new()));
             let rendered_descriptions = prompt_catalog.render(PromptRenderRequest {
                 id: PromptId::ToolsGenerationDescriptions,
                 variables: PromptVariables::default(),
@@ -949,10 +1178,62 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
             let descriptions: ToolDescriptions = serde_json::from_str(&rendered_descriptions.text)
                 .context("Generation tool description prompt must render a JSON object")?;
             let prompts = Arc::new(Mutex::new(vec![rendered_descriptions.provenance]));
-            let mut definitions = vec![
-                list_directory_tool(&descriptions),
-                read_file_tool(&descriptions),
-            ];
+
+            // The grounding decides the reading tools and nothing else: image,
+            // video, audio and charting are the same either way, which is the
+            // whole claim this feature makes — only where the material comes
+            // from changes.
+            let (mut definitions, grounding) = match grounding {
+                Grounding::Filesystem { sources } => {
+                    let mut roots = vec![project_root];
+                    for source in sources {
+                        if source.is_file() {
+                            // `Path::new("input.md").parent()` is `Some("")`, not `None`, so
+                            // a bare relative filename used to push an empty root that then
+                            // failed `canonicalize` — reporting `Could not resolve tool root
+                            // : No such file or directory` with nothing between the colons.
+                            // An empty parent means the file sits in the working directory,
+                            // which is what `.` names.
+                            if let Some(parent) = source.parent() {
+                                let parent = if parent.as_os_str().is_empty() {
+                                    Path::new(".")
+                                } else {
+                                    parent
+                                };
+                                roots.push(parent.to_path_buf());
+                            }
+                        } else {
+                            roots.push(source);
+                        }
+                    }
+                    (
+                        vec![
+                            list_directory_tool(&descriptions),
+                            read_file_tool(&descriptions),
+                        ],
+                        GroundingExecutor::Filesystem(FilesystemToolExecutor::new(roots)?),
+                    )
+                }
+                Grounding::Brain(config) => {
+                    let rendered = prompt_catalog.render(PromptRenderRequest {
+                        id: PromptId::ToolsBrainDescriptions,
+                        variables: PromptVariables::default(),
+                    })?;
+                    let brain_descriptions: BrainToolDescriptions =
+                        serde_json::from_str(&rendered.text)
+                            .context("Brain tool description prompt must render a JSON object")?;
+                    if let Ok(mut prompts) = prompts.lock() {
+                        prompts.push(rendered.provenance);
+                    }
+                    (
+                        vec![search_brain_tool(&brain_descriptions)],
+                        GroundingExecutor::Brain(BrainSearchTool {
+                            config,
+                            evidence: evidence.clone(),
+                        }),
+                    )
+                }
+            };
             let image = image.map(|config| {
                 definitions.push(image_generation_tool(&descriptions));
                 ImageGenerationTool {
@@ -989,7 +1270,7 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
             Ok(ToolSet {
                 definitions,
                 executor: Arc::new(GenerationToolExecutor {
-                    filesystem: FilesystemToolExecutor::new(roots)?,
+                    grounding,
                     image,
                     video,
                     audio,
@@ -997,6 +1278,7 @@ impl GenerationToolFactory for FilesystemGenerationToolFactory {
                 }),
                 artifacts,
                 prompts,
+                evidence,
             })
         })();
         result.map_err(|error| SfumatoError::tool(ErrorClass::Permanent, format_args!("{error:#}")))
@@ -1032,6 +1314,75 @@ struct ToolDescriptions {
     chart_alt_text: String,
     chart_packages: String,
     chart_size: String,
+}
+
+/// Model-visible wording for the brain tool.
+///
+/// A prompt of its own rather than extra fields on [`ToolDescriptions`]. That
+/// struct rejects unknown fields and is rendered from a file a project may have
+/// copied and edited, so adding required keys to it would break every project
+/// that overrode it — for a tool most of them will never see.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrainToolDescriptions {
+    search: String,
+    question: String,
+    memory_types: String,
+    subject: String,
+    tags: String,
+    since: String,
+    until: String,
+    mode: String,
+    limit: String,
+    expand_depth: String,
+    include_superseded: String,
+}
+
+fn search_brain_tool(descriptions: &BrainToolDescriptions) -> ToolDefinition {
+    ToolDefinition {
+        kind: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "sfumato_search_brain".to_string(),
+            description: descriptions.search.clone(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": descriptions.question },
+                    "memory_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": MemoryType::ALL.map(MemoryType::as_str),
+                        },
+                        "description": descriptions.memory_types
+                    },
+                    "subject": { "type": "string", "description": descriptions.subject },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": descriptions.tags
+                    },
+                    "since": { "type": "string", "description": descriptions.since },
+                    "until": { "type": "string", "description": descriptions.until },
+                    "mode": {
+                        "type": "string",
+                        "enum": RetrievalMode::ALL.map(RetrievalMode::as_str),
+                        "description": descriptions.mode
+                    },
+                    "limit": { "type": "integer", "description": descriptions.limit },
+                    "expand_depth": {
+                        "type": "integer",
+                        "description": descriptions.expand_depth
+                    },
+                    "include_superseded": {
+                        "type": "boolean",
+                        "description": descriptions.include_superseded
+                    }
+                },
+                "required": ["question"]
+            }),
+        },
+    }
 }
 
 fn list_directory_tool(descriptions: &ToolDescriptions) -> ToolDefinition {
@@ -1190,6 +1541,33 @@ fn optional_string_list_arg(arguments: &Value, key: &str) -> Result<Vec<String>>
             })
             .collect(),
         Some(_) => bail!("Tool argument '{key}' must be a list of strings"),
+    }
+}
+
+fn optional_usize_arg(arguments: &Value, key: &str) -> Result<Option<usize>> {
+    let arguments = normalized_arguments(arguments)?;
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        // Models routinely send a count as a JSON string. Refusing that spends a
+        // whole round correcting a quoting habit rather than the request.
+        Some(Value::String(value)) => value
+            .trim()
+            .parse::<usize>()
+            .map(Some)
+            .with_context(|| format!("Tool argument '{key}' must be a whole number")),
+        Some(value) => value
+            .as_u64()
+            .map(|value| Some(value as usize))
+            .with_context(|| format!("Tool argument '{key}' must be a whole number")),
+    }
+}
+
+fn optional_bool_arg(arguments: &Value, key: &str) -> Result<Option<bool>> {
+    let arguments = normalized_arguments(arguments)?;
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => bail!("Tool argument '{key}' must be true or false"),
     }
 }
 

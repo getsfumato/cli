@@ -2070,6 +2070,10 @@ fn format_tool_result(name: &str, result: &str) -> String {
         return summarize_file_read(&value);
     }
 
+    if name == "sfumato_search_brain" || value.get("matches").is_some() {
+        return summarize_brain_search(&value);
+    }
+
     if name == "sfumato_image_gen" || value.get("markdown_path").is_some() {
         let path = value
             .get("markdown_path")
@@ -2132,6 +2136,52 @@ fn summarize_directory_listing(value: &Value) -> String {
         files,
         directories,
         suffix
+    )
+}
+
+/// Summarizes one brain query the way a reader has to act on it.
+///
+/// Truncation and unverified matches are coloured because they are the two
+/// facts that change what the resource may say: everything else is context.
+fn summarize_brain_search(value: &Value) -> String {
+    let question = value
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or("the brain");
+    let matches = value
+        .get("matches")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let verified = matches
+        .iter()
+        .filter(|matched| matched.get("verified").and_then(Value::as_bool) == Some(true))
+        .count();
+    let superseded = matches
+        .iter()
+        .filter(|matched| {
+            matched
+                .get("superseded_by")
+                .is_some_and(|value| !value.is_null())
+        })
+        .count();
+
+    let mut details = vec![format!("{verified} verified")];
+    if verified < matches.len() {
+        details.push(yellow(&format!("{} unverified", matches.len() - verified)));
+    }
+    if superseded > 0 {
+        details.push(yellow(&format!("{superseded} superseded")));
+    }
+    if value.get("truncated").and_then(Value::as_bool) == Some(true) {
+        details.push(yellow("truncated"));
+    }
+
+    format!(
+        "asked the brain — {} matches ({}) — {}",
+        yellow(&matches.len().to_string()),
+        details.join(", "),
+        dim(&compact_preview(question, 120))
     )
 }
 

@@ -29,6 +29,7 @@ fn config_with(chart_enabled: bool, allow_python: bool) -> EffectiveConfig {
         page: PageDefaults::default(),
         generation_tools: tools,
         security,
+        knowledge: Default::default(),
         marp: global.marp,
     }
 }

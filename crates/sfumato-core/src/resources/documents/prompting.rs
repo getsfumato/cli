@@ -39,10 +39,14 @@ pub(super) struct CompactRetryOutcome {
 }
 
 /// Runs a request, retrying once with a compacted prompt on a context limit.
+///
+/// The compacted request arrives as a factory because under a brain there is
+/// nothing to compact until the first attempt has run: what a retry writes from
+/// is whatever the model retrieved, which does not exist before it retrieves it.
 pub(super) async fn generate_with_compact_retry(
     provider: &dyn TextGenerationProvider,
     request: TextGenerationRequest,
-    compact_request: TextGenerationRequest,
+    compact_request: impl AsyncFnOnce() -> Result<TextGenerationRequest>,
     operation: &OperationContext,
     stage: OperationStage,
 ) -> Result<CompactRetryOutcome> {
@@ -53,6 +57,7 @@ pub(super) async fn generate_with_compact_retry(
         }),
         Err(error) if is_context_limit(&error) => {
             let limit_error = format!("{error:#}");
+            let compact_request = compact_request().await?;
             let response = provider
                 .generate_text(compact_request, operation, stage)
                 .await

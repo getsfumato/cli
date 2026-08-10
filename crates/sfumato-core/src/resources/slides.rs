@@ -25,6 +25,7 @@ use crate::{
         GenerationOutput, GenerationRequest, GenerationToolSummary, ReviewStatus, SlideLayoutIssue,
         SlideReviewSummary,
     },
+    knowledge::{BrainCardRequest, BrainClient, resolve_grounding},
     operation::{OperationContext, OperationEventKind},
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
     prompts::{
@@ -70,6 +71,8 @@ use prompting::*;
 use publishing::publish_slides;
 use source_bundle::{build_compact_source_bundle, build_source_bundle};
 
+use super::{BrainRetryContext, build_brain_card, compact_source_material};
+
 use super::{
     DryRunImageProvider,
     project_assets::{
@@ -95,6 +98,7 @@ pub(crate) struct GenerateSlidesOptions {
     pub diagram_renderer: Arc<dyn DiagramRenderer>,
     pub slide_renderer: Arc<dyn SlideRenderer>,
     pub source_reader: Arc<dyn SourceReader>,
+    pub brain: Arc<dyn BrainClient>,
     pub tool_factory: Arc<dyn GenerationToolFactory>,
     /// Managed Python environments backing the local charting tool.
     pub python_runtime: Arc<dyn PythonRuntime>,
@@ -133,6 +137,7 @@ pub(crate) async fn generate_slides(
         diagram_renderer,
         slide_renderer,
         source_reader,
+        brain,
         tool_factory,
         python_runtime,
         theme_repository,
@@ -177,6 +182,9 @@ pub(crate) async fn generate_slides(
         BTreeMap::new(),
     );
     operation.checkpoint(OperationStage::ReadSources)?;
+    // Collected from here on rather than at drafting time: a brain card can
+    // already carry a degradation the reader needs to see.
+    let mut warnings: Vec<String> = Vec::new();
     let project_instructions = source_reader.project_instructions(&config.project_root)?;
     let project_instructions_prompt = project_instructions
         .as_ref()
@@ -186,12 +194,51 @@ pub(crate) async fn generate_slides(
         .as_ref()
         .map(|instructions| instructions.path.clone());
     let theme = theme_repository.load(&config.theme)?;
-    let documents = source_reader.collect(&request.sources)?;
-    operation.emit(
-        OperationStage::ReadSources,
-        OperationEventKind::Completed,
-        BTreeMap::from([("documents".to_string(), documents.len().to_string())]),
-    );
+    // Resolved before anything is read, because it decides whether reading
+    // happens at all — and because it is where a brain-backed project refuses
+    // source paths rather than silently ignoring them.
+    let grounding = resolve_grounding(&config, &request.sources, &brain)?;
+    let brain_retry = BrainRetryContext::from_grounding(&grounding);
+    let mut documents = Vec::new();
+    let source_bundle = match &brain_retry {
+        None => {
+            documents = source_reader.collect(&request.sources)?;
+            operation.emit(
+                OperationStage::ReadSources,
+                OperationEventKind::Completed,
+                BTreeMap::from([("documents".to_string(), documents.len().to_string())]),
+            );
+            build_source_bundle(&documents)
+        }
+        Some(retry) => {
+            let card = brain
+                .card(
+                    BrainCardRequest {
+                        binding: retry.binding.clone(),
+                    },
+                    &operation,
+                    OperationStage::ReadSources,
+                )
+                .await?;
+            warnings.extend(card.warnings.iter().cloned());
+            operation.emit(
+                OperationStage::ReadSources,
+                OperationEventKind::Completed,
+                BTreeMap::from([
+                    ("modules".to_string(), card.modules.len().to_string()),
+                    (
+                        "blocks".to_string(),
+                        card.modules
+                            .iter()
+                            .map(|module| module.block_count)
+                            .sum::<u64>()
+                            .to_string(),
+                    ),
+                ]),
+            );
+            build_brain_card(&card)
+        }
+    };
     let image_selection = config
         .generation_tool_enabled(crate::config::GenerationToolKind::ImageGen)
         .then(|| config.resolve_model(Capability::Image))
@@ -255,7 +302,7 @@ pub(crate) async fn generate_slides(
     let chart_generation_available = chart_tool.is_some();
     let tool_set = tool_factory.create(GenerationToolsRequest {
         project_root: config.project_root.clone(),
-        sources: request.sources.clone(),
+        grounding,
         image: image_tool,
         video: None,
         // Neither a deck nor a printable document has a timeline to hang audio
@@ -271,8 +318,6 @@ pub(crate) async fn generate_slides(
         .cloned()
         .collect::<Vec<_>>();
     let tool_summaries = summarize_tools(&tool_set.definitions);
-    let source_bundle = build_source_bundle(&documents);
-    let compact_source_bundle = build_compact_source_bundle(&documents, 12_000);
     let (draft_profile_name, draft_profile) = config.resolve_model(Capability::Text)?;
     let draft_tool_rounds = model_tool_rounds(draft_profile);
     operation.checkpoint(OperationStage::RenderPrompt)?;
@@ -324,7 +369,7 @@ pub(crate) async fn generate_slides(
     } else {
         SlideReviewSummary::disabled()
     };
-    let mut warnings = prepared_assets.warnings.clone();
+    warnings.extend(prepared_assets.warnings.iter().cloned());
     // A charting tool the project enabled but the Python gate withheld leaves no
     // other trace: the resource simply comes back without charts.
     warnings.extend(chart_tool_gate_warning(&config, allow_code_execution));
@@ -366,27 +411,46 @@ pub(crate) async fn generate_slides(
         BTreeMap::from([("model".to_string(), draft_profile_name.to_string())]),
     );
     let provider = provider_factory.text(&config, draft_profile)?;
-    let compact_request = build_compact_generation_request(DraftPromptRequestContext {
-        catalog: prompt_catalog.as_ref(),
-        config: &config,
-        theme: &theme,
-        instruction: &request.instruction,
-        title: title_override.as_deref(),
-        source_bundle: &compact_source_bundle,
-        image_generation_available: false,
-        chart_generation_available: false,
-        project_instructions: &project_instructions_prompt,
-        tools: &[],
-        max_tool_rounds: draft_tool_rounds,
-        event_sink: event_sink.clone(),
-        template: template.as_ref(),
-        reusable_assets: &reusable_asset_references,
-    })?;
-    let compact_prompt_provenance = compact_request.prompt_provenance.clone();
+    // Built only if the limit is actually hit. Under a brain the compaction is
+    // whatever the model retrieved, which does not exist until the first call
+    // has run, so this cannot be prepared in advance the way a file excerpt can.
+    let filesystem_compaction = build_compact_source_bundle(&documents, 12_000);
+    let mut compact_cache: Option<String> = None;
+    let mut compact_prompt_provenance = Vec::new();
     let draft_outcome = generate_with_compact_retry(
         provider.as_ref(),
         provider_request,
-        compact_request,
+        async || {
+            let source_bundle = compact_source_material(
+                &mut compact_cache,
+                &filesystem_compaction,
+                brain_retry.as_ref(),
+                &tool_set,
+                &request.instruction,
+                12_000,
+                &operation,
+                OperationStage::Draft,
+            )
+            .await;
+            let compact_request = build_compact_generation_request(DraftPromptRequestContext {
+                catalog: prompt_catalog.as_ref(),
+                config: &config,
+                theme: &theme,
+                instruction: &request.instruction,
+                title: title_override.as_deref(),
+                source_bundle: &source_bundle,
+                image_generation_available: false,
+                chart_generation_available: false,
+                project_instructions: &project_instructions_prompt,
+                tools: &[],
+                max_tool_rounds: draft_tool_rounds,
+                event_sink: event_sink.clone(),
+                template: template.as_ref(),
+                reusable_assets: &reusable_asset_references,
+            })?;
+            compact_prompt_provenance = compact_request.prompt_provenance.clone();
+            Ok(compact_request)
+        },
         GenerationStage::Draft,
         &operation,
         OperationStage::Draft,
@@ -492,6 +556,17 @@ pub(crate) async fn generate_slides(
                     let mut validation_retried = false;
                     loop {
                         let mut review_request = if compacted {
+                            let compact_source_bundle = compact_source_material(
+                                &mut compact_cache,
+                                &filesystem_compaction,
+                                brain_retry.as_ref(),
+                                &tool_set,
+                                &request.instruction,
+                                12_000,
+                                &operation,
+                                OperationStage::Review,
+                            )
+                            .await;
                             build_compact_review_request(ReviewPromptRequestContext {
                                 catalog: prompt_catalog.as_ref(),
                                 config: &config,
@@ -535,6 +610,17 @@ pub(crate) async fn generate_slides(
                             {
                                 compacted = true;
                                 compaction_status = ReviewStatus::Pending;
+                                let compact_source_bundle = compact_source_material(
+                                    &mut compact_cache,
+                                    &filesystem_compaction,
+                                    brain_retry.as_ref(),
+                                    &tool_set,
+                                    &request.instruction,
+                                    12_000,
+                                    &operation,
+                                    OperationStage::Review,
+                                )
+                                .await;
                                 let compact_request = build_compact_review_request(
                                     ReviewPromptRequestContext {
                                         catalog: prompt_catalog.as_ref(),
@@ -766,7 +852,9 @@ pub(crate) async fn generate_slides(
                                 match generate_with_compact_retry(
                                     reviewer.as_ref(),
                                     repair_request,
-                                    compact_repair_request,
+                                    // A layout repair carries no source material,
+                                    // so its compaction is ready before the call.
+                                    async || Ok(compact_repair_request),
                                     GenerationStage::LayoutRepair,
                                     &operation,
                                     OperationStage::Repair,
@@ -1143,10 +1231,16 @@ struct CompactRetryOutcome {
     limit_error: Option<String>,
 }
 
+/// Runs one generation, retrying with a compacted prompt if the limit is hit.
+///
+/// The compacted request arrives as a factory rather than a value because under
+/// a brain there is nothing to compact until the first attempt has run: the
+/// material a retry writes from is whatever the model retrieved, which does not
+/// exist before the call that retrieves it.
 async fn generate_with_compact_retry(
     provider: &dyn TextGenerationProvider,
     request: TextGenerationRequest,
-    compact_request: TextGenerationRequest,
+    compact_request: impl AsyncFnOnce() -> Result<TextGenerationRequest>,
     stage: GenerationStage,
     operation: &OperationContext,
     operation_stage: OperationStage,
@@ -1162,6 +1256,7 @@ async fn generate_with_compact_retry(
             limit_error: None,
         }),
         Err(error) if generation_limit(&error).is_some() => {
+            let compact_request = compact_request().await?;
             emit_context_compaction(
                 event_sink,
                 stage,

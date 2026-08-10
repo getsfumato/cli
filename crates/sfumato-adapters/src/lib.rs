@@ -11,6 +11,7 @@ pub mod config_files;
 pub mod documents;
 pub mod elevenlabs;
 pub mod filesystem;
+pub mod knowledge;
 pub mod lmstudio;
 pub mod ollama;
 pub(crate) mod openai_compatible;

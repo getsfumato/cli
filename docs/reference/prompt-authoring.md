@@ -96,16 +96,37 @@ unrestricted application object.
 
 The manifest is authoritative. Common required values are:
 
-`source_bundle` is an index of the supplied files, not their text: a directory
-tree with sizes. Templates that receive it also carry the filesystem tools and
-must tell the model to read what it needs — `shared/source-index.md.j2` is the
-partial that does so, and an override that drops it leaves the model guessing
-from filenames. The exception is `compact`, set on the retry that runs without
-tools; that path inlines bounded excerpts instead.
+`source_bundle` is a pointer to the material, not the material. Under the default
+filesystem grounding it is an index of the supplied files — a directory tree with
+sizes; under a Vitruvio brain it is an inventory of the brain — its memory
+modules, their block counts, and the columns that can be filtered on. Templates
+that receive it also carry the reading tools and must tell the model to go and
+get what it needs. `shared/source-index.md.j2` is the partial that does so, and
+an override that drops it leaves the model guessing from filenames or from a
+module list.
+
+`knowledge_backend` selects which half of that partial renders: `"filesystem"`
+or `"vitruvio"`. It is required by every prompt that includes the partial, so an
+override must keep the branch or supply its own equivalent for both groundings.
+The brain half additionally has to carry the interrogation discipline — ask
+several distinct questions, vary `memory_types` — because the search tool is a
+plain search and asking well is the model's job; a partial that drops those lines
+leaves nothing enforcing them.
+
+`compact` is set on the retry that runs without tools. That path carries content
+rather than pointers: bounded file excerpts under a filesystem grounding, and the
+evidence the model already retrieved under a brain, via
+`shared/compact-sources.md.j2`.
+
+A new tool's descriptions get their **own** prompt id rather than new keys on an
+existing one. `ToolDescriptions` and `BrainToolDescriptions` both reject unknown
+fields and are rendered from files a project may have copied and edited, so
+adding a required key to a shared descriptions prompt breaks every project that
+overrode it — including projects that will never see the tool.
 
 | Templates | Required values |
 | --- | --- |
-| Draft | `learning_style`; user message also receives `project`, `project_root`, `theme_name`, `theme_colors`, `theme_fonts`, `instruction`, `project_instructions`, `title`, `image_generation_available`, `source_bundle`, `compact`. |
+| Draft | `learning_style`; user message also receives `project`, `project_root`, `theme_name`, `theme_colors`, `theme_fonts`, `instruction`, `project_instructions`, `title`, `image_generation_available`, `source_bundle`, `compact`, `knowledge_backend`. |
 | Title repair | `project`, `instruction`, `validation_error`, `project_instructions`, `headings`. |
 | Structural validation repair | `instruction`, `title`, `project`, theme values, `project_instructions`, `validation_error`, and `draft_markdown`. |
 | Review | `instruction`, `project`, theme values, `project_instructions`, retry values, source bundle, and `deck_snapshot`. |

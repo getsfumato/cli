@@ -24,6 +24,7 @@ use crate::{
         GenerationRequest, GenerationToolSummary, PageGenerationOutput, PageInspectionIssue,
         PageIssueKind, PagePluginSelection, PageReviewSummary, ReviewStatus,
     },
+    knowledge::{BrainCardRequest, BrainClient, resolve_grounding},
     operation::{OperationContext, OperationEventKind},
     page_plugins::{PagePluginCatalog, PagePluginPackage},
     project_assets::{ProjectAssetCatalog, ProjectAssetReference},
@@ -45,7 +46,8 @@ use crate::{
 };
 
 use super::{
-    DryRunImageProvider, DryRunSpeechProvider, DryRunVideoProvider, build_source_index,
+    BrainRetryContext, DryRunImageProvider, DryRunSpeechProvider, DryRunVideoProvider,
+    build_brain_card, build_source_index, compact_source_material,
     project_assets::{
         PrepareProjectAssetsRequest, prepare_project_assets, referenced_generated_assets,
         retain_referenced_generated_assets,
@@ -77,6 +79,7 @@ pub(crate) struct GeneratePageOptions {
     pub artifact_store: Arc<dyn ArtifactStore>,
     pub provider_factory: Arc<dyn ProviderFactory>,
     pub source_reader: Arc<dyn SourceReader>,
+    pub brain: Arc<dyn BrainClient>,
     pub tool_factory: Arc<dyn GenerationToolFactory>,
     /// Managed Python environments backing the local charting tool.
     pub python_runtime: Arc<dyn PythonRuntime>,
@@ -115,6 +118,8 @@ struct PagePromptContext {
     video_generation_available: bool,
     chart_generation_available: bool,
     source_bundle: String,
+    /// Which knowledge source grounds the run; read by the shared partials.
+    knowledge_backend: String,
     plugins: Vec<PagePromptPlugin>,
     page_snapshot: String,
     draft_response: String,
@@ -170,6 +175,7 @@ pub(crate) async fn generate_page(
         artifact_store,
         provider_factory,
         source_reader,
+        brain,
         tool_factory,
         python_runtime,
         theme_repository,
@@ -214,11 +220,36 @@ pub(crate) async fn generate_page(
         BTreeMap::new(),
     );
     let project_instructions = source_reader.project_instructions(&config.project_root)?;
-    let documents = source_reader.collect(&request.sources)?;
+    // Resolved before anything is read, because it decides whether reading
+    // happens at all — and because it is where a brain-backed project refuses
+    // source paths rather than silently ignoring them.
+    let grounding = resolve_grounding(&config, &request.sources, &brain)?;
+    let brain_retry = BrainRetryContext::from_grounding(&grounding);
+    let mut brain_warnings: Vec<String> = Vec::new();
+    let mut documents = Vec::new();
     // An index for the tool-bearing prompts, content only for the compacted
     // retry, which runs without tools and so cannot go and read anything.
-    let source_bundle = build_source_index(&documents);
-    let compact_source_bundle = build_source_bundle(&documents, 12_000);
+    let source_bundle = match &brain_retry {
+        None => {
+            documents = source_reader.collect(&request.sources)?;
+            build_source_index(&documents)
+        }
+        Some(retry) => {
+            let card = brain
+                .card(
+                    BrainCardRequest {
+                        binding: retry.binding.clone(),
+                    },
+                    &operation,
+                    OperationStage::ReadSources,
+                )
+                .await?;
+            brain_warnings.extend(card.warnings.iter().cloned());
+            build_brain_card(&card)
+        }
+    };
+    let filesystem_compaction = build_source_bundle(&documents, 12_000);
+    let mut compact_cache: Option<String> = None;
     operation.emit(
         OperationStage::ReadSources,
         OperationEventKind::Completed,
@@ -331,7 +362,7 @@ pub(crate) async fn generate_page(
     let chart_generation_available = chart_tool.is_some();
     let tool_set = tool_factory.create(GenerationToolsRequest {
         project_root: config.project_root.clone(),
-        sources: request.sources.clone(),
+        grounding,
         image,
         video: video_selection.map(|(name, profile)| VideoToolConfig {
             provider: video_provider.unwrap_or_else(|| Arc::new(DryRunVideoProvider)),
@@ -411,16 +442,9 @@ pub(crate) async fn generate_page(
     draft_request.tool_executor = Some(tool_set.executor.clone());
     draft_request.event_sink = event_sink.clone();
     let mut compact_context = base_context.clone();
-    compact_context.source_bundle = compact_source_bundle;
     compact_context.image_generation_available = false;
     compact_context.video_generation_available = false;
     compact_context.chart_generation_available = false;
-    let compact_request = render_page_request(
-        prompt_catalog.as_ref(),
-        PromptId::PageCompactDraftSystem,
-        PromptId::PageCompactDraftUser,
-        &compact_context,
-    )?;
     let mut prompts = prepared_assets.prompts.clone();
     prompts.extend(draft_request.prompt_provenance.clone());
     let mut review_summary = PageReviewSummary::new(review);
@@ -465,6 +489,26 @@ pub(crate) async fn generate_page(
             if error.class == ErrorClass::ContextLimit
                 || error.class == ErrorClass::InvalidOutput =>
         {
+            // Rendered here rather than up front: under a brain the compacted
+            // prompt carries what the model retrieved, which does not exist
+            // until the attempt above has run.
+            compact_context.source_bundle = compact_source_material(
+                &mut compact_cache,
+                &filesystem_compaction,
+                brain_retry.as_ref(),
+                &tool_set,
+                &request.instruction,
+                12_000,
+                &operation,
+                OperationStage::Draft,
+            )
+            .await;
+            let compact_request = render_page_request(
+                prompt_catalog.as_ref(),
+                PromptId::PageCompactDraftSystem,
+                PromptId::PageCompactDraftUser,
+                &compact_context,
+            )?;
             prompts.extend(compact_request.prompt_provenance.clone());
             provider
                 .generate_text(compact_request, &operation, OperationStage::Draft)
@@ -520,7 +564,8 @@ pub(crate) async fn generate_page(
     }
     let mut page =
         page.map_err(|error| error.context("Generated page remained invalid after repair"))?;
-    let mut warnings = prepared_assets.warnings.clone();
+    let mut warnings = brain_warnings.clone();
+    warnings.extend(prepared_assets.warnings.iter().cloned());
     // A charting tool the project enabled but the Python gate withheld leaves no
     // other trace: the resource simply comes back without charts.
     warnings.extend(chart_tool_gate_warning(&config, allow_code_execution));
@@ -900,6 +945,7 @@ fn page_context(input: PageContextInput<'_>) -> PagePromptContext {
         video_generation_available,
         chart_generation_available,
         source_bundle: source_bundle.into(),
+        knowledge_backend: config.knowledge.backend.as_str().to_string(),
         plugins: plugins
             .iter()
             .map(|plugin| PagePromptPlugin {

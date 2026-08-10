@@ -101,6 +101,9 @@ audio_gen = true
 [security]
 allow_python = false
 
+[knowledge]
+backend = "filesystem"
+
 [marp]
 pdf = true
 ```
@@ -210,6 +213,50 @@ cannot be deleted because validation will reject the write.
 sfumato config delete publish_dir --scope project --project university
 sfumato config delete model_roles.reviewer --scope project --project university
 ```
+
+## Choosing A Knowledge Source
+
+A project grounds its resources in one of two places, set by
+`knowledge.backend` in `.sfumato/project.toml`.
+
+**`filesystem`** is the default and what every project did before the setting
+existed. You pass source files or directories to a `generate` command, Sfumato
+indexes them into the prompt, and the model reads what it judges relevant with
+`sfumato_list_directory` and `sfumato_read_file`.
+
+**`vitruvio`** grounds the project in a knowledge brain instead. The brain is a
+local Vitruvio directory that returns evidence with its provenance — never prose
+— and the model reaches it through a single tool, `sfumato_search_brain`:
+
+```toml
+[knowledge]
+backend = "vitruvio"
+brain = "algebra"
+config = "../vitruvio/vitruvio.toml"
+```
+
+The brain must be reachable through the `vitruvio` command; set
+`knowledge.executable` when it is not on `PATH`. Sfumato queries it as an agent
+actor, so the brain records that a model asked.
+
+What changes under a brain is deliberately small. The model is offered the
+search tool instead of the two file tools, and the prompt carries an inventory of
+the brain — which memory modules exist, how many blocks each holds, which filters
+narrow anything — instead of a listing of files. Drafting, validation, diagrams,
+layout, review, rendering, and publishing are untouched.
+
+Two consequences are worth knowing before you switch:
+
+- **Source paths are refused, not ignored.** `sfumato generate slides notes/` on
+  a brain-backed project is an error naming the fix. Ignoring the paths would
+  leave you believing a file shaped the deck when nothing did.
+- **The model must interrogate, not query once.** The prompt pushes it to ask
+  several distinct questions from different angles and to vary `memory_types`
+  rather than only rewording. A run that made one search and stopped is a run
+  that answered the question it already knew how to ask.
+
+`SFUMATO.md` is still read under either backend: it is project guidance, not
+source material.
 
 ## Project `SFUMATO.md`
 
