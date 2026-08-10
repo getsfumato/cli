@@ -31,7 +31,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
@@ -60,7 +60,7 @@ jobs:
     env:
       MSRV: 1.91.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: every crate must declare the rust-version this job pins
         run: |
           # Otherwise the job silently stops testing what the manifests promise.
@@ -80,7 +80,7 @@ jobs:
     name: guards
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: no cargo invocation may run the opt-in tests
         run: |
           # `real-renderers` gates tests that execute marp, mmdc, ffmpeg, curl and
@@ -103,7 +103,7 @@ jobs:
     name: crates.io packaging shape
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
