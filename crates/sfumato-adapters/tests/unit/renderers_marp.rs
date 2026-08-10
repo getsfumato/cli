@@ -49,7 +49,9 @@ fn marp_command_rejects_missing_configured_browser_path() {
         Some(Path::new("/missing/sfumato-browser")),
     )
     .unwrap_err();
-    assert!(error.to_string().contains("Configured Marp browser path"));
+    // No longer "Marp browser path": the same resolver serves pages, documents
+    // and diagrams, so the message cannot claim the setting is Marp's alone.
+    assert!(error.to_string().contains("Configured browser path"));
 }
 
 #[test]
@@ -73,7 +75,7 @@ fn injects_layout_inspection_script() {
 #[tokio::test]
 #[cfg(feature = "real-renderers")]
 async fn detects_real_overflow_when_dependencies_are_available() {
-    let Some(browser) = detected_browser_path() else {
+    let Some(browser) = crate::browser::resolve(None).ok().flatten() else {
         return;
     };
     if std::process::Command::new("marp")
@@ -108,4 +110,17 @@ async fn detects_real_overflow_when_dependencies_are_available() {
         .await
         .unwrap();
     assert_eq!(issues.first().map(|issue| issue.slide), Some(1));
+}
+
+#[test]
+fn a_missing_browser_is_reported_as_unavailable_not_permanent() {
+    // `render_error` classifies by matching a substring of the message, so the
+    // link between `browser::not_found` and `ErrorClass::Unavailable` is a string
+    // agreement across two modules with nothing but this test holding it. A
+    // permanent class would stop the operation being retried.
+    let error = render_error(
+        anyhow::anyhow!(crate::browser::not_found("for Marp layout inspection")),
+        OperationStage::InspectLayout,
+    );
+    assert_eq!(error.class, ErrorClass::Unavailable);
 }

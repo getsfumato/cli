@@ -1,7 +1,4 @@
-use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
-};
+use std::{ffi::OsString, path::Path};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -13,7 +10,7 @@ use sfumato_core::{
 };
 use tokio::process::Command;
 
-use crate::runtime::run_command;
+use crate::{browser, runtime::run_command};
 
 /// Marp CLI and headless-browser renderer adapter.
 #[derive(Clone, Copy, Debug, Default)]
@@ -72,8 +69,8 @@ impl SlideRenderer for MarpCliRenderer {
         let result: Result<Vec<SlideLayoutIssue>> = async {
             render_html(markdown_path, theme_css_path, html_path, operation).await?;
             inject_layout_inspector(html_path)?;
-            let browser = resolved_browser_path(browser_path)?
-                .context("Could not find Chrome, Chromium, or Edge for Marp layout inspection")?;
+            let browser = browser::resolve(browser_path)?
+                .with_context(|| browser::not_found("for Marp layout inspection"))?;
             let url = format!("file://{}", html_path.canonicalize()?.display());
             let mut command = Command::new(browser);
             command.args([
@@ -251,7 +248,7 @@ fn command_args(
         "-o".into(),
         pdf_path.as_os_str().to_owned(),
     ];
-    if let Some(browser_path) = resolved_browser_path(configured_browser_path)? {
+    if let Some(browser_path) = browser::resolve(configured_browser_path)? {
         args.splice(
             0..0,
             [
@@ -263,30 +260,6 @@ fn command_args(
         );
     }
     Ok(args)
-}
-
-pub(crate) fn resolved_browser_path(configured: Option<&Path>) -> Result<Option<PathBuf>> {
-    if let Some(path) = configured {
-        if !path.is_file() {
-            bail!(
-                "Configured Marp browser path does not exist or is not a file: {}",
-                path.display()
-            );
-        }
-        return Ok(Some(path.to_path_buf()));
-    }
-    Ok(detected_browser_path())
-}
-
-fn detected_browser_path() -> Option<PathBuf> {
-    [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|path| path.is_file())
 }
 
 fn format_stream(label: &str, value: &str) -> String {

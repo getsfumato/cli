@@ -1,10 +1,11 @@
 use std::{collections::BTreeMap, fs};
 
 use super::{
-    StandalonePageAssembler, contains_html_tag, declared_custom_properties,
+    StandalonePageAssembler, contains_html_tag, declared_custom_properties, page_inspection_error,
     undeclared_token_properties,
 };
 use sfumato_core::{
+    errors::ErrorClass,
     page_plugins::{PagePluginPackage, PagePluginSummary},
     renderers::{PageAssembler, PageAssemblyRequest},
     resources::pages::PageDocument,
@@ -546,4 +547,15 @@ fn using_a_variable_is_not_declaring_it() {
     let declared = declared_custom_properties(uses_only);
 
     assert!(declared.is_empty(), "{declared:?}");
+}
+
+#[test]
+fn a_missing_browser_is_reported_as_unavailable_not_permanent() {
+    // Same string agreement as the slide and document renderers: the class is
+    // decided by matching the message, so it needs a test that fails when the
+    // message changes shape.
+    let error = page_inspection_error(anyhow::anyhow!(crate::browser::not_found(
+        "for page inspection"
+    )));
+    assert_eq!(error.class, ErrorClass::Unavailable);
 }

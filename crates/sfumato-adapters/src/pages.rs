@@ -21,7 +21,7 @@ use sfumato_core::{
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use crate::{renderers::resolved_browser_path, runtime::run_command_within};
+use crate::{browser, runtime::run_command_within};
 
 const CONTENT_SLOT: &str = "<!-- SFUMATO_CONTENT -->";
 const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' data:; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
@@ -574,8 +574,8 @@ async fn inspect_page(
     browser_path: Option<&Path>,
     operation: &OperationContext,
 ) -> Result<Vec<PageInspectionIssue>> {
-    let browser = resolved_browser_path(browser_path)?
-        .context("Could not find Chrome, Chromium, or Edge for page inspection")?;
+    let browser = browser::resolve(browser_path)?
+        .with_context(|| browser::not_found("for page inspection"))?;
     let url = format!("file://{}", html_path.canonicalize()?.display());
     let mut issues = Vec::new();
     for (viewport, width, height) in [("desktop", 1440, 900), ("mobile", 390, 844)] {

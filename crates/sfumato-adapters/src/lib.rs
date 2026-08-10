@@ -4,6 +4,7 @@
 pub mod anthropic;
 pub mod application;
 pub mod artifacts;
+mod browser;
 pub mod codex_app_server;
 mod config_dto;
 pub mod config_editor;

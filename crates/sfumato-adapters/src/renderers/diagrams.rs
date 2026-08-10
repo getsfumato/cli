@@ -13,7 +13,7 @@ use sfumato_core::{
 };
 use tokio::process::Command;
 
-use crate::{renderers::marp::resolved_browser_path, runtime::run_command};
+use crate::{browser, runtime::run_command};
 
 /// Mermaid CLI adapter producing transparent themed SVG files.
 #[derive(Clone, Copy, Debug, Default)]
@@ -142,11 +142,11 @@ fn write_puppeteer_config(
     output_path: &Path,
     configured: Option<&Path>,
 ) -> Result<Option<PathBuf>> {
-    // Shares `resolved_browser_path` with the slide and page renderers rather than
-    // scanning `/Applications` alone: `marp.browser_path` exists for a browser that
-    // is not in the default location, and a configured path that does not exist is
-    // an error worth reporting instead of silently falling back to a scan.
-    let Some(browser_path) = resolved_browser_path(configured)? else {
+    // Shares `browser::resolve` with the slide, page and document renderers:
+    // `marp.browser_path` exists for a browser that is not where discovery looks,
+    // and a configured path that does not exist is an error worth reporting
+    // instead of silently falling back to a scan.
+    let Some(browser_path) = browser::resolve(configured)? else {
         return Ok(None);
     };
     let path = output_path.with_extension("puppeteer.json");

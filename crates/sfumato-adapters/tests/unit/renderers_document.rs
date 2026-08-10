@@ -83,3 +83,16 @@ fn output_without_a_page_report_is_not_guessed_at() {
     );
     assert_eq!(reported_pages("Rendering many pages"), None);
 }
+
+#[test]
+fn a_missing_browser_is_reported_as_unavailable_not_permanent() {
+    // Same string agreement as the slide and page renderers.
+    let error = render_result::<()>(
+        Err(anyhow::anyhow!(crate::browser::not_found(
+            "to measure the document"
+        ))),
+        OperationStage::Render,
+    )
+    .expect_err("the error is propagated");
+    assert_eq!(error.class, ErrorClass::Unavailable);
+}

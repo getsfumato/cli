@@ -20,7 +20,7 @@ use sfumato_core::{
 };
 use tokio::process::Command;
 
-use crate::{renderers::resolved_browser_path, runtime::run_command};
+use crate::{browser, runtime::run_command};
 
 /// How long the renderer may spend on one document.
 const RENDER_TIMEOUT_MS: u32 = 120_000;
@@ -122,7 +122,7 @@ async fn paginate(
     } else {
         command.arg("--outline-tags").arg(OUTLINE_TAGS);
     }
-    if let Some(browser) = resolved_browser_path(None)? {
+    if let Some(browser) = browser::resolve(None)? {
         // Reuse the browser Sfumato already requires rather than a second one.
         command.env("PUPPETEER_EXECUTABLE_PATH", browser);
     }
@@ -229,8 +229,8 @@ async fn measure_in_browser(
     use tokio::io::AsyncReadExt;
 
     operation.checkpoint(OperationStage::InspectLayout)?;
-    let browser = resolved_browser_path(None)?
-        .context("Could not find Chrome, Chromium, or Edge to measure the document")?;
+    let browser =
+        browser::resolve(None)?.with_context(|| browser::not_found("to measure the document"))?;
     let profile = tempfile::tempdir().context("Could not create a browser profile directory")?;
     let url = format!(
         "file://{}",
