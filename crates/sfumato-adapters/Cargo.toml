@@ -1,9 +1,37 @@
 [package]
 name = "sfumato-adapters"
-version = "0.2.0"
-edition = "2024"
+description = "Filesystem, HTTP, prompt, renderer and store adapters for Sfumato"
+keywords = ["sfumato", "slides", "adapters", "renderers"]
+categories = ["text-processing", "development-tools"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+# `assets/` is compiled in, not read at runtime: `include_dir!` for the prompt
+# tree and a dozen `include_str!`/`include_bytes!` for themes, runtimes and
+# manifests. Excluding it would publish a crate that still compiles — an absent
+# `include_dir!` directory yields an empty Dir rather than an error — and then
+# ships with no prompts at all, so CI counts the packaged files instead of
+# trusting the compiler.
+#
+# `tests/` stays because src modules pull their tests in with
+# `#[cfg(test)] #[path = "../../tests/unit/..."]`; without it the published crate
+# cannot be tested, which is the only real check that packaging worked.
+include = [
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "assets/**",
+    "Cargo.toml",
+    "README.md",
+]
 
 [features]
+# Opt-in, and it must stay that way: it gates tests that execute real Marp,
+# Mermaid, ffmpeg, curl and browser binaries.
 real-renderers = []
 
 [dependencies]
@@ -29,7 +57,7 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 sha2 = "0.10"
 slug = "0.1"
-sfumato-core = { path = "../sfumato-core" }
+sfumato-core.workspace = true
 tempfile = "3.23"
 thiserror = "2.0"
 toml = "0.9"

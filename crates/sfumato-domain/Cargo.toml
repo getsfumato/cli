@@ -1,9 +1,16 @@
 [package]
 name = "sfumato-domain"
-version = "0.2.0"
-edition = "2024"
 description = "Pure domain types and review rules for Sfumato"
-license = "MIT"
+keywords = ["sfumato", "slides", "markdown", "domain"]
+categories = ["text-processing"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 
 [dependencies]
 json-patch = "4.2"

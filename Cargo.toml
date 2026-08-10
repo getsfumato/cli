@@ -6,3 +6,45 @@ members = [
     "crates/sfumato-domain",
 ]
 resolver = "2"
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+# Edition 2024 only needs 1.85, but the code needs more: `File::unlock` is stable
+# since 1.89 and `floor_char_boundary` since 1.91. Declaring 1.85 would have been
+# a lie that turned a clear refusal into a wall of compile errors for anyone on an
+# older toolchain — `clippy::incompatible_msrv` is what caught it, and it only
+# checks once this field exists.
+#
+# Not enforced by a rust-toolchain.toml: that would make every user who falls
+# through to `cargo install --git` download a second toolchain.
+rust-version = "1.91"
+license = "MIT"
+repository = "https://github.com/getsfumato/sfumato"
+homepage = "https://sfumato.sh"
+authors = ["Alex Fiorenza <alexfiorenza2012@gmail.com>"]
+
+[workspace.dependencies]
+# Carrying both a version and a path is what makes publishing possible: inside
+# the workspace Cargo resolves through the path, and the published .crate carries
+# the version. The two must agree with [workspace.package] above — release.yml
+# asserts that they do, because `cargo publish --dry-run` resolves through the
+# path and cannot notice a stale version here.
+sfumato-domain = { version = "0.3.0", path = "crates/sfumato-domain" }
+sfumato-core = { version = "0.3.0", path = "crates/sfumato-core" }
+sfumato-adapters = { version = "0.3.0", path = "crates/sfumato-adapters" }
+
+# The profile release artifacts are built with.
+#
+# `strip` is set here rather than run as `strip(1)` afterwards on purpose: on
+# aarch64-apple-darwin the linker emits an ad-hoc code signature that a post-hoc
+# strip invalidates, and the binary then dies with SIGKILL on every user's
+# machine while passing CI, because CI never executes the stripped artifact.
+#
+# No `panic = "abort"`: tokio, the ratatui panic hook and the catch_unwind that
+# restores the terminal all depend on unwinding.
+[profile.dist]
+inherits = "release"
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

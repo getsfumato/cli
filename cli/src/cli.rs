@@ -4,6 +4,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(name = "sfumato")]
+#[command(version)]
 #[command(about = "Generate Obsidian-friendly learning resources with local or cloud models.")]
 pub struct Cli {
     /// Abandon the operation after this many seconds; unbounded when omitted.
