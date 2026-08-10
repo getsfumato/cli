@@ -55,7 +55,7 @@ side effects, managed files, publication layouts, and failure behavior.
 | Template | Optional reusable page or slide structure containing one content marker. |
 | Project artifact | Reusable logical image with metadata and theme-specific variants. |
 | Page plugin | Installed UI library, utility library, or internal browser runtime. |
-| Generation tool | Optional model-facing `image-gen` or `video-gen` function. |
+| Generation tool | Optional model-facing function — `image-gen`, `video-gen`, `audio-gen`, or the locally executed `chart-gen`. |
 | Renderer | Explicitly installed local Hyperframes or Manim executable environment. |
 | Managed artifact | Immutable resource revision committed under `~/.sfumato/Projects`. |
 | Published artifact | Processed PDF, HTML tree, or MP4 copied into a user-selected directory. |

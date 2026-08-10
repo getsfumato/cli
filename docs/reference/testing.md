@@ -1,6 +1,6 @@
-# v0.2 Testing Contract
+# Testing Contract
 
-**Status:** Implemented for v0.2. The default workspace suite is deterministic,
+**Status:** Enforced by CI on Linux and macOS. The default workspace suite is deterministic,
 offline, and credential-free. Tests that execute real Marp, Mermaid, or browser
 binaries are opt-in through the `real-renderers` feature.
 
@@ -31,10 +31,10 @@ Tests do not mock private call graphs.
   missing override, no-overwrite customization, and redaction cases.
 - Structural validators remain effective when an override omits prompt rules.
 
-### Config v4
+### Config v5
 
 - Global, registry, project, and effective fixtures.
-- Read-only rejection of v1/v2/v3 and future schema versions.
+- Read-only rejection of v1/v2/v3 and future schema versions; v4 is migrated once.
 - Unknown field, missing reference, capability mismatch, future version,
   unsupported secret scheme, and prohibited raw-secret edits.
 - Stored-secret save/resolve/delete behavior, environment fallback, connector
@@ -111,14 +111,30 @@ Secrets and user home paths must never appear in committed fixtures.
 The release gate is:
 
 ```text
-cargo fmt --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo build --workspace
-cargo doc --workspace --no-deps
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo build --workspace --locked
+cargo doc --workspace --no-deps --locked
 ```
 
-`tests/architecture.rs` enforces ADR-0001 independently of compilation.
+`.github/workflows/ci.yml` runs exactly this on `ubuntu-24.04` and `macos-15`, so
+the gate is enforced rather than remembered. `--locked` is part of it: it fails on
+a `Cargo.lock` that was not updated alongside a version bump, which is otherwise
+discovered at tag time.
+
+Three things CI adds that a local run does not:
+
+- a job that compiles on the declared `rust-version`, because an MSRV nothing
+  checks is a promise nobody keeps;
+- a guard that refuses any `cargo` invocation carrying `--all-features`,
+  `--include-ignored`, or `--features real-renderers`, all of which reach the
+  suites below that are meant to stay opt-in;
+- packaging checks for crates.io, including a count of the compiled-in prompt
+  tree, because `include_dir!` yields an empty directory rather than an error when
+  its target is missing.
+
+`cli/tests/architecture.rs` enforces ADR-0001 independently of compilation.
 Each implemented row in [Traceability](../architecture/traceability.md) names
 executable evidence. Proposed behavior must be labelled as such until its test
 and implementation are integrated.

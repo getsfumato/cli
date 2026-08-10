@@ -45,6 +45,7 @@ plugins = ["motion"]
 image_gen = true
 video_gen = false
 audio_gen = true
+chart_gen = true
 
 [security]
 allow_python = false
@@ -55,7 +56,17 @@ backend = "filesystem"
 
 [marp]
 pdf = true
+browser_path = "/usr/bin/chromium"
 ```
+
+`marp.browser_path` names the Chromium-family executable to use. It is only needed
+when discovery cannot find one — the browser is looked up in `SFUMATO_BROWSER`,
+`PUPPETEER_EXECUTABLE_PATH` and `CHROME_PATH`, then on `PATH`, then in the
+platform's well-known locations. Despite the section it sits under, it is not a
+Marp-only setting: pages, documents and Mermaid diagrams use the same browser. A
+configured path that does not exist is an error rather than a silent fall back to
+discovery, because rendering with a browser the user did not choose is worse than
+saying the chosen one is gone.
 
 `page.ui` is exclusive. Enabling another UI library replaces it. Entries in
 `page.plugins` must be utility plugins; runtime dependencies are selected

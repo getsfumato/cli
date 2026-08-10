@@ -136,19 +136,21 @@ jobs:
       - name: musl toolchain
         if: matrix.musl
         run: |
-          # Pure-Rust crates link against Rust's own self-contained musl, but
-          # `ring` compiles C in its build script and needs a real musl gcc.
-          # Without it the failure is `Failed to find tool. Is 'musl-gcc'
-          # installed?`, sometimes followed by a missing crti.o.
+          # `ring` compiles C and per-arch assembly in its build script, so a musl
+          # C compiler is required. Without it the build fails with `Failed to find
+          # tool. Is 'musl-gcc' installed?`.
           #
-          # CC_* is set explicitly even though cc already defaults to musl-gcc for
-          # this target, so that a missing package fails as a missing package
-          # rather than as a link against the wrong libc.
+          # Only CC_*, deliberately. Pointing the *Rust linker* at musl-gcc as well
+          # produced an x86_64 binary that built cleanly and then segfaulted on
+          # `--version`: startup, not application code. Rust links musl targets with
+          # its own self-contained musl and knows how to do it; overriding the linker
+          # mixes that with the host toolchain's startup files. aarch64 happened to
+          # survive it, which is exactly why the smoke test runs per target instead
+          # of once.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
           triple=$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')
           echo "CC_${triple}=musl-gcc" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_${triple}_LINKER=musl-gcc" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
         with:

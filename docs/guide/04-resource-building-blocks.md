@@ -70,7 +70,7 @@ The structural source must contain exactly one:
 <!-- SFUMATO_CONTENT -->
 ```
 
-Supported kinds are `slides` and `page`.
+Supported kinds are `slides`, `page`, and `document`.
 
 ### Template Commands
 
@@ -315,9 +315,9 @@ profiles and Sfumato never falls back between them.
 
 ```bash
 sfumato renderer list
-sfumato renderer install hyperframe|manim
-sfumato renderer remove hyperframe|manim
-sfumato renderer doctor [hyperframe|manim]
+sfumato renderer install hyperframe|manim|pagedjs
+sfumato renderer remove hyperframe|manim|pagedjs
+sfumato renderer doctor [hyperframe|manim|pagedjs]
 ```
 
 - `list` reports pinned version, installation, health, and dependency details.

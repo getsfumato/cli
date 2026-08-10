@@ -8,16 +8,37 @@ chapters; this file is optimized for exact command discovery by agents.
 ## Top Level
 
 ```text
-sfumato [COMMAND]
+sfumato [--timeout <SECONDS>] [COMMAND]
 ```
 
-With no command, Sfumato opens the TUI when attached to an interactive
-terminal. Command groups are `init`, `config`, `project`, `connector`, `model`,
-`theme`, `template`, `artifact`, `prompt`, `plugin`, `tool`, `renderer`,
+With no command, Sfumato opens the TUI when **both** stdin and stdout are
+interactive terminals; otherwise it prints help and exits 0, so piping into
+`sfumato` never opens the interface.
+
+The fifteen command groups are `init`, `config`, `project`, `connector`, `model`,
+`theme`, `template`, `artifact`, `prompt`, `plugin`, `tool`, `renderer`, `video`,
 `generate`, and `edit`.
 
-Every command accepts Clap's generated `-h`/`--help`. No global project, JSON,
-or verbosity flags exist; pass supported flags to the leaf command itself.
+| Global flag | Effect |
+| --- | --- |
+| `--timeout <SECONDS>` | Abandon the operation after this many seconds; unbounded when omitted. Global because it bounds anything that waits outside the process — a provider request, a renderer, generated Python — and most subcommands reach one. `0` is rejected. |
+| `-V`, `--version` | Print the version. |
+| `-h`, `--help` | Print help. |
+
+Beyond those, project selection and JSON output are per-command flags; pass them
+to the leaf command.
+
+### Environment
+
+| Variable | Effect |
+| --- | --- |
+| `SFUMATO_BROWSER` | Path to the Chromium-family browser to use. Also honours `PUPPETEER_EXECUTABLE_PATH` and `CHROME_PATH`, in that order, before searching `PATH` and well-known locations. |
+| `SFUMATO_PLUGIN_REGISTRY_URL` | Overrides the page-plugin registry URL. Falls back to the on-disk cache, then the bundled copy. |
+| `SFUMATO_DISABLE_BROWSER_SANDBOX` | Disables the browser sandbox for Mermaid rendering. The sandbox is on by default because `mmdc` loads model-written source. |
+| `NO_COLOR`, `TERM` | Suppress ANSI colour in human output and progress events. |
+
+The installer reads `SFUMATO_VERSION`, `SFUMATO_BIN_DIR` and
+`SFUMATO_NO_MODIFY_PATH`; those affect installation, not the binary.
 
 ## `init`
 
@@ -142,7 +163,7 @@ source files, and managed resources remain untouched.
 ## `connector`
 
 Connector names are user-defined registry keys. Presets are `ollama`,
-`openrouter`, and `codex`.
+`lmstudio`, `openrouter`, `anthropic`, `codex`, and `elevenlabs`.
 
 ### `sfumato connector list`
 
@@ -187,6 +208,15 @@ sfumato connector status <NAME>
 
 Queries native runtime/account information: Ollama runtime data, OpenRouter key
 usage/limits, or Codex account and rate-limit fields where available.
+
+### `sfumato connector presets`
+
+```text
+sfumato connector presets
+```
+
+Lists the presets available to `connector setup`, with the kind, transport, and
+authentication each implies.
 
 ### `sfumato connector setup`
 
@@ -353,14 +383,24 @@ sfumato theme use <NAME> [--project <PROJECT>]
 
 Assigns the installed theme to the explicit or active project.
 
+### `sfumato theme regenerate`
+
+```text
+sfumato theme regenerate [NAME]
+```
+
+Re-derives a theme's renderer stylesheets from its manifest. Without `NAME`,
+regenerates every installed theme. Use it after editing a theme's tokens by hand,
+or after an upgrade that changes how stylesheets are emitted.
+
 ## `template`
 
-Template kinds are `slides` and `page`.
+Template kinds are `slides`, `page`, and `document`.
 
 ### `sfumato template create`
 
 ```text
-sfumato template create <NAME> --kind <slides|page> [--from <PATH>]
+sfumato template create <NAME> --kind <slides|page|document> [--from <PATH>]
 ```
 
 Creates a reusable structural package. Without `--from`, writes a valid
@@ -370,7 +410,7 @@ scaffold; with it, copies and validates a source containing exactly one
 ### `sfumato template list`
 
 ```text
-sfumato template list [--kind <slides|page>]
+sfumato template list [--kind <slides|page|document>]
 ```
 
 Lists all templates or filters by resource kind.
@@ -378,7 +418,7 @@ Lists all templates or filters by resource kind.
 ### `sfumato template show`
 
 ```text
-sfumato template show <NAME> --kind <slides|page>
+sfumato template show <NAME> [--kind <slides|page|document>]
 ```
 
 Prints metadata and the complete structural source.
@@ -546,7 +586,7 @@ Removes a utility from project defaults or clears it when it is the selected UI.
 
 ## `tool`
 
-Tool values are `image-gen`, `video-gen`, and `audio-gen`. These are
+Tool values are `image-gen`, `video-gen`, `audio-gen`, and `chart-gen`. These are
 model-facing generation tools, not browser plugins.
 
 ### `sfumato tool list`
@@ -561,7 +601,7 @@ model can be resolved.
 ### `sfumato tool enable`
 
 ```text
-sfumato tool enable <image-gen|video-gen|audio-gen> [--project <PROJECT>]
+sfumato tool enable <image-gen|video-gen|audio-gen|chart-gen> [--project <PROJECT>]
 ```
 
 Persists the tool as enabled for the explicit or active project. Generation
@@ -570,7 +610,7 @@ still checks resource compatibility and model availability.
 ### `sfumato tool disable`
 
 ```text
-sfumato tool disable <image-gen|video-gen|audio-gen> [--project <PROJECT>]
+sfumato tool disable <image-gen|video-gen|audio-gen|chart-gen> [--project <PROJECT>]
 ```
 
 Persists the tool as disabled for the explicit or active project.
@@ -592,7 +632,7 @@ managed local video renderers.
 ### `sfumato renderer install`
 
 ```text
-sfumato renderer install <hyperframe|manim>
+sfumato renderer install <hyperframe|manim|pagedjs>
 ```
 
 Performs the explicit network/package installation. Hyperframe uses npm and
@@ -602,7 +642,7 @@ environment.
 ### `sfumato renderer remove`
 
 ```text
-sfumato renderer remove <hyperframe|manim>
+sfumato renderer remove <hyperframe|manim|pagedjs>
 ```
 
 Deletes that managed renderer installation. It does not delete generated
@@ -611,11 +651,38 @@ resources or system Node/Python/FFmpeg installations.
 ### `sfumato renderer doctor`
 
 ```text
-sfumato renderer doctor [hyperframe|manim]
+sfumato renderer doctor [hyperframe|manim|pagedjs]
 ```
 
 Checks one renderer or both when omitted. Reports required and optional native
 dependencies, executable/runtime presence, and upstream doctor details.
+
+## `video`
+
+Resolves a Hyperframe review that `generate video --visual-review` paused. Review
+identifiers are printed by the paused run and are also visible in the TUI.
+
+### `sfumato video preview`
+
+```text
+sfumato video preview <REVIEW_ID> [--project <PROJECT>] [--json]
+```
+
+Prints the paused review: the contact sheet path, the scene breakdown, and what
+the reviewer flagged. Does not resume or discard anything.
+
+### `sfumato video approve`
+
+```text
+sfumato video approve <REVIEW_ID> [--project <PROJECT>] [--out <FOLDER>] [--json]
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--out <FOLDER>` | Override the saved destination and publish under `<FOLDER>/_sfumato/videos`. |
+
+Accepts the paused review and renders the film to completion, then publishes it
+like any other finished resource.
 
 ## `generate`
 
@@ -624,8 +691,15 @@ zero or more local files/directories and appears before or after flags as
 allowed by Clap. Directories are recursively filtered to supported textual
 extensions.
 
-Common model values use `CAPABILITY=PROFILE`. Tool values are `image-gen` and
-`video-gen`. `--review-model` is a profile name.
+Common model values use `CAPABILITY=PROFILE`. Tool values are `image-gen`,
+`video-gen`, `audio-gen`, and `chart-gen`; a tool incompatible with the resource
+is rejected. `--review-model` is a profile name.
+
+`[INPUTS]...` accepts zero or more local files and directories. **Under a project
+grounded in a Vitruvio brain they are refused, not ignored** — the run is rejected
+with an explanation, because silently reading from the brain while appearing to
+read the paths given would be worse. Remove them, or set
+`knowledge.backend = "filesystem"`.
 
 ### `sfumato generate slides`
 
@@ -640,8 +714,10 @@ sfumato generate slides [INPUTS]... \
   [--model <CAPABILITY=PROFILE>]... \
   [--review-model <PROFILE>] \
   [--no-review] \
-  [--tool <image-gen|video-gen>]... \
-  [--disable-tool <image-gen|video-gen>]... \
+  [--no-pdf] \
+  [--allow-code-execution] \
+  [--tool <image-gen|video-gen|audio-gen|chart-gen>]... \
+  [--disable-tool <image-gen|video-gen|audio-gen|chart-gen>]... \
   [--dry-run] \
   [--json]
 ```
@@ -655,7 +731,9 @@ sfumato generate slides [INPUTS]... \
 | `--model` | Repeatable capability profile override. Slides require text; image may be needed by the tool. |
 | `--review-model` | One-request reviewer profile override. |
 | `--no-review` | Skip semantic review, layout inspection, and model layout repair. Core structural validation and final rendering still apply. |
-| `--tool`, `--disable-tool` | One-request tool override. Slides support `image-gen`; incompatible tools are rejected. |
+| `--tool`, `--disable-tool` | One-request tool override. Slides support `image-gen` and `chart-gen`; incompatible tools are rejected. |
+| `--no-pdf` | Turn PDF export off for this run, whatever `marp.pdf` says. Configuration could previously only turn it on. |
+| `--allow-code-execution` | Consent for this run to execute the Python `chart-gen` writes. Required by `chart-gen` on any resource, not just Manim video. |
 | `--dry-run` | Resolve and render prompt preview without provider/render/artifact calls. |
 | `--json` | Print machine-readable `GenerationOutput`. |
 
@@ -681,8 +759,9 @@ sfumato generate document [INPUTS]... \
   [--model <CAPABILITY=PROFILE>]... \
   [--review-model <PROFILE>] \
   [--no-review] \
-  [--tool <image-gen|video-gen>]... \
-  [--disable-tool <image-gen|video-gen>]... \
+  [--allow-code-execution] \
+  [--tool <image-gen|video-gen|audio-gen|chart-gen>]... \
+  [--disable-tool <image-gen|video-gen|audio-gen|chart-gen>]... \
   [--dry-run] \
   [--json]
 ```
@@ -725,8 +804,9 @@ sfumato generate page [INPUTS]... \
   [--plugin <UTILITY_ID>]... \
   [--disable-plugin <UTILITY_ID>]... \
   [--no-review] \
-  [--tool <image-gen|video-gen|audio-gen>]... \
-  [--disable-tool <image-gen|video-gen|audio-gen>]... \
+  [--allow-code-execution] \
+  [--tool <image-gen|video-gen|audio-gen|chart-gen>]... \
+  [--disable-tool <image-gen|video-gen|audio-gen|chart-gen>]... \
   [--dry-run] \
   [--json]
 ```
@@ -756,9 +836,11 @@ inspection, and publication details.
 
 ```text
 sfumato generate video [INPUTS]... \
+  [--url <URL>]... \
   --instruction <TEXT> \
   --engine <hyperframe|manim|model> \
   --duration <SECONDS> \
+  [--workflow <auto|explainer|motion-graphics|product-launch|talking-head|slideshow|general>] \
   [--title <TITLE>] \
   [--out <FOLDER>] \
   [--project <NAME>] \
@@ -766,6 +848,7 @@ sfumato generate video [INPUTS]... \
   [--model <CAPABILITY=PROFILE>]... \
   [--review-model <PROFILE>] \
   [--no-review] \
+  [--visual-review] \
   [--resolution <VALUE>] \
   [--aspect-ratio <VALUE>] \
   [--fps <INTEGER>] \
@@ -773,8 +856,8 @@ sfumato generate video [INPUTS]... \
   [--audio <auto|on|off>] \
   [--voice <VOICE_ID>] \
   [--allow-code-execution] \
-  [--tool <image-gen|audio-gen>]... \
-  [--disable-tool <image-gen|audio-gen>]... \
+  [--tool <image-gen|audio-gen|chart-gen>]... \
+  [--disable-tool <image-gen|audio-gen|chart-gen>]... \
   [--dry-run] \
   [--json]
 ```
@@ -782,6 +865,9 @@ sfumato generate video [INPUTS]... \
 | Flag | Meaning |
 | --- | --- |
 | `--duration` | Required integer seconds, currently `1..=3600`. |
+| `--url` | Repeatable. A page to read as grounding material alongside `[INPUTS]`. Hyperframe only. |
+| `--workflow` | Routes scene direction; defaults to `auto`, which picks from the instruction. Hyperframe only. |
+| `--visual-review` | Pause after the contact sheet and wait for `sfumato video preview` and `sfumato video approve`. Hyperframe only. |
 | `--engine` | Required: local Hyperframe, local Manim, or asynchronous remote model. There is no automatic fallback between engines. |
 | `--out` | Publish only the MP4 under `<FOLDER>/_sfumato/videos/<slug>/`. |
 | `--resolution` | Defaults to `1080p` locally and `720p` remotely. |
@@ -790,7 +876,7 @@ sfumato generate video [INPUTS]... \
 | `--quality` | Local engines only; defaults to `high`. |
 | `--audio` | Both local engines narrate when a `speech` default exists (`auto`); `on` requires one and fails without it; `off` renders silent. Remote defaults to `auto`. |
 | `--voice` | Local engines only. Overrides the speech profile's voice for this film. |
-| `--allow-code-execution` | Valid only for Manim and authorizes generated Python for this request. Project `security.allow_python` is the persistent alternative. |
+| `--allow-code-execution` | Authorizes generated Python for this request — Manim scenes, and the `chart-gen` tool on any resource. Project `security.allow_python` is the persistent alternative. |
 | `--model` | Text drafter plus `code` for local authoring or `video` for remote generation. |
 | `--review-model`, `--no-review` | Controls semantic plan review. Invalid local source is still eligible for one focused repair so the renderer contract can be satisfied. |
 | `--tool`, `--disable-tool` | Video planning supports `image-gen`, `audio-gen`, and `chart-gen`; standalone video never injects `video-gen`. `audio-gen` turns narration on or off for a local film. |

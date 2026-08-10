@@ -25,13 +25,21 @@ let result = application
     .await?;
 ```
 
-`generate_slides` returns `SfumatoResult<GenerateSlidesResult>` and
-`generate_page` returns `SfumatoResult<GeneratePageResult>` and `generate_video`
-returns `SfumatoResult<GenerateVideoResult>`. Page commands carry
-generic installed plugin IDs and return the resolved versions and runtime hashes.
-`edit_slides` returns `SfumatoResult<EditSlidesResult>`. The same facade also
-owns project, model, connector, theme, prompt, setup, and configuration use
-cases. CLI and TUI construct the same command DTOs.
+Each generation use case returns its own result type:
+`generate_slides` → `GenerateSlidesResult`, `generate_document` →
+`GenerateDocumentResult`, `generate_page` → `GeneratePageResult`, and
+`generate_video` → `GenerateVideoResult`, all inside `SfumatoResult`. Page
+commands carry generic installed plugin IDs and return the resolved versions and
+runtime hashes. `edit_slides` returns `SfumatoResult<EditSlidesResult>`.
+
+A Hyperframe film paused by `--visual-review` is resolved through
+`preview_video_review` and `approve_video_review`.
+
+The same facade owns the rest of the workspace: projects, models, connectors,
+themes — including `regenerate_theme`, which re-derives renderer stylesheets from
+a manifest — templates, project assets, prompts, page plugins, generation tools,
+managed renderers, setup, and configuration. CLI and TUI construct the same
+command DTOs, which is what lets a third front end reuse them unchanged.
 
 ## Outbound Ports
 
@@ -50,6 +58,10 @@ cases. CLI and TUI construct the same command DTOs.
 - `PageAssembler`, `PageInspector`, and `PagePluginCatalog` for standalone pages.
 - `GenerationTemplateCatalog` and `ProjectAssetCatalog` for reusable structure
   and portable project media.
+- `DocumentAssembler` and `DocumentRenderer` for paginated documents.
+- `PythonRuntime` for managed interpreters, shared by Manim and `chart-gen`.
+- `BrainClient` for knowledge retrieval when a project is grounded in a Vitruvio
+  brain instead of the filesystem. See [ADR-0010](../adr/0010-knowledge-port.md).
 
 Every core port returns a typed result. Adapters may use implementation-specific
 diagnostics internally, but classify and sanitize failures before crossing the

@@ -116,19 +116,41 @@ terminal. For scripts, CI, pipes, and agents, use explicit commands instead.
 
 ### Main Sections
 
+Thirteen destinations in three groups. The grouping is the point: creating
+something is a different kind of act from maintaining the library it draws on.
+
+**CREATE**
+
 | Section | Available work |
 | --- | --- |
-| Generate | Generate slides, pages, or videos with resource-specific fields. |
+| Generate | Slides, document, page, or video, with resource-specific fields. |
 | Edit | Apply a focused instruction to an existing generated deck. |
-| Projects | Create, activate, and remove project registrations. |
+
+**LIBRARY**
+
+| Section | Available work |
+| --- | --- |
+| Projects | Create, activate, edit, and remove project registrations. |
 | Models | Add, edit, select defaults, and remove model profiles. |
-| Connectors | Configure Ollama, OpenRouter, or Codex; inspect native model catalogs and status. |
-| Themes | Create, import, export, and apply themes. |
-| Templates | Create reusable slide or page structures. |
-| Artifacts | Add or remove reusable project visuals. |
+| Connectors | Configure any of the six presets; inspect native model catalogs and status. |
+| Themes | Create, import, export, apply, and regenerate themes. |
+| Templates | Create reusable slide, page, or document structures. |
+| Artifacts | Add, edit, or remove reusable project visuals. |
 | Prompts | Create user/project overrides and validate prompt templates. |
+
+**SETTINGS**
+
+| Section | Available work |
+| --- | --- |
+| Tools | Switch `image-gen`, `video-gen`, `audio-gen`, and `chart-gen` on or off, per project. |
+| Plugins | Install, enable, and disable offline page libraries. |
 | Configuration | Set or delete validated dotted configuration values. |
 | Setup | Initialize the user profile or create a project. |
+
+Tools and Plugins exist here because `sfumato tool` and `sfumato plugin` had no
+TUI entry at all, which made "enable chart-gen" unreachable from the interface
+that offers everything else. A test now asserts every nav entry dispatches
+somewhere.
 
 The browse screens expose actions for the selected section. They intentionally
 do not expose every advanced CLI flag; use the explicit command reference for
@@ -147,13 +169,31 @@ Changing the resource selector rebuilds the form with only relevant fields:
 Changing the video engine similarly removes incompatible options. Each resource
 keeps its own in-progress form values while switching between resource types.
 
+### Pickers Instead Of Identifiers
+
+Fields that name something you already have — a project, a theme, a template, a
+model profile — open a filterable picker rather than taking free text. Type to
+filter, `Up`/`Down` to move, `Enter` to choose, `Del` to clear the field, `Esc` to
+cancel. Capability-filtered where filtering is what makes the list correct: a
+slides template is not offered to a document, and an image profile is not offered
+where a text one is wanted, because the layers underneath reject both.
+
 ### Key Bindings
 
-Global:
+The footer shows the keys for the current screen, and it is generated per screen,
+so it is the authoritative list. What follows is the shape of it.
+
+Global, from every screen including one with a form or picker open:
 
 | Key | Action |
 | --- | --- |
-| `Ctrl+C` | Cancel the active job, wait for its task to stop, and quit. |
+| `Ctrl+Q`, `Ctrl+C` | Open the quit confirmation. |
+| `Ctrl+K` | Open the jump palette and go straight to any destination. |
+| `?` | Open the key reference. Not on Generate or Edit, where `?` is text. |
+
+Leaving is a deliberate gesture: the confirmation requires `y`, and `Enter` is
+deliberately not a confirmation. A generation that took minutes and a stray
+keystroke should not be able to meet.
 
 Home:
 
@@ -162,7 +202,18 @@ Home:
 | `Up`, `k` | Select the previous section. |
 | `Down`, `j` | Select the next section. |
 | `Enter` | Open the selected section. |
-| `q`, `Esc` | Quit. |
+| `Esc` | Clear the status message. |
+
+`q` does nothing on Home and `Esc` no longer quits from it; ending a session goes
+through the confirmation above.
+
+### While A Run Is Going
+
+The run screen is a progress line and an activity feed rather than a spinner: the
+feed names each tool call, each review finding, and each repair as it happens, and
+previews generated images inline where the terminal supports it. When the run
+finishes it says where the resource landed, and offers to publish it beside the
+sources it was made from.
 
 Browse screens:
 

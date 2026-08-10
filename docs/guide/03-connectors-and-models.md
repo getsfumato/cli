@@ -14,7 +14,9 @@ their connector to construct the matching provider implementation.
 | Preset | Generation transport | Authentication | Native operations |
 | --- | --- | --- | --- |
 | `ollama` | OpenAI-compatible local `/v1` | None by default | Local model catalog, version, and running processes. |
+| `lmstudio` | OpenAI-compatible local `/v1` | None by default | Model catalog via the native `/api/v0/models`, which reports architecture, quantization, and load state that `/v1/models` omits. |
 | `openrouter` | OpenAI-compatible text/image plus asynchronous video API | OS keyring by default or explicit environment reference | Model catalog and key usage/limits. |
+| `anthropic` | Native Messages API — not `chat/completions` — authenticating with `x-api-key` | OS keyring by default or explicit environment reference | Text generation only. |
 | `codex` | Codex App Server JSON-RPC over stdio | Owned by `codex login` | Model catalog, account, and rate limits. |
 | `elevenlabs` | Native speech synthesis returning audio plus word-level timings | OS keyring by default or explicit environment reference | Model and voice catalog, subscription tier, and character budget. |
 

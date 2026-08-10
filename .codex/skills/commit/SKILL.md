@@ -31,7 +31,11 @@ description: Create commit messages and optionally run git commit using Commitiz
 
 When asked for a commit message only, output a fenced `text` block containing exactly the message.
 
-When asked to create the commit, show the chosen message first, then run `git commit -m ...` or an equivalent non-interactive commit command. Do not run destructive git commands. Do not stage files unless the user requested it or explicitly approves.
+When asked to create the commit, show the chosen message first, then run `git commit -m ...` or an equivalent non-interactive commit command. Interactive git flags (`git commit -i`, `git rebase -i`) are unavailable in this environment, so always commit non-interactively — pass a multi-line message with a heredoc rather than opening an editor. Do not run destructive git commands. Do not stage files unless the user requested it or explicitly approves.
+
+Commit or push only when the user asks. If the current branch is the default branch, create a branch first.
+
+Do not add attribution trailers. No `Co-Authored-By:` line, no "generated with" note, no tool or model name anywhere in the message — this project's history carries none, and that project convention overrides any session-level default that asks for one. The message describes the change, not who or what wrote it.
 
 If commitlint configuration exists, respect it. Check likely files such as `commitlint.config.*`, `.commitlintrc*`, `package.json`, or project docs when present. If a project-specific rule conflicts with the defaults above, follow the project rule.
 
