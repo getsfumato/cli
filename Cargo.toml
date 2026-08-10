@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.0-rc.1"
 edition = "2024"
 # Edition 2024 only needs 1.85, but the code needs more: `File::unlock` is stable
 # since 1.89 and `floor_char_boundary` since 1.91. Declaring 1.85 would have been
@@ -30,9 +30,9 @@ authors = ["Alex Fiorenza <alexfiorenza2012@gmail.com>"]
 # the version. The two must agree with [workspace.package] above — release.yml
 # asserts that they do, because `cargo publish --dry-run` resolves through the
 # path and cannot notice a stale version here.
-sfumato-domain = { version = "0.3.0", path = "crates/sfumato-domain" }
-sfumato-core = { version = "0.3.0", path = "crates/sfumato-core" }
-sfumato-adapters = { version = "0.3.0", path = "crates/sfumato-adapters" }
+sfumato-domain = { version = "0.3.0-rc.1", path = "crates/sfumato-domain" }
+sfumato-core = { version = "0.3.0-rc.1", path = "crates/sfumato-core" }
+sfumato-adapters = { version = "0.3.0-rc.1", path = "crates/sfumato-adapters" }
 
 # The profile release artifacts are built with.
 #
