@@ -31,13 +31,21 @@ impl ConfigPaths {
     /// Discovers Sfumato's platform-specific configuration paths.
     pub fn discover() -> Result<Self> {
         let config = dirs::config_dir().context("Could not find user configuration directory")?;
-        let root = config.join("sfumato");
-        Ok(Self {
+        Ok(Self::under(config.join("sfumato")))
+    }
+
+    /// Lays the same names out under an explicit root.
+    ///
+    /// Separated from [`Self::discover`] so a caller can say where the
+    /// configuration lives instead of inheriting the process user's home: a test
+    /// that wants a hermetic workspace, and a service that serves more than one.
+    pub fn under(root: PathBuf) -> Self {
+        Self {
             user_config: root.join("config.toml"),
             project_registry: root.join("projects.toml"),
             themes: root.join("themes"),
             templates: root.join("templates"),
-        })
+        }
     }
 }
 

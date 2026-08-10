@@ -1,8 +1,11 @@
 //! Production composition for the Sfumato application facade.
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sfumato_core::{
     application::{
         EffectiveConfigResolver, PromptCatalogFactory, SfumatoApplication,
@@ -76,12 +79,48 @@ impl PromptCatalogFactory for LayeredPromptCatalogFactory {
     }
 }
 
+/// The two directories every filesystem-backed adapter hangs off.
+///
+/// Every adapter already accepted an explicit root; only the composition root
+/// insisted on deriving them from the process user's home, which made the
+/// application impossible to build twice in one process over different state. A
+/// test that wants a hermetic workspace needs that, and so does any service that
+/// serves more than one user.
+#[derive(Clone, Debug)]
+pub struct ApplicationRoots {
+    /// Holds `config.toml`, `projects.toml`, `themes/` and `templates/`.
+    ///
+    /// `<config dir>/sfumato` by default.
+    pub config: PathBuf,
+    /// Holds revisions, plugins, managed renderers and Python environments.
+    ///
+    /// `~/.sfumato` by default.
+    pub data: PathBuf,
+}
+
+impl ApplicationRoots {
+    /// The platform-specific locations the CLI uses.
+    pub fn discover() -> Result<Self> {
+        let config = dirs::config_dir().context("Could not find user configuration directory")?;
+        let home = dirs::home_dir().context("Could not find home directory")?;
+        Ok(Self {
+            config: config.join("sfumato"),
+            data: home.join(".sfumato"),
+        })
+    }
+}
+
 /// Builds the production application used by CLI and TUI presentation.
 pub fn production_application() -> Result<SfumatoApplication> {
-    let paths = ConfigPaths::discover()?;
+    production_application_in(&ApplicationRoots::discover()?)
+}
+
+/// Builds the same application over explicit roots.
+pub fn production_application_in(roots: &ApplicationRoots) -> Result<SfumatoApplication> {
+    let paths = ConfigPaths::under(roots.config.clone());
     let user_config_path = paths.user_config;
-    let themes = Arc::new(FilesystemThemeRepository::default_path()?);
-    let projects = Arc::new(FilesystemProjectRepository::default_path()?);
+    let themes = Arc::new(FilesystemThemeRepository::new(paths.themes));
+    let projects = Arc::new(FilesystemProjectRepository::new(paths.project_registry));
     let global_config = Arc::new(FilesystemGlobalConfigRepository::new(
         user_config_path.clone(),
     ));
@@ -100,16 +139,16 @@ pub fn production_application() -> Result<SfumatoApplication> {
     let providers = Arc::new(AdapterProviderFactory::new(secret_resolver));
     // The Python runtime is shared: the Manim renderer provisions its interpreter
     // through it, and the chart tool runs generated plotting code in it.
-    let python_runtime = Arc::new(UvPythonRuntime::default_path()?);
+    let python_runtime = Arc::new(UvPythonRuntime::new(roots.data.join("python")));
     let video_renderers = Arc::new(ManagedVideoRenderers::new(
-        ManagedVideoRenderers::default_root()?,
+        roots.data.join("renderers"),
         python_runtime.clone(),
     ));
     Ok(SfumatoApplication::new(SfumatoApplicationDependencies {
         config: config_resolver,
         prompts: Arc::new(LayeredPromptCatalogFactory),
         prompt_manager: Arc::new(LayeredPromptManager),
-        artifacts: Arc::new(FilesystemArtifactStore::default_path()?),
+        artifacts: Arc::new(FilesystemArtifactStore::new(roots.data.join("Projects"))),
         providers: providers.clone(),
         connector_introspection: providers,
         diagrams: Arc::new(MermaidCliRenderer),
@@ -121,9 +160,9 @@ pub fn production_application() -> Result<SfumatoApplication> {
         video_renderer: video_renderers.clone(),
         renderer_manager: video_renderers,
         python_runtime,
-        page_plugins: Arc::new(FilesystemPagePluginCatalog::default_path()?),
+        page_plugins: Arc::new(FilesystemPagePluginCatalog::new(roots.data.join("plugins"))),
         page_plugin_source: Arc::new(CdnPagePluginSource::new()?),
-        templates: Arc::new(FilesystemGenerationTemplateCatalog::default_path()?),
+        templates: Arc::new(FilesystemGenerationTemplateCatalog::new(paths.templates)),
         project_assets: Arc::new(FilesystemProjectAssetCatalog),
         sources: Arc::new(FilesystemSourceReader),
         // One instance serves every project because Vitruvio selects its brain

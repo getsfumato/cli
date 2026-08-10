@@ -28,8 +28,64 @@ fn form_for_resource(index: usize) -> GenerateForm {
 /// The selector index the document resource sits at.
 const DOCUMENT: usize = 3;
 
+/// The project `test_application` registers and activates.
+const SEEDED_PROJECT: &str = "test-project";
+
+/// An application over a seeded temporary workspace.
+///
+/// This used to be `production_application()`, which reads the *developer's* real
+/// `config.toml` and revision store. The screens that need an active project
+/// therefore passed only on a machine that happened to have one configured, and
+/// failed on any clean checkout — which is also what `docs/reference/testing.md`
+/// promises the suite never does.
+///
+/// Built once per test process and kept for its lifetime: the roots have to
+/// outlive every `App`, and a test binary exiting is what cleans them up.
 fn test_application() -> Arc<SfumatoApplication> {
-    Arc::new(sfumato_adapters::application::production_application().unwrap())
+    static APPLICATION: std::sync::OnceLock<Arc<SfumatoApplication>> = std::sync::OnceLock::new();
+    APPLICATION
+        .get_or_init(|| {
+            let temporary = tempfile::Builder::new()
+                .prefix("sfumato-tui-tests")
+                .tempdir()
+                .expect("a temporary workspace");
+            let roots = sfumato_adapters::application::ApplicationRoots {
+                config: temporary.path().join("config"),
+                data: temporary.path().join("data"),
+            };
+            let project_root = temporary.path().join("project");
+            std::fs::create_dir_all(&roots.config).expect("the config root");
+            std::fs::create_dir_all(&project_root).expect("the project root");
+
+            // Seeded through the repositories rather than by writing TOML here, so
+            // the fixture cannot drift from the schema the code accepts.
+            let paths = sfumato_adapters::config_files::ConfigPaths::under(roots.config.clone());
+            sfumato_core::repositories::GlobalConfigRepository::save(
+                &sfumato_adapters::repositories::FilesystemGlobalConfigRepository::new(
+                    paths.user_config,
+                ),
+                &sfumato_core::config::GlobalConfig::default_config(),
+            )
+            .expect("a seeded user config");
+            sfumato_core::repositories::ProjectRepository::register(
+                &sfumato_adapters::repositories::FilesystemProjectRepository::new(
+                    paths.project_registry,
+                ),
+                SEEDED_PROJECT.to_string(),
+                project_root,
+                true,
+            )
+            .expect("a registered active project");
+
+            // Leaked on purpose: dropping the TempDir would delete the workspace
+            // out from under every App built from it.
+            std::mem::forget(temporary);
+            Arc::new(
+                sfumato_adapters::application::production_application_in(&roots)
+                    .expect("an application over the temporary workspace"),
+            )
+        })
+        .clone()
 }
 
 #[test]
@@ -1642,7 +1698,9 @@ fn app_editing_a_project() -> App {
     let mut app = App::new(Picker::halfblocks(), test_application());
     app.transition(Screen::Browse(Section::Projects));
     app.browse_rows = vec![BrowseRow {
-        title: "Facultad".to_string(),
+        // Must name the project `test_application` seeded: opening the edit form
+        // loads it from the registry, so an invented name opens nothing.
+        title: SEEDED_PROJECT.to_string(),
         subtitle: "/work/facultad".to_string(),
         detail: String::new(),
         active: true,
