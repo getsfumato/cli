@@ -12,7 +12,6 @@ pub mod catalogs;
 #[allow(missing_docs)]
 pub mod config;
 /// Structured configuration editing port.
-#[allow(missing_docs)]
 pub mod config_editor;
 /// Connector configuration services.
 #[allow(missing_docs)]
@@ -32,7 +31,6 @@ pub mod operation;
 pub mod page_plugins;
 pub mod project_assets;
 /// Registered-project application services.
-#[allow(missing_docs)]
 pub mod projects;
 pub mod prompts;
 /// Text and image model ports plus the provider-neutral agent runner.
@@ -49,7 +47,6 @@ pub mod retry;
 pub mod review;
 pub mod secrets;
 /// User initialization use case.
-#[allow(missing_docs)]
 pub mod setup;
 pub mod sources;
 pub mod templates;
