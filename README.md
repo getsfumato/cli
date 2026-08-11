@@ -23,7 +23,7 @@ binary, verifies its checksum, and installs to `~/.local/bin`. Overrides:
 From source instead — needs Rust 1.91 or newer:
 
 ```bash
-cargo install --git https://github.com/getsfumato/cli --locked sfumato
+cargo install --git https://github.com/getsfumato/sfumato --locked sfumato
 ```
 
 ### Prerequisites
@@ -125,8 +125,13 @@ Architecture decisions, diagrams, and internal APIs are under
 
 ## Crates
 
-The workspace is four crates, and the three libraries are published so another
-front end — an API, a service — can reuse them without this repository.
+The workspace is four crates. The three libraries carry no presentation concerns,
+so another front end — an API, a service — can reuse the workflows without this
+repository. They are not on crates.io yet; until then, depend on them by tag:
+
+```toml
+sfumato-core = { git = "https://github.com/getsfumato/sfumato", tag = "v0.3.0" }
+```
 
 | Crate | Contents |
 | --- | --- |

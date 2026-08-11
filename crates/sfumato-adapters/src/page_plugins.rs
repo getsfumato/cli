@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::runtime::await_operation;
 
 const BUILTIN_REGISTRY: &[u8] = include_bytes!("../assets/page-plugin-registry.json");
-const DEFAULT_REGISTRY_URL: &str = "https://raw.githubusercontent.com/getsfumato/cli/master/crates/sfumato-adapters/assets/page-plugin-registry.json";
+const DEFAULT_REGISTRY_URL: &str = "https://raw.githubusercontent.com/getsfumato/sfumato/master/crates/sfumato-adapters/assets/page-plugin-registry.json";
 
 /// Metadata-only registry with direct public-CDN installation.
 #[derive(Clone, Debug)]

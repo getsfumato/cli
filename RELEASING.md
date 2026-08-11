@@ -35,7 +35,7 @@ resolves the version from `releases/latest`, downloads
 8. `finalize` flips the draft. Confirm the installer sees it:
 
    ```bash
-   curl -s https://api.github.com/repos/getsfumato/cli/releases/latest | jq -r .tag_name
+   curl -s https://api.github.com/repos/getsfumato/sfumato/releases/latest | jq -r .tag_name
    ```
 
 9. **Install it the way a user would**, on clean machines:
