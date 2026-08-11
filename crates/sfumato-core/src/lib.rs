@@ -31,8 +31,6 @@ pub mod project_assets;
 /// Registered-project application services.
 pub mod projects;
 pub mod prompts;
-/// Text and image model ports plus the provider-neutral agent runner.
-#[allow(missing_docs)]
 pub mod providers;
 /// Managed Python environments and disposable execution of generated code.
 pub mod python;

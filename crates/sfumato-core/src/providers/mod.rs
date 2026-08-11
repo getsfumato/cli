@@ -1,3 +1,10 @@
+//! The provider ports: how Sfumato asks a model for something.
+//!
+//! Four capabilities, each its own trait, because a provider that generates images
+//! is not obliged to generate speech. [`TextModel`] is the narrow one an adapter
+//! implements; [`AgentRunner`] wraps it to add the tool loop, round limits and
+//! cancellation, so those live once rather than in every provider.
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,20 +16,41 @@ use crate::errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult};
 use crate::operation::{OperationContext, OperationEventKind};
 use crate::prompts::PromptProvenance;
 
+/// Which limit a generation ran into.
+///
+/// Distinguished because the remedies differ and only one of them is recoverable:
+/// hitting the context window can be retried with compacted input, while a
+/// truncated output means the response cannot be used at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextGenerationLimitKind {
+    /// The input did not fit. Retryable by compacting what was sent.
     Context,
+    /// The reply was cut off at `max_tokens`, or came back empty. Not usable.
     Output,
 }
 
 #[derive(Clone, Debug, Error)]
 #[error("{message}")]
+/// A generation that hit a token limit, with the numbers needed to act on it.
+///
+/// Typed rather than a string because the recovery depends on
+/// [`TextGenerationLimitKind`], and because the message has to name the profile
+/// option to change — a limit error nobody can act on is just a failure.
 pub struct TextGenerationLimitError {
+    /// Which limit was reached.
     pub kind: TextGenerationLimitKind,
+    /// Provider-side model identifier, so the message names the right model when
+    /// several are configured.
     pub model: String,
+    /// The limit that was reached, as configured.
     pub max_tokens: u64,
+    /// What the provider said about stopping, when it said anything.
     pub finish_reason: Option<String>,
+    /// Tokens the provider reported producing, when it reported them.
     pub completion_tokens: Option<u64>,
+    /// Tokens spent on reasoning rather than output, when the provider separates
+    /// them. A large value here with an empty response is the signal to reduce the
+    /// reasoning budget rather than to raise `max_tokens`.
     pub reasoning_tokens: Option<u64>,
     message: String,
 }
@@ -121,13 +149,27 @@ pub struct ImageAttachment {
     pub path: PathBuf,
 }
 
+/// One text generation, tools and all.
+///
+/// Built by a workflow and handed to [`AgentRunner`], which is what turns it into
+/// however many provider calls the tool loop needs.
 #[derive(Clone)]
 pub struct TextGenerationRequest {
+    /// The system prompt, rendered from a template.
     pub system_prompt: String,
+    /// The first user turn.
     pub user_prompt: String,
+    /// Tools the model may call. Empty means it must answer from the prompt alone.
     pub tools: Vec<ToolDefinition>,
+    /// Runs the tools. Required if `tools` is non-empty; without it a tool call has
+    /// nowhere to go.
     pub tool_executor: Option<Arc<dyn ToolExecutor>>,
+    /// Where progress goes. `None` discards it, which is what a dry run wants.
     pub event_sink: Option<Arc<dyn Fn(TextGenerationEvent) + Send + Sync>>,
+    /// How many times the model may call tools before being asked to answer.
+    ///
+    /// A bound, not a target: a model that keeps reaching for tools would otherwise
+    /// spend a budget without producing anything.
     pub max_tool_rounds: usize,
     /// Request-specific user message sent when the tool round limit is reached.
     pub tool_exhausted_prompt: Option<String>,
@@ -142,6 +184,7 @@ pub struct TextGenerationRequest {
 }
 
 impl TextGenerationRequest {
+    /// A request with no tools, no event sink and the default round limit.
     pub fn new(system_prompt: String, user_prompt: String) -> Self {
         Self {
             system_prompt,
@@ -156,6 +199,7 @@ impl TextGenerationRequest {
         }
     }
 
+    /// Sends an event to the sink, or drops it when there is none.
     pub fn emit(&self, event: TextGenerationEvent) {
         if let Some(sink) = &self.event_sink {
             sink(event);
@@ -163,62 +207,111 @@ impl TextGenerationRequest {
     }
 }
 
+/// What a text generation produced.
 #[derive(Clone, Debug)]
 pub struct TextGenerationResponse {
+    /// The model's answer, with any tool rounds already resolved.
     pub text: String,
 }
 
+/// Progress from inside a generation.
+///
+/// The vocabulary a frontend renders: a run is minutes of model calls, tool calls
+/// and repairs, and a spinner would say nothing about which. Sanitized — no prompt
+/// text, no credentials — because these reach a terminal and a JSON stream.
 #[derive(Clone, Debug)]
 pub enum TextGenerationEvent {
+    /// A named stage of the workflow began.
     StageStarted {
+        /// Which stage.
         stage: GenerationStage,
+        /// The model profile serving it, when one was resolved.
         profile: Option<String>,
     },
+    /// A provider call began. `round` counts tool rounds, starting at one.
     RequestStarted {
+        /// Which round of the tool loop this is.
         round: usize,
     },
     /// Codex App Server resolved and selected one authenticated model.
+    /// Codex App Server resolved and selected one authenticated model.
     ModelSelected {
+        /// Provider-side identifier.
         model: String,
+        /// The name to show a person.
         display_name: String,
     },
+    /// The model asked for a tool.
     ToolCallRequested {
+        /// Tool name, as declared to the model.
         name: String,
+        /// Arguments the model supplied.
         arguments: Value,
     },
+    /// A tool ran and returned something.
     ToolCallSucceeded {
+        /// Tool name.
         name: String,
+        /// A summary of what came back, not necessarily the whole payload.
         result: String,
     },
+    /// A tool refused or failed. The model is told, and may try something else.
     ToolCallFailed {
+        /// Tool name.
         name: String,
+        /// Why it failed, as the model was told.
         error: String,
     },
+    /// The provider finished answering.
     ResponseCompleted,
+    /// The draft came back without a usable title and is being asked again.
     DraftTitleRepairStarted {
+        /// What was wrong with it.
         error: String,
     },
+    /// A review produced something unusable and is being retried.
     ReviewRetryStarted {
+        /// Which attempt this is.
         attempt: usize,
+        /// Why the previous one was rejected.
         error: String,
     },
+    /// The input did not fit, and is being re-sent smaller.
+    ///
+    /// The two sizes are the useful part: they say whether compaction found
+    /// anything to remove, which is what distinguishes a recoverable run from one
+    /// that will fail again.
     ContextCompactionStarted {
+        /// The stage being retried.
         stage: GenerationStage,
+        /// Characters sent the first time.
         original_chars: usize,
+        /// Characters after compaction.
         compacted_chars: usize,
     },
+    /// A rendered deck was measured in a browser.
     LayoutCheckCompleted {
+        /// How many slides overflowed. Zero means nothing needs repairing.
         issues: usize,
     },
+    /// One overflowing slide is being re-authored.
     LayoutSlideRepairStarted {
+        /// The slide number in the deck.
         slide: usize,
+        /// Position within this repair pass.
         position: usize,
+        /// How many slides this pass will repair.
         total: usize,
+        /// The profile doing the repair.
         profile: String,
     },
+    /// A slide repair produced something unusable and is being retried.
     LayoutSlideRepairRetryStarted {
+        /// The slide number.
         slide: usize,
+        /// Which attempt this is.
         attempt: usize,
+        /// Why the previous one was rejected.
         error: String,
     },
     /// A generated source failed validation and is about to be repaired.
@@ -234,39 +327,68 @@ pub enum TextGenerationEvent {
     },
 }
 
+/// Which part of a workflow an event came from.
+///
+/// Per-resource rather than generic, because "reviewing" means something different
+/// for a deck than for a film and a reader watching a run wants the specific one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GenerationStage {
+    /// Writing the first version.
     Draft,
+    /// Applying a focused instruction to something that already exists.
     Edit,
+    /// Re-authoring output that failed structural validation.
     ValidationRepair,
+    /// Reviewing content against the instruction and the sources.
     SemanticReview,
+    /// Re-authoring a diagram the renderer rejected.
     DiagramRepair,
+    /// Measuring a rendered deck in a browser.
     LayoutCheck,
+    /// Re-authoring slides that overflowed.
     LayoutRepair,
+    /// Producing the final artifact.
     Rendering,
+    /// Writing a page's fragment, CSS and script.
     PageDraft,
+    /// Reviewing a page.
     PageReview,
+    /// Re-authoring a page the browser or the validator rejected.
     PageRepair,
+    /// Assembling and inspecting the standalone page.
     PageRendering,
+    /// Turning the instruction into a scene plan.
     VideoPlanning,
+    /// Reviewing that plan before anything is authored.
     VideoReview,
+    /// Writing the scene sources the engine renders.
     VideoAuthoring,
+    /// Re-authoring a scene that failed to render or validate.
     VideoRepair,
     /// An image-capable model inspecting rendered frames.
     VideoVisualReview,
+    /// Handing the authored sources to the engine.
     VideoRendering,
     /// Speaking the planned narration and timing it against the storyboard.
     VideoNarration,
+    /// Writing a document's sections.
     DocumentDraft,
+    /// Re-authoring document content that failed structural validation.
     DocumentValidationRepair,
+    /// Re-authoring a document diagram the renderer rejected.
     DocumentDiagramRepair,
+    /// Reviewing a document.
     DocumentReview,
+    /// Measuring the paginated result, which is where prose reflow shows up.
     DocumentFormatCheck,
+    /// Re-authoring content that paginated badly.
     DocumentFormatRepair,
+    /// Producing the PDF.
     DocumentRendering,
 }
 
 impl GenerationStage {
+    /// The stable identifier used in events and JSON output.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Draft => "drafting slides",
@@ -300,27 +422,45 @@ impl GenerationStage {
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// One tool, as declared to a model.
 pub struct ToolDefinition {
+    /// Always `function`; the field exists because the wire format has it.
     #[serde(rename = "type")]
     pub kind: String,
+    /// What the model is told it can call.
     pub function: ToolFunctionDefinition,
 }
 
 #[derive(Clone, Debug, Serialize)]
+/// The name, purpose and argument schema a model needs to call a tool.
 pub struct ToolFunctionDefinition {
+    /// Name the model calls.
     pub name: String,
+    /// What it does, in prose. This is what the model actually reasons about, so it
+    /// carries the usage guidance and not only the summary.
     pub description: String,
+    /// JSON Schema for the arguments.
     pub parameters: Value,
 }
 
 #[derive(Clone, Debug)]
+/// A model's request to run one tool.
 pub struct ToolExecutionRequest {
+    /// Which tool.
     pub name: String,
+    /// What the model passed. Unvalidated: the executor is what checks it.
     pub arguments: Value,
 }
 
+/// Runs the tools a model asks for.
+///
+/// Returns a `String` because the result goes back to the model as a message.
+/// A refusal is a returned error rather than a failed generation: the model is told
+/// why and can try something else, which is how a path outside the project's
+/// readable roots gets declined without ending the run.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    /// Runs one tool call and returns what the model should be told.
     async fn execute(
         &self,
         request: ToolExecutionRequest,
@@ -330,17 +470,25 @@ pub trait ToolExecutor: Send + Sync {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+/// A tool call as a provider reported it.
 pub struct ToolCall {
+    /// Provider-assigned identifier, echoed back with the result. Absent on
+    /// providers that do not use one.
     pub id: Option<String>,
+    /// Always `function`; defaulted because not every provider sends it.
     #[serde(default = "function_tool_kind")]
     #[serde(rename = "type")]
     pub kind: String,
+    /// Which tool, and with what.
     pub function: ToolCallFunction,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+/// The tool named in a call, and its arguments.
 pub struct ToolCallFunction {
+    /// Tool name.
     pub name: String,
+    /// Arguments as the model produced them.
     pub arguments: Value,
 }
 
@@ -348,8 +496,14 @@ fn function_tool_kind() -> String {
     "function".to_string()
 }
 
+/// A text generation with the tool loop already handled.
+///
+/// What the workflows depend on. [`AgentRunner`] is the implementation; a provider
+/// adapter implements the narrower [`TextModel`] instead and gets the loop, the
+/// round limit and cancellation from it.
 #[async_trait]
 pub trait TextGenerationProvider: Send + Sync {
+    /// Runs a request to completion, resolving tool calls along the way.
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
@@ -600,14 +754,20 @@ fn complete_agent_response(
     Ok(TextGenerationResponse { text })
 }
 
+/// One image to generate.
 #[derive(Clone, Debug)]
 pub struct ImageGenerationRequest {
+    /// What to draw. Written by the drafting model, not by a person.
     pub prompt: String,
 }
 
+/// A generated image.
 #[derive(Clone, Debug)]
 pub struct ImageGenerationResponse {
+    /// The encoded image. Bytes rather than a path: nothing has decided where this
+    /// belongs yet, and a rejected image should not have to be cleaned up.
     pub bytes: Vec<u8>,
+    /// IANA media type, which decides the file extension when it is stored.
     pub media_type: String,
 }
 
@@ -817,8 +977,10 @@ pub trait ConnectorIntrospection: Send + Sync {
     ) -> SfumatoResult<ConnectorStatus>;
 }
 
+/// Generates images.
 #[async_trait]
 pub trait ImageGenerationProvider: Send + Sync {
+    /// Generates one image.
     async fn generate_image(
         &self,
         request: ImageGenerationRequest,
