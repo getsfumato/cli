@@ -6,7 +6,7 @@
 
 use super::*;
 
-use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
+use std::{fs, io::Write, os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 
 use sfumato_core::{
     errors::ErrorCode,
@@ -29,9 +29,22 @@ impl StubBrain {
             "#!/bin/sh\nprintf '%s' \"$*\" > \"$(dirname \"$0\")/arguments\"\n\
              cat <<'STDOUT'\n{stdout}\nSTDOUT\n>&2 printf '%s' '{stderr}'\nexit {code}\n"
         );
-        fs::write(&script, body).expect("the stub is written");
+        // Written through an explicit handle that is synced and closed before the
+        // mode is set, rather than through `fs::write`: Linux refuses to exec a
+        // file that any process still holds a write descriptor to, and returns
+        // ETXTBSY. The suite runs in parallel and several tests spawn processes, so
+        // a sibling's fork can be holding an inherited copy of this descriptor
+        // across its own exec window. It is a narrow race and it was reached on CI
+        // — "Text file busy" out of a test that passes in isolation every time.
+        let mut handle = fs::File::create(&script).expect("the stub is created");
+        handle
+            .write_all(body.as_bytes())
+            .expect("the stub is written");
+        handle.sync_all().expect("the stub reaches disk");
+        drop(handle);
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
             .expect("the stub is executable");
+        wait_until_executable(&script);
         Self { home }
     }
 
@@ -59,6 +72,23 @@ impl StubBrain {
     fn arguments(&self) -> String {
         fs::read_to_string(self.home.path().join("arguments")).expect("the stub recorded its call")
     }
+}
+
+/// Blocks until the stub can actually be executed.
+///
+/// Turns the ETXTBSY race described above into a short wait instead of a failed
+/// test. The window is microseconds; the bound exists so a genuinely broken stub
+/// fails rather than hangs.
+fn wait_until_executable(script: &std::path::Path) {
+    for _ in 0..100 {
+        match std::process::Command::new(script).output() {
+            Err(error) if error.raw_os_error() == Some(26) => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            _ => return,
+        }
+    }
+    panic!("the stub never became executable: {}", script.display());
 }
 
 fn search_request(binding: BrainBinding) -> BrainSearchRequest {

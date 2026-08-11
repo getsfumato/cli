@@ -159,6 +159,15 @@ jobs:
         with:
           key: auto-release
 
+      # The gate, before anything is tagged. `ci.yml` runs on the same push but
+      # nothing joins the two, so without this a release can be cut from a commit
+      # whose CI is red — which happened on 0.3.1, from a flake rather than a real
+      # regression, but the process allowed it. Only runs when there is a release to
+      # cut, so an ordinary push stays cheap.
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
       - name: bump the workspace version
         env:
           VERSION: ${{ needs.plan.outputs.version }}

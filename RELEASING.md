@@ -22,9 +22,14 @@ semver says anything may change in `0.x`. That collapses breaks and features ont
 one bump, which is a real loss of signal — the changelog still separates them, and
 the mapping changes on its own once the version reaches `1.0`.
 
-The workflow bumps all four version strings, updates the lock, writes the changelog
-section, commits as `chore(release): <version>`, tags, and builds the artifacts. A
-commit whose type it does not recognise is reported as a warning rather than
+When there is a release to cut, the workflow runs the full gate first — fmt,
+clippy, the suite — then bumps all four version strings, updates the lock, writes
+the changelog section, commits as `chore(release): <version>`, tags, and builds the
+artifacts. `ci.yml` runs on the same push but nothing joins the two, so the gate is
+repeated here deliberately: without it a release can be cut from a commit whose CI
+is red, which is how 0.3.1 shipped (from a flake, not a regression).
+
+A commit whose type it does not recognise is reported as a warning rather than
 ignored: `feet:` parses cleanly and releases nothing.
 
 To release commits that would not trigger one, run `auto-release` from the Actions
