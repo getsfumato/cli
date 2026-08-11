@@ -14,7 +14,6 @@ pub mod config;
 /// Structured configuration editing port.
 pub mod config_editor;
 /// Connector configuration services.
-#[allow(missing_docs)]
 pub mod connectors;
 pub mod errors;
 pub mod filesystem;
@@ -24,7 +23,6 @@ pub mod generation;
 /// Knowledge-source ports: the brain a project may be grounded in.
 pub mod knowledge;
 /// Named model profile and default-management services.
-#[allow(missing_docs)]
 pub mod models;
 pub mod operation;
 /// Offline JavaScript plugin packages available to generated pages.
@@ -51,7 +49,6 @@ pub mod setup;
 pub mod sources;
 pub mod templates;
 /// Theme package entities and application services.
-#[allow(missing_docs)]
 pub mod themes;
 pub mod tools;
 pub mod web;

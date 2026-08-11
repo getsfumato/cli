@@ -20,10 +20,16 @@ pub const THEME_SCHEMA_VERSION: u32 = 1;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeManifest {
+    /// Must equal [`THEME_SCHEMA_VERSION`]; anything else is refused rather than
+    /// guessed at.
     pub schema_version: u32,
+    /// Identifier, in the grammar [`validate_theme_name`] enforces.
     pub name: String,
+    /// One line shown in listings and selectors.
     pub description: String,
+    /// The vocabulary every renderer draws from.
     pub tokens: ThemeTokens,
+    /// Per-renderer files this package provides.
     pub adapters: ThemeAdapters,
 }
 
@@ -31,8 +37,11 @@ pub struct ThemeManifest {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeTokens {
+    /// Semantic name to CSS colour, emitted as custom properties so a renderer
+    /// refers to `--sfumato-<name>` rather than to a literal.
     #[serde(default)]
     pub colors: BTreeMap<String, String>,
+    /// Semantic name to font stack, emitted the same way.
     #[serde(default)]
     pub fonts: BTreeMap<String, String>,
 }
@@ -41,7 +50,10 @@ pub struct ThemeTokens {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeAdapters {
+    /// Slide stylesheet, relative to the theme root. Required: slides are the one
+    /// resource every theme must be able to render.
     pub marp_css: PathBuf,
+    /// Page shell and assets. Absent means this theme cannot render pages.
     #[serde(default)]
     pub html: Option<HtmlThemeAdapter>,
     /// Print styling for paginated documents.
@@ -77,8 +89,12 @@ pub struct DocumentThemeAdapter {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HtmlThemeAdapter {
+    /// HTML document the generated fragment is placed into. Must contain exactly
+    /// one content slot.
     pub shell: PathBuf,
+    /// Stylesheet, inlined into the assembled page so it stays self-contained.
     pub css: PathBuf,
+    /// Optional script, inlined the same way.
     #[serde(default)]
     pub script: Option<PathBuf>,
 }
@@ -86,13 +102,17 @@ pub struct HtmlThemeAdapter {
 /// A validated theme package and its infrastructure-owned root.
 #[derive(Clone, Debug)]
 pub struct ThemePackage {
+    /// Directory the package was loaded from. Every path in the manifest is
+    /// relative to it, and resolving them is what keeps a theme portable.
     pub root: PathBuf,
+    /// The validated manifest.
     pub manifest: ThemeManifest,
 }
 
 /// Compact theme data used by lists and selectors.
 #[derive(Clone, Debug)]
 pub struct ThemeSummary {
+    /// The theme's name, which is all a list or a picker needs.
     pub name: String,
 }
 

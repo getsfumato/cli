@@ -1,3 +1,5 @@
+//! Model profiles: the named bindings from a capability to a connector's model.
+
 use std::{str::FromStr, sync::Arc};
 
 use crate::{
@@ -7,6 +9,10 @@ use crate::{
     sfumato_bail as bail,
 };
 
+/// Model-profile use cases.
+///
+/// Holds the configuration it was built from, along with the revision it was read
+/// at, so a write can refuse to clobber a change made since.
 pub struct ModelService {
     config: GlobalConfig,
     revision: String,
@@ -14,28 +20,47 @@ pub struct ModelService {
     project_repository: Arc<dyn ProjectRepository>,
 }
 
+/// One profile as a listing shows it.
 #[derive(Clone, Debug)]
 pub struct ModelSummary {
+    /// Profile name, which is what `--model <capability>=<name>` refers to.
     pub name: String,
+    /// Connector the profile generates through.
     pub connector: String,
+    /// Provider-side model identifier, as the provider spells it.
     pub model: String,
+    /// What this profile may be selected for. A profile is only offered where it
+    /// declares the capability, because the layers below reject the alternative.
     pub capabilities: Vec<Capability>,
 }
 
+/// Confirmation of a changed default, for the caller to report back.
 #[derive(Clone, Debug)]
 pub struct ModelDefaultChanged {
+    /// What was pointed somewhere new.
     pub selection: ModelSelection,
+    /// The profile it now points at.
     pub profile: String,
+    /// The project it changed for; `None` means the user-global default.
     pub project: Option<String>,
 }
 
+/// What a default can be set for.
+///
+/// Two kinds, because they answer different questions: a capability is *what the
+/// model must be able to do*, a role is *what job it does in a run*. The reviewer is
+/// a role, and it needs text like the drafter does, so a capability alone could not
+/// distinguish them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelSelection {
+    /// A capability: `text`, `code`, `image`, `video`, `speech`, `embedding`.
     Capability(Capability),
+    /// A named role, such as the reviewer.
     Role(ModelRole),
 }
 
 impl ModelSelection {
+    /// The stable identifier a caller passes and a config stores.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Capability(capability) => capability.as_str(),
@@ -67,6 +92,7 @@ impl FromStr for ModelSelection {
 }
 
 impl ModelService {
+    /// Creates the service from a configuration snapshot and its revision.
     pub fn new(
         global_repository: Arc<dyn GlobalConfigRepository>,
         project_repository: Arc<dyn ProjectRepository>,
@@ -80,6 +106,7 @@ impl ModelService {
         })
     }
 
+    /// Every configured profile.
     pub fn list(&self) -> Vec<ModelSummary> {
         self.config
             .models
@@ -93,6 +120,7 @@ impl ModelService {
             .collect()
     }
 
+    /// One profile by name, or a not-found error naming what was asked for.
     pub fn profile(&self, name: &str) -> Result<ModelProfile> {
         self.config
             .models
@@ -101,6 +129,10 @@ impl ModelService {
             .or_not_found_with(|| format!("Model profile '{name}' was not found"))
     }
 
+    /// Registers a new profile, refusing a name that already exists.
+    ///
+    /// The connector must exist and the capabilities must be ones it can serve, so a
+    /// profile cannot be created that is guaranteed to fail when selected.
     pub fn add(
         &mut self,
         name: String,
@@ -134,6 +166,10 @@ impl ModelService {
         Ok(profile)
     }
 
+    /// Removes a profile, refusing while anything still defaults to it.
+    ///
+    /// Otherwise the next run would fail on a dangling reference rather than here,
+    /// where the cause is obvious.
     pub fn remove(&mut self, name: &str) -> Result<String> {
         if !self.config.models.contains_key(name) {
             return Err(SfumatoError::not_found(format!(
@@ -196,6 +232,7 @@ impl ModelService {
         Ok(name.to_string())
     }
 
+    /// Changes an existing profile in place, validating the result as a whole.
     pub fn edit(
         &mut self,
         name: &str,
@@ -252,6 +289,10 @@ impl ModelService {
         self.profile(name)
     }
 
+    /// Points a capability or role at a profile, globally or for one project.
+    ///
+    /// Verifies the profile declares what is being asked of it, so the selection
+    /// cannot be made unusable at the moment it is made.
     pub fn use_default(
         &mut self,
         selector: &str,

@@ -17,13 +17,27 @@ use crate::{
     sfumato_bail as bail,
 };
 
+/// A supported provider, and everything that follows from choosing it.
+///
+/// A preset fixes the generation transport, the authentication shape, and which
+/// native operations — catalog, status, usage — are available, so `connector setup`
+/// takes one word rather than a set of coordinates that can disagree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectorPreset {
+    /// Local Ollama, over its OpenAI-compatible `/v1`. No credential by default.
     Ollama,
+    /// Local LM Studio, over the same transport, plus its native catalog endpoint
+    /// which reports quantization and load state that `/v1/models` omits.
     Lmstudio,
+    /// OpenRouter: text and image over the shared transport, video asynchronously.
     Openrouter,
+    /// Anthropic's native Messages API, which is not `chat/completions` and
+    /// authenticates with `x-api-key`. Text only.
     Anthropic,
+    /// A local Codex app server, over JSON-RPC on stdio. Its credential belongs to
+    /// `codex login`, not to Sfumato.
     Codex,
+    /// ElevenLabs speech, returning audio with word-level timings.
     Elevenlabs,
 }
 
@@ -284,6 +298,7 @@ impl std::str::FromStr for ConnectorPreset {
     }
 }
 
+/// Connector configuration and credential use cases.
 pub struct ConnectorService {
     config: GlobalConfig,
     revision: String,
@@ -292,30 +307,49 @@ pub struct ConnectorService {
 }
 
 #[derive(Clone, Debug)]
+/// One connector as a listing shows it.
 pub struct ConnectorSummary {
+    /// Registry name, chosen by the user, so one kind can be configured twice.
     pub name: String,
+    /// Which adapter serves it.
     pub kind: String,
+    /// Where it points: an endpoint, or the executable it drives.
     pub target: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
+/// One connector's configuration, with nothing secret in it.
 pub struct ConnectorDetails {
+    /// Which adapter serves it.
     pub kind: String,
+    /// Endpoint, for the HTTP transports.
     pub base_url: Option<String>,
+    /// Executable, for the process-backed transports.
     pub executable: Option<String>,
+    /// The secret *reference* — a `stored:` or `env:` pointer. Never the value; a
+    /// credential does not leave the secret store through here.
     pub credential: Option<String>,
+    /// Extra headers sent with every request.
     pub headers: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
+/// Whether a connector can authenticate, without revealing how.
 pub struct ConnectorAuthStatus {
+    /// The connector asked about.
     pub name: String,
+    /// The secret reference, not the secret.
     pub credential: Option<String>,
+    /// Whether the reference currently resolves to something. False means the
+    /// keyring entry or environment variable it names is missing.
     pub available: bool,
+    /// Whether the credential belongs to another tool — `codex login` owns Codex's —
+    /// in which case Sfumato reports on it but must not try to change it.
     pub managed_externally: bool,
 }
 
 impl ConnectorService {
+    /// Creates the service from a configuration snapshot and the secret ports.
     pub fn new(
         repository: Arc<dyn GlobalConfigRepository>,
         secrets: Arc<dyn SecretStore>,
@@ -329,6 +363,7 @@ impl ConnectorService {
         })
     }
 
+    /// Every configured connector.
     pub fn list(&self) -> Vec<ConnectorSummary> {
         self.config
             .connectors
@@ -341,6 +376,7 @@ impl ConnectorService {
             .collect()
     }
 
+    /// One connector's configuration, redacted.
     pub fn show(&self, name: &str) -> Result<ConnectorDetails> {
         let connector = self
             .config
@@ -382,6 +418,10 @@ impl ConnectorService {
         })
     }
 
+    /// Registers a connector from a preset.
+    ///
+    /// Writes where to reach it and how its credential will be referenced; it never
+    /// accepts the credential itself, which is what `login` is for.
     pub fn setup(
         &mut self,
         preset: ConnectorPreset,
@@ -406,6 +446,9 @@ impl ConnectorService {
         Ok(ConnectorSummary { name, kind, target })
     }
 
+    /// Stores a credential in the operating system's secret store.
+    ///
+    /// Refuses a connector whose credential is managed by another tool.
     pub async fn login(&mut self, name: &str, secret: SecretValue) -> Result<ConnectorAuthStatus> {
         let connector = self
             .config
@@ -439,6 +482,7 @@ impl ConnectorService {
         })
     }
 
+    /// Whether a connector's credential resolves, without returning it.
     pub async fn auth_status(&self, name: &str) -> Result<ConnectorAuthStatus> {
         let connector = self
             .config
@@ -463,6 +507,7 @@ impl ConnectorService {
         })
     }
 
+    /// Deletes a stored credential, leaving the connector configured.
     pub async fn logout(&mut self, name: &str) -> Result<ConnectorAuthStatus> {
         let connector = self
             .config
