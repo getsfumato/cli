@@ -81,6 +81,18 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - name: the public API must stay documented
+        run: |
+          # sfumato-core carried ten blanket #[allow(missing_docs)], so docs.rs
+          # showed 436 public items with no explanation of any of them. They are all
+          # written now; this stops the allow coming back one module at a time,
+          # which is how it got there.
+          if grep -rn 'allow(missing_docs)' crates/*/src; then
+            echo "::error::a crate is suppressing missing_docs; document the items instead"
+            exit 1
+          fi
+          echo "no crate suppresses missing_docs"
+
       - name: no cargo invocation may run the opt-in tests
         run: |
           # `real-renderers` gates tests that execute marp, mmdc, ffmpeg, curl and

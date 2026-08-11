@@ -40,8 +40,11 @@ use crate::{
     themes::ThemePackage,
 };
 
+/// One focused amendment to an existing deck.
 pub struct EditSlidesRequest {
+    /// The deck to amend, in the managed revision store.
     pub markdown_path: PathBuf,
+    /// What to change, in the user's words.
     pub instruction: String,
 }
 
@@ -59,18 +62,33 @@ pub(crate) struct EditSlidesOptions {
 }
 
 #[derive(Debug, Serialize)]
+/// What an edit changed, as a child revision of the deck it amended.
+#[allow(clippy::doc_markdown)]
 pub struct EditSlidesResult {
+    /// The project the deck belongs to.
     pub project: String,
+    /// The profile that produced the patch.
     pub model: String,
+    /// The amended source, which is a new revision rather than an overwrite.
     pub markdown_path: PathBuf,
+    /// The re-exported PDF.
     pub pdf_path: PathBuf,
+    /// The project instruction file that shaped the edit, if any.
     pub project_instructions: Option<PathBuf>,
+    /// How many RFC 6902 operations the patch contained. An edit is expressed as a
+    /// patch, not a rewrite, so an unrelated slide cannot be quietly reworded.
     pub operations: usize,
+    /// Which slides the patch touched, by title.
     pub changed_slides: Vec<String>,
+    /// Whether the input had to be re-sent smaller to fit the context window.
     pub context_compacted: bool,
+    /// Slides that overflow after the edit.
     pub layout_issues: Vec<SlideLayoutIssue>,
+    /// Files committed to the revision.
     pub artifacts: Vec<PathBuf>,
+    /// Non-fatal problems worth reporting.
     pub warnings: Vec<String>,
+    /// Which prompt templates were used, and from which layer.
     pub prompts: Vec<PromptProvenance>,
 }
 

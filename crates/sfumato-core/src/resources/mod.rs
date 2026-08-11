@@ -14,11 +14,16 @@ use crate::{
     sources::SourceDocument,
 };
 
+/// Paginated prose documents, exported through Paged.js.
 pub mod documents;
+/// Narration planning and timing for local video engines.
 pub mod narration;
+/// Self-contained interactive HTML pages.
 pub mod pages;
 pub(crate) mod project_assets;
+/// Marp slide decks.
 pub mod slides;
+/// MP4 films, from a scene plan through an engine.
 pub mod videos;
 
 /// Truncates text destined for a prompt, saying so when it truncates.

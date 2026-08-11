@@ -107,14 +107,22 @@ pub(crate) struct GenerateSlidesOptions {
     pub project_asset_catalog: Arc<dyn ProjectAssetCatalog>,
 }
 
+/// Complete slide-generation result returned to presentation frontends.
 #[derive(Debug)]
 pub struct GenerateSlidesResult {
+    /// The Marp source in the managed revision, which stays editable.
     pub markdown_path: PathBuf,
+    /// The exported PDF, absent when export was turned off.
     pub pdf_path: Option<PathBuf>,
+    /// The published copy of that PDF, when publishing was asked for.
     pub published_pdf_path: Option<PathBuf>,
+    /// Everything recorded about the run.
     pub output: GenerationOutput,
+    /// The prompt that would have been sent; present only for a dry run.
     pub prompt_preview: Option<String>,
+    /// Tools the drafter was offered.
     pub tool_summaries: Vec<GenerationToolSummary>,
+    /// Non-fatal problems worth reporting.
     pub warnings: Vec<String>,
 }
 

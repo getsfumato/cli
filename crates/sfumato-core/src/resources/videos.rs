@@ -144,10 +144,16 @@ pub(crate) struct GenerateVideoOptions {
 
 /// Inputs required to render one previously paused Hyperframe review session.
 pub struct ApproveVideoReviewOptions {
+    /// Cancellation and progress for the resumed render.
     pub operation: OperationContext,
+    /// Where the paused session and its scenes were left.
     pub artifact_store: Arc<dyn ArtifactStore>,
+    /// The engine that finishes the film.
     pub video_renderer: Arc<dyn VideoRenderer>,
+    /// Used to publish the finished MP4.
     pub workspace: Arc<dyn WorkspaceFileSystem>,
+    /// Whether the caller supplied a publication directory, overriding the
+    /// project's.
     pub publish_root_override: bool,
 }
 

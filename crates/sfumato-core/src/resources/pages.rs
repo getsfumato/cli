@@ -57,11 +57,19 @@ use super::{
 /// Complete page-generation result returned to presentation frontends.
 #[derive(Debug)]
 pub struct GeneratePageResult {
+    /// The assembled page in the managed revision.
     pub html_path: PathBuf,
+    /// Copies published beside the sources, when publishing was asked for.
     pub published_paths: Vec<PathBuf>,
+    /// Everything recorded about the run.
     pub output: PageGenerationOutput,
+    /// The prompt that would have been sent. Present only for a dry run, which is
+    /// what makes `--dry-run` inspectable rather than merely fast.
     pub prompt_preview: Option<String>,
+    /// Tools the drafter was offered.
     pub tool_summaries: Vec<GenerationToolSummary>,
+    /// Non-fatal problems worth telling the caller about. A run can succeed and
+    /// still have something to say.
     pub warnings: Vec<String>,
 }
 

@@ -35,7 +35,6 @@ pub mod python;
 pub mod renderers;
 pub mod repositories;
 /// Resource-specific application workflows.
-#[allow(missing_docs)]
 pub mod resources;
 pub mod retry;
 pub mod review;
