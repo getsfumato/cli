@@ -220,3 +220,17 @@ jobs:
     uses: ./.github/workflows/release-artifacts.yml
     with:
       tag: ${{ needs.plan.outputs.tag }}
+
+  crates:
+    # After the artifacts, never before. A GitHub release can be deleted; a
+    # crates.io version can be yanked but never deleted and never reused. Chaining it
+    # here means the binaries have already built and smoke-tested on six targets and
+    # the release has gone live before anything irreversible happens.
+    needs: [plan, artifacts]
+    if: needs.plan.outputs.release == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-crates.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}

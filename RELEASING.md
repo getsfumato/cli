@@ -106,6 +106,36 @@ Delete and retag an rc freely: `gh release delete <tag> --yes --cleanup-tag`.
 
 ## Publishing to crates.io
 
+Automatic, as the last job of `auto-release`, through `publish-crates.yml`.
+
+It authenticates with **Trusted Publishing** rather than a stored token: crates.io is
+told that runs of that workflow file in this repository may publish, GitHub mints a
+short-lived signed token proving the run's identity, and crates.io exchanges it for a
+publish permission valid for about thirty minutes. There is no long-lived secret —
+nothing to rotate and nothing to leak. **The workflow's filename is part of the
+claim**, so renaming it breaks publishing until the claim is updated on all four
+crates.
+
+Configuring it, once per crate, at `https://crates.io/crates/<name>/settings`:
+
+| Field | Value |
+| --- | --- |
+| Repository owner | `getsfumato` |
+| Repository name | `sfumato` |
+| Workflow filename | `publish-crates.yml` |
+| Environment | leave empty |
+
+Four crates: `sfumato-domain`, `sfumato-core`, `sfumato-adapters`, `sfumato`. It can
+only be set on a crate that already exists, which is why the first publish had to use
+a token.
+
+It runs after the artifacts job, never before, for the reason below.
+
+### Doing it by hand
+
+Still available: run `publish-crates` from the Actions tab with a tag, or locally with
+a token.
+
 **After** the GitHub release is validated, never before. GitHub releases can be
 deleted; crates.io versions can be yanked but never deleted and never reused. If
 crates.io goes first and the macOS binary turns out to be broken, that version

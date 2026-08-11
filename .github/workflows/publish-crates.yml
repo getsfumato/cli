@@ -1,0 +1,134 @@
+name: publish-crates
+
+# Publishes the four crates to crates.io.
+#
+# Authenticates through Trusted Publishing rather than a stored token: crates.io is
+# told that runs of *this workflow file* in this repository may publish, GitHub mints
+# a short-lived signed token proving the run's identity, and crates.io exchanges it
+# for a publish permission good for about thirty minutes. There is no long-lived
+# secret anywhere — nothing to rotate, nothing to leak.
+#
+# The name of this file is part of that claim. Renaming it breaks publishing until
+# the claim is updated on all four crates.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag to publish from. Must already exist.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to publish from, such as v0.4.0.
+        required: true
+        type: string
+      dry_run:
+        description: Package and verify without uploading.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # What lets GitHub mint the OIDC token crates.io verifies. Without it the auth
+  # step fails with a missing id-token, not with a permissions message that says so.
+  id-token: write
+
+concurrency:
+  # Publishing is not repeatable: a version can be yanked but never deleted or
+  # reused. Two runs racing on the same version is not a state worth being in.
+  group: publish-crates
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: publish
+
+      - name: the tag must match the workspace version
+        run: |
+          set -eu
+          tag="${{ inputs.tag }}"
+          cargo metadata --no-deps --format-version 1 --locked > /tmp/meta.json
+          TAG="${tag#v}" python3 .github/scripts/check_versions.py
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          DRY: ${{ inputs.dry_run }}
+        run: |
+          set -eu
+          tag="${{ inputs.tag }}"
+          version="${tag#v}"
+
+          # Reads the sparse index rather than trusting a previous step, so a rerun
+          # after a partial failure makes forward progress instead of erroring on the
+          # crates that already landed. crates.io also throttles *new* crate creation,
+          # which is exactly when a partial failure is likely.
+          published() {
+            curl -fsS "https://index.crates.io/${1:0:2}/${1:2:2}/$1" 2>/dev/null \
+              | grep -q "\"vers\":\"$2\""
+          }
+
+          # Dependency order. `cargo publish --workspace` would do the ordering and
+          # the index waiting itself, but it is all-or-nothing and refuses outright if
+          # any version already exists — which makes retry-after-partial-failure
+          # impossible, the one case that matters here.
+          for crate in sfumato-domain sfumato-core sfumato-adapters sfumato; do
+            if published "$crate" "$version"; then
+              echo "skip $crate $version, already on crates.io"
+              continue
+            fi
+
+            # Between core and adapters, packaging adapters compiles the extracted
+            # copy against the just-published core. That is the only real proof the
+            # compiled-in assets survived packaging: `include_dir!` yields an empty
+            # directory when its target is missing and still compiles, so a bad
+            # `include` would publish a crate with no prompts and pass every other
+            # check.
+            if [ "$crate" = "sfumato-adapters" ]; then
+              cargo package -p sfumato-adapters --locked
+            fi
+
+            if [ "$DRY" = "true" ]; then
+              echo "dry run: $crate $version"
+              cargo publish -p "$crate" --locked --dry-run
+            else
+              cargo publish -p "$crate" --locked
+            fi
+          done
+
+      - name: an outside consumer must be able to use it
+        if: inputs.dry_run != true
+        run: |
+          set -eu
+          version="${{ inputs.tag }}"
+          version="${version#v}"
+          # The acceptance test for publishing at all: the libraries exist so another
+          # front end can reuse the workflows without this repository. Run outside the
+          # workspace, or the path dependencies would resolve locally and prove
+          # nothing.
+          work=$(mktemp -d)
+          cd "$work"
+          cargo new probe >/dev/null
+          cd probe
+          cargo add "sfumato-core@$version"
+          cargo build
+          echo "sfumato-core $version resolves and builds from crates.io"
