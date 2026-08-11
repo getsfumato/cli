@@ -45,6 +45,14 @@ resolves the version from `releases/latest`, downloads
    docker run --rm alpine  sh -c 'apk add --no-cache curl >/dev/null && curl -fsSL https://sfumato.sh/install.sh | sh && ~/.local/bin/sfumato --version'
    ```
 
+   To pin a version, the assignment goes on the `sh`, not the `curl` — otherwise it
+   is set for the download and not for the script, which silently resolves
+   `releases/latest` instead:
+
+   ```bash
+   curl -fsSL https://sfumato.sh/install.sh | SFUMATO_VERSION=0.3.0 sh
+   ```
+
    Debian 12 exercises the glibc floor; Alpine is the only thing that exercises
    the musl artifacts.
 
@@ -58,7 +66,7 @@ which makes it a rehearsal with no blast radius:
 # bump the manifest to 0.3.1-rc.1 first, so the tag, the assets and the binary
 # all report the same version
 git tag v0.3.1-rc.1 && git push origin v0.3.1-rc.1
-SFUMATO_VERSION=0.3.1-rc.1 curl -fsSL https://sfumato.sh/install.sh | sh
+curl -fsSL https://sfumato.sh/install.sh | SFUMATO_VERSION=0.3.1-rc.1 sh
 ```
 
 Delete and retag an rc freely: `gh release delete <tag> --yes --cleanup-tag`.
