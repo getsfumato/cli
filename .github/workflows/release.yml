@@ -1,5 +1,9 @@
 name: release
 
+# The manual path: someone pushed a tag deliberately. `auto-release.yml` is the
+# usual one and computes the tag from the commits; both end up in
+# `release-artifacts.yml`, so a tag pushed by hand builds exactly what an automatic
+# release would.
 on:
   push:
     tags:
@@ -21,8 +25,6 @@ jobs:
   verify:
     name: verify
     runs-on: ubuntu-24.04
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -33,208 +35,21 @@ jobs:
         with:
           key: verify
 
-      - id: version
-        name: the tag must match the workspace version
+      - name: the tag must match the workspace version
         run: |
           set -eu
           tag="${GITHUB_REF_NAME#v}"
           cargo metadata --no-deps --format-version 1 --locked > /tmp/meta.json
-          TAG="$tag" python3 - <<'PY'
-          import json, os, sys
-          tag = os.environ["TAG"]
-          meta = json.load(open("/tmp/meta.json"))
-          versions = {p["name"]: p["version"] for p in meta["packages"]}
-          wrong = {n: v for n, v in versions.items() if v != tag}
-          if wrong:
-              print(f"::error::tag says {tag}, these do not: {wrong}")
-              sys.exit(1)
-          # A stale internal requirement publishes a crate depending on a version
-          # that never existed, and that cannot be undone. `cargo publish
-          # --dry-run` resolves through the path and never sees it.
-          bad = []
-          for package in meta["packages"]:
-              for dep in package["dependencies"]:
-                  if dep["name"].startswith("sfumato") and dep["req"] != "^" + tag:
-                      bad.append(f'{package["name"]} -> {dep["name"]} {dep["req"]}')
-          if bad:
-              print("::error::stale internal dependency requirements: " + "; ".join(bad))
-              sys.exit(1)
-          print(f"all four crates and every internal requirement are at {tag}")
-          PY
-          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          TAG="$tag" python3 .github/scripts/check_versions.py
 
-      # The tag is cheap to move until an artifact exists, so the gate runs here
+      # A tag is cheap to move until an artifact exists, so the gate runs here
       # rather than trusting that CI passed on the commit.
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
-  draft:
-    # One job creates the release. Six build jobs racing on `gh release create`
-    # would 422; and a draft is invisible to `releases/latest`, so a half-built
-    # release never becomes the one the installer resolves.
-    name: draft
+  artifacts:
     needs: verify
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - name: create the draft release if it does not exist
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "release $GITHUB_REF_NAME already exists, reusing it"
-            exit 0
-          fi
-          gh release create "$GITHUB_REF_NAME" \
-            --draft --verify-tag \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
-
-  build:
-    name: ${{ matrix.target }}
-    needs: [verify, draft]
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            runner: macos-15
-            smoke: true
-          - target: x86_64-apple-darwin
-            runner: macos-15
-            # Cross-linked from arm64. Xcode ships both slices, which avoids
-            # depending on the shrinking supply of Intel macOS images, but the
-            # artifact cannot be executed here: ARM runners have no Rosetta.
-            smoke: false
-          - target: x86_64-unknown-linux-gnu
-            # 22.04, never ubuntu-latest: `latest` advances on its own and each
-            # advance raises the glibc floor of the published binary with no diff
-            # to show for it.
-            runner: ubuntu-22.04
-            smoke: true
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04-arm
-            smoke: true
-          - target: x86_64-unknown-linux-musl
-            runner: ubuntu-22.04
-            smoke: true
-            musl: true
-          - target: aarch64-unknown-linux-musl
-            runner: ubuntu-22.04-arm
-            smoke: true
-            musl: true
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.95.0
-          targets: ${{ matrix.target }}
-
-      - name: musl toolchain
-        if: matrix.musl
-        run: |
-          # `ring` compiles C and per-arch assembly in its build script, so a musl
-          # C compiler is required. Without it the build fails with `Failed to find
-          # tool. Is 'musl-gcc' installed?`.
-          #
-          # Only CC_*, deliberately. Pointing the *Rust linker* at musl-gcc as well
-          # produced an x86_64 binary that built cleanly and then segfaulted on
-          # `--version`: startup, not application code. Rust links musl targets with
-          # its own self-contained musl and knows how to do it; overriding the linker
-          # mixes that with the host toolchain's startup files. aarch64 happened to
-          # survive it, which is exactly why the smoke test runs per target instead
-          # of once.
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
-          triple=$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')
-          echo "CC_${triple}=musl-gcc" >> "$GITHUB_ENV"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: dist-${{ matrix.target }}
-
-      - run: cargo build --locked --profile dist --target ${{ matrix.target }} -p sfumato
-
-      - name: smoke test
-        if: matrix.smoke
-        run: |
-          binary="target/${{ matrix.target }}/dist/sfumato"
-          "$binary" --version
-          "$binary" --help > /dev/null
-
-      - name: archive and checksum
-        env:
-          VERSION: ${{ needs.verify.outputs.version }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -eux
-          # Named exactly as install.sh computes it. The `v` belongs in the file
-          # name as well as the tag directory; both derive from the tag here so
-          # they cannot drift apart.
-          name="sfumato-v${VERSION}-${TARGET}"
-          mkdir -p "dist/${name}"
-          cp "target/${TARGET}/dist/sfumato" "dist/${name}/sfumato"
-          # install.sh prefers a file with the executable bit, and tar preserves it.
-          chmod 755 "dist/${name}/sfumato"
-          cp README.md LICENSE "dist/${name}/"
-          cd dist
-          # Nested rather than flat: install.sh's `find` is recursive so both
-          # resolve, and nesting lets the archive carry the licence without
-          # tar-bombing anyone who extracts it by hand.
-          #
-          # COPYFILE_DISABLE stops BSD tar adding ._AppleDouble members on macOS.
-          COPYFILE_DISABLE=1 tar --format=ustar -czf "${name}.tar.gz" "${name}"
-          # Both emit "<64 hex>  <name>", which is what install.sh's
-          # `cut -d' ' -f1` expects. openssl dgst would emit "SHA256(f)= hex" and
-          # every install would die with a checksum mismatch, so the shape is
-          # asserted rather than assumed.
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
-          else
-            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
-          fi
-          sum=$(cut -d' ' -f1 < "${name}.tar.gz.sha256")
-          [ ${#sum} -eq 64 ] || { echo "::error::checksum file has the wrong shape: $sum"; exit 1; }
-          tar -tzf "${name}.tar.gz"
-
-      - name: upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.tar.gz.sha256 --clobber
-
-  finalize:
-    name: finalize
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - name: publish the release only if every artifact is present
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          # Six targets, an archive and a checksum each. Counting here is what
-          # stops `releases/latest` ever pointing at a release missing an
-          # architecture — including the case where an ARM runner failed to
-          # schedule and two legs silently vanished.
-          expected=12
-          found=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '[.assets[].name] | length')
-          echo "assets: $found (expected $expected)"
-          if [ "$found" -ne "$expected" ]; then
-            gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name'
-            echo "::error::expected $expected assets, found $found; leaving the release as a draft"
-            exit 1
-          fi
-          case "$GITHUB_REF_NAME" in
-            *-*)
-              # A prerelease stays out of releases/latest, so install.sh keeps
-              # resolving the last real release.
-              gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease
-              ;;
-            *)
-              gh release edit "$GITHUB_REF_NAME" --draft=false --latest
-              ;;
-          esac
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      tag: ${{ github.ref_name }}

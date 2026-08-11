@@ -166,23 +166,42 @@ jobs:
 
       - name: internal dependency versions must match the workspace version
         run: |
-          # `cargo publish --dry-run` resolves internal dependencies through their
-          # path, so it cannot see a stale `version` beside that path — and
-          # publishing one is irreversible.
+          # Same script the release path uses, so there is one implementation of the
+          # check that stands between a typo and an unfixable crates.io publish.
           cargo metadata --no-deps --format-version 1 --locked > /tmp/meta.json
-          python3 - <<'PY'
-          import json, sys
-          meta = json.load(open("/tmp/meta.json"))
-          versions = {p["name"]: p["version"] for p in meta["packages"]}
-          bad = []
-          for package in meta["packages"]:
-              for dep in package["dependencies"]:
-                  if dep["name"].startswith("sfumato"):
-                      want = "^" + versions[dep["name"]]
-                      if dep["req"] != want:
-                          bad.append(f'{package["name"]} -> {dep["name"]} {dep["req"]} (want {want})')
-          if bad:
-              print("::error::stale internal dependency requirements: " + "; ".join(bad))
-              sys.exit(1)
-          print("internal dependency requirements agree:", sorted(set(versions.values())))
-          PY
+          python3 .github/scripts/check_versions.py
+
+  scripts:
+    name: release scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: the release plan's tests must pass
+        # This decides unattended what version reaches users, and a published
+        # version number cannot be reused.
+        run: python3 .github/scripts/release_plan_test.py
+      - name: bumping and changelog insertion must round-trip
+        run: |
+          set -eu
+          work=$(mktemp -d)
+          cp Cargo.toml CHANGELOG.md "$work/"
+          before_comments=$(grep -c '^#' Cargo.toml)
+
+          cd "$work"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/bump_version.py" 9.9.9
+          # All four places, or a publish declares a dependency on a version that
+          # never existed.
+          [ "$(grep -c '9\.9\.9' Cargo.toml)" = 4 ] || {
+            echo "::error::bump_version did not set all four versions"; exit 1; }
+          # The manifest is mostly load-bearing commentary; a bump must not eat it.
+          [ "$(grep -c '^#' Cargo.toml)" = "$before_comments" ] || {
+            echo "::error::bump_version lost comments"; exit 1; }
+
+          printf '{"notes":"## 9.9.9 — 2026-01-01\\n\\n### Fixed\\n\\n- a thing\\n"}' > plan.json
+          python3 "$GITHUB_WORKSPACE/.github/scripts/prepend_changelog.py" 9.9.9 plan.json
+          grep -q '^## 9.9.9' CHANGELOG.md || { echo "::error::no section written"; exit 1; }
+          # Re-running a partially failed release must not duplicate the section.
+          python3 "$GITHUB_WORKSPACE/.github/scripts/prepend_changelog.py" 9.9.9 plan.json
+          [ "$(grep -c '^## 9.9.9' CHANGELOG.md)" = 1 ] || {
+            echo "::error::prepend_changelog is not idempotent"; exit 1; }
+          echo "bump and changelog round-trip cleanly"

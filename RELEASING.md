@@ -8,9 +8,37 @@ resolves the version from `releases/latest`, downloads
 
 ## Cutting a release
 
-1. **Bump the version.** One place: `version` under `[workspace.package]` in the
-   root `Cargo.toml`, plus the three `[workspace.dependencies]` entries. They must
-   agree — `release.yml` refuses the tag otherwise.
+**Normally you do not.** `auto-release.yml` runs on every push to master, reads the
+Conventional Commits since the last tag, and cuts the release if they call for one:
+
+| Commits since the last tag | Result |
+| --- | --- |
+| a `feat:`, or anything breaking | minor — `0.3.0` → `0.4.0` |
+| a `fix:` or `perf:` | patch — `0.3.0` → `0.3.1` |
+| only `docs`/`chore`/`ci`/`refactor`/`test`/`style` | nothing |
+
+While the major is `0`, a break takes the minor: there is no major to spend, and
+semver says anything may change in `0.x`. That collapses breaks and features onto
+one bump, which is a real loss of signal — the changelog still separates them, and
+the mapping changes on its own once the version reaches `1.0`.
+
+The workflow bumps all four version strings, updates the lock, writes the changelog
+section, commits as `chore(release): <version>`, tags, and builds the artifacts. A
+commit whose type it does not recognise is reported as a warning rather than
+ignored: `feet:` parses cleanly and releases nothing.
+
+To release commits that would not trigger one, run `auto-release` from the Actions
+tab with **force** — it takes a patch.
+
+### By hand
+
+Still supported, and the path to use for a prerelease, which the automatic one
+never produces.
+
+1. **Bump the version.** `python3 .github/scripts/bump_version.py 0.4.0` sets all
+   four places: `version` under `[workspace.package]` and the three
+   `[workspace.dependencies]` entries. They must agree — `release.yml` refuses the
+   tag otherwise, because `cargo publish --dry-run` cannot see a stale one.
 2. **Update `Cargo.lock`.** `cargo check --workspace`, then commit it. Skipping
    this is the most common way to fail at tag time, because every build passes
    `--locked`.
@@ -19,7 +47,7 @@ resolves the version from `releases/latest`, downloads
 5. **Tag and push it.**
 
    ```bash
-   git tag v0.3.0 && git push origin v0.3.0
+   git tag v0.4.0 && git push origin v0.4.0
    ```
 
 6. Watch the run. It builds six targets into a **draft** release and only
@@ -125,6 +153,28 @@ Only once that last command works should `cargo_fallback()` in the site's
 
 **Never move a tag crates.io has already seen.** Before that step tags are cheap;
 after it they are load-bearing history.
+
+## How the workflows fit together
+
+```text
+push to master  ──►  auto-release.yml   plan → bump, tag ─┐
+push a v* tag   ──►  release.yml        verify ───────────┤
+                                                          ▼
+                                     release-artifacts.yml  (workflow_call)
+                                        draft → build ×6 → finalize
+```
+
+`release-artifacts.yml` is reusable rather than tag-triggered for a reason worth
+knowing before changing it: **a tag pushed with `GITHUB_TOKEN` does not start a
+workflow.** GitHub refuses to let a run beget a run, so the automatic path cannot
+rely on its own tag being dispatched — it invokes the artifacts workflow directly.
+Making `release-artifacts.yml` trigger on tags instead would silently break the
+automatic release while leaving the manual one working.
+
+The same rule is what stops the release commit from looping: pushed with
+`GITHUB_TOKEN`, it starts nothing. `auto-release.yml` also skips any head commit
+starting with `chore(release):`, because depending on that rule alone would make an
+infinite release loop the failure mode if it ever changed.
 
 ## Adding a target
 

@@ -43,6 +43,10 @@ Desktop.ini
 .vscode/
 *.code-workspace
 
+# Python bytecode from the release scripts under .github/scripts
+__pycache__/
+*.pyc
+
 # Local test coverage/profiling output
 coverage/
 tarpaulin-report.html

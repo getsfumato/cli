@@ -1,0 +1,200 @@
+name: release-artifacts
+
+# Reusable so that both paths into a release share one implementation.
+#
+# It is `workflow_call` rather than a tag trigger because a tag pushed with
+# GITHUB_TOKEN does not start a workflow — GitHub refuses to let a run beget a run.
+# The automatic release therefore cannot rely on its own tag being dispatched and
+# has to invoke this directly. The tag-triggered path calls the same thing, so
+# there is one build rather than two that drift apart.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag to build and publish. Must already exist.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  draft:
+    # One job creates the release. Six build jobs racing on `gh release create`
+    # would 422; and a draft is invisible to `releases/latest`, so a half-built
+    # release never becomes the one the installer resolves.
+    name: draft
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: create the draft release if it does not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists, reusing it"
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --draft --verify-tag \
+            --title "$TAG" \
+            --generate-notes
+
+  build:
+    name: ${{ matrix.target }}
+    needs: draft
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            smoke: true
+          - target: x86_64-apple-darwin
+            runner: macos-15
+            # Cross-linked from arm64. Xcode ships both slices, which avoids
+            # depending on the shrinking supply of Intel macOS images, but the
+            # artifact cannot be executed here: ARM runners have no Rosetta.
+            smoke: false
+          - target: x86_64-unknown-linux-gnu
+            # 22.04, never ubuntu-latest: `latest` advances on its own and each
+            # advance raises the glibc floor of the published binary with no diff
+            # to show for it. install.sh's GLIBC_FLOOR is pinned to match.
+            runner: ubuntu-22.04
+            smoke: true
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            smoke: true
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
+            smoke: true
+            musl: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04-arm
+            smoke: true
+            musl: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+
+      - name: musl toolchain
+        if: matrix.musl
+        run: |
+          # `ring` compiles C and per-arch assembly in its build script, so a musl
+          # C compiler is required. Without it the build fails with `Failed to find
+          # tool. Is 'musl-gcc' installed?`.
+          #
+          # Only CC_*, deliberately. Pointing the *Rust linker* at musl-gcc as well
+          # produced an x86_64 binary that built cleanly and then segfaulted on
+          # `--version`: startup, not application code. Rust links musl targets with
+          # its own self-contained musl and knows how to do it; overriding the linker
+          # mixes that with the host toolchain's startup files. aarch64 happened to
+          # survive it, which is exactly why the smoke test runs per target instead
+          # of once.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          triple=$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')
+          echo "CC_${triple}=musl-gcc" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: dist-${{ matrix.target }}
+
+      - run: cargo build --locked --profile dist --target ${{ matrix.target }} -p sfumato
+
+      - name: smoke test
+        if: matrix.smoke
+        run: |
+          binary="target/${{ matrix.target }}/dist/sfumato"
+          "$binary" --version
+          "$binary" --help > /dev/null
+
+      - name: archive and checksum
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eux
+          # Named exactly as install.sh computes it. The `v` belongs in the file
+          # name as well as the tag directory; both come from the tag here so they
+          # cannot drift apart.
+          version="${TAG#v}"
+          name="sfumato-v${version}-${TARGET}"
+          mkdir -p "dist/${name}"
+          cp "target/${TARGET}/dist/sfumato" "dist/${name}/sfumato"
+          # install.sh prefers a file with the executable bit, and tar preserves it.
+          chmod 755 "dist/${name}/sfumato"
+          cp README.md LICENSE "dist/${name}/"
+          cd dist
+          # Nested rather than flat: install.sh's `find` is recursive so both
+          # resolve, and nesting lets the archive carry the licence without
+          # tar-bombing anyone who extracts it by hand.
+          #
+          # COPYFILE_DISABLE stops BSD tar adding ._AppleDouble members on macOS.
+          COPYFILE_DISABLE=1 tar --format=ustar -czf "${name}.tar.gz" "${name}"
+          # Both emit "<64 hex>  <name>", which is what install.sh's
+          # `cut -d' ' -f1` expects. openssl dgst would emit "SHA256(f)= hex" and
+          # every install would die with a checksum mismatch, so the shape is
+          # asserted rather than assumed.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+          sum=$(cut -d' ' -f1 < "${name}.tar.gz.sha256")
+          [ ${#sum} -eq 64 ] || { echo "::error::checksum file has the wrong shape: $sum"; exit 1; }
+          tar -tzf "${name}.tar.gz"
+
+      - name: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/*.tar.gz dist/*.tar.gz.sha256 --clobber
+
+  finalize:
+    name: finalize
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: publish the release only if every artifact is present
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # Six targets, an archive and a checksum each. Counting here is what
+          # stops `releases/latest` ever pointing at a release missing an
+          # architecture — including the case where an ARM runner failed to
+          # schedule and two legs silently vanished.
+          expected=12
+          found=$(gh release view "$TAG" --json assets --jq '[.assets[].name] | length')
+          echo "assets: $found (expected $expected)"
+          if [ "$found" -ne "$expected" ]; then
+            gh release view "$TAG" --json assets --jq '.assets[].name'
+            echo "::error::expected $expected assets, found $found; leaving the release as a draft"
+            exit 1
+          fi
+          case "$TAG" in
+            *-*)
+              # A prerelease stays out of releases/latest, so install.sh keeps
+              # resolving the last real release.
+              gh release edit "$TAG" --draft=false --prerelease
+              ;;
+            *)
+              gh release edit "$TAG" --draft=false --latest
+              ;;
+          esac

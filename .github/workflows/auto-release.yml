@@ -1,0 +1,209 @@
+name: auto-release
+
+# Computes the release from the commits and cuts it, on every push to master.
+#
+# `fix:` takes a patch, `feat:` a minor, a break takes the minor while the major is
+# 0. Anything else — docs, chore, ci, refactor, test — releases nothing, so most
+# pushes end here with "no release". The mapping lives in
+# .github/scripts/release_plan.py, which has tests, because an unattended wrong
+# answer is a published version number that cannot be reused.
+on:
+  push:
+    branches: [master]
+  # Reachable by hand for the case the guard below is wrong, or to force a release
+  # out of commits that would not have triggered one.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Release even if the commits do not call for one (takes a patch).
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  # Never two releases at once: they would race on the tag and on the version in
+  # the manifest. Not cancel-in-progress — interrupting a release half-way through
+  # publishing artifacts is worse than queueing.
+  group: auto-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    # Skips its own release commit. Pushes made with GITHUB_TOKEN do not start
+    # workflows, so this should be unreachable — it is here because relying on that
+    # alone would make an infinite release loop the failure mode if it ever changes.
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Tags and full history: the range of commits to consider starts at the
+          # last tag, and a shallow clone cannot see it.
+          fetch-depth: 0
+
+      - name: the plan's own tests must pass
+        run: python3 .github/scripts/release_plan_test.py
+
+      - id: plan
+        name: compute the next version from the commits
+        run: |
+          set -euo pipefail
+
+          # Read straight from the manifest rather than through `cargo metadata`:
+          # this job needs no toolchain, and `packages[0]` has no defined order in a
+          # virtual workspace. `[workspace.package]` holds the only line matching
+          # `^version = ` — the dependency entries are `name = { version = … }` —
+          # which is the same fact bump_version.py relies on.
+          current=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ -n "$current" ] || { echo "::error::no workspace version in Cargo.toml"; exit 1; }
+          echo "current version: $current"
+
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          if [ -n "$last" ]; then
+            echo "last tag: $last"
+            range="$last..HEAD"
+          else
+            echo "no tag yet, considering all history"
+            range="HEAD"
+          fi
+
+          # NUL-separated: a commit body contains blank lines, so any textual
+          # separator could be forged by a commit message.
+          git log "$range" --format='%B%x00' \
+            | python3 .github/scripts/release_plan.py \
+                --current "$current" --date "$(date -u +%Y-%m-%d)" \
+            > /tmp/plan.json
+          cat /tmp/plan.json
+
+          release=$(python3 -c "import json;print(str(json.load(open('/tmp/plan.json'))['release']).lower())")
+          version=$(python3 -c "import json;print(json.load(open('/tmp/plan.json'))['version'])")
+
+          # Report commits the plan could not classify. They released nothing, and a
+          # `feat` typed as `feet` parses cleanly, so without this the omission is
+          # invisible to whoever expected a release.
+          python3 - <<'PY'
+          import json
+          plan = json.load(open('/tmp/plan.json'))
+          for subject in plan['unrecognised']:
+              print(f"::warning::not a recognised Conventional Commit, so it "
+                    f"released nothing: {subject}")
+          PY
+
+          if [ "${{ inputs.force }}" = "true" ] && [ "$release" != "true" ]; then
+            version=$(python3 -c "
+          import json
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, '.github/scripts')
+          from release_plan import next_version
+          print(next_version(json.load(open('/tmp/plan.json'))['current'], 'patch'))
+          ")
+            release=true
+            echo "::notice::forced a patch release to $version"
+          fi
+
+          {
+            echo "release=$release"
+            echo "version=$version"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$release" != "true" ]; then
+            echo "::notice::no releasable commits since ${last:-the beginning}; nothing to do"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-plan
+          path: /tmp/plan.json
+          retention-days: 7
+
+      - name: summary
+        run: |
+          {
+            echo "### Release plan"
+            echo
+            if [ "${{ steps.plan.outputs.release }}" = "true" ]; then
+              echo "Releasing **${{ steps.plan.outputs.version }}**."
+              echo
+              python3 -c "import json;print(json.load(open('/tmp/plan.json'))['notes'])"
+            else
+              echo "No releasable commits. Nothing to do."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  tag:
+    name: bump and tag
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: auto-release
+
+      - name: bump the workspace version
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: python3 .github/scripts/bump_version.py "$VERSION"
+
+      - name: update the lock and prove it still builds
+        run: |
+          # The lock carries all four versions, and every other build passes
+          # --locked, so a bump that forgets it fails everything afterwards.
+          cargo check --workspace
+          cargo metadata --no-deps --format-version 1 --locked > /tmp/meta.json
+          TAG="${{ needs.plan.outputs.version }}" python3 .github/scripts/check_versions.py
+
+      # The notes the plan job computed, rather than a second computation that
+      # could disagree with the summary already shown.
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-plan
+          path: /tmp/plan
+
+      - name: write the changelog entry
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: python3 .github/scripts/prepend_changelog.py "$VERSION" /tmp/plan/plan.json
+
+      - name: commit and tag
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -eu
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          # The `chore(release):` prefix is what the plan job skips on, and it is
+          # not a releasable type, so this commit cannot cause another release even
+          # if it did start a run.
+          git commit -m "chore(release): $VERSION"
+          git tag "$TAG"
+          git push origin HEAD:master
+          git push origin "$TAG"
+
+  artifacts:
+    needs: [plan, tag]
+    if: needs.plan.outputs.release == 'true'
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
