@@ -11,6 +11,8 @@ pub mod config_editor;
 pub mod config_files;
 pub mod documents;
 pub mod elevenlabs;
+mod executables;
+mod file_urls;
 pub mod filesystem;
 pub mod knowledge;
 pub mod lmstudio;

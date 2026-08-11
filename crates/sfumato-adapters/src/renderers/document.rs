@@ -50,7 +50,11 @@ fn executable() -> std::ffi::OsString {
         .filter(|path| path.is_file());
     match managed {
         Some(path) => path.into_os_string(),
-        None => "pagedjs-cli".into(),
+        // Resolved rather than spawned by name: a global install puts a
+        // `pagedjs-cli.cmd` shim on Windows, and CreateProcess does not consult
+        // PATHEXT. Falls back to the bare name when nothing is found, so a missing
+        // tool still fails as a missing tool.
+        None => crate::executables::resolve("pagedjs-cli"),
     }
 }
 

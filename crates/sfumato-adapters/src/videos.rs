@@ -480,7 +480,9 @@ impl ManagedVideoRenderers {
             ));
         }
         for dependency in dependencies {
-            let mut command = Command::new(dependency);
+            // Resolved so the probe agrees with what the renderers will actually
+            // spawn; a tool reported present must be a tool that can be launched.
+            let mut command = Command::new(crate::executables::resolve(dependency));
             command.arg(if dependency == "node" {
                 "--version"
             } else {
@@ -595,7 +597,7 @@ impl RendererManager for ManagedVideoRenderers {
                         let package = renderer_package(id)?;
                         let prefix = self.root.join("hyperframe");
                         fs::create_dir_all(&prefix)?;
-                        let mut command = Command::new("npm");
+                        let mut command = Command::new(crate::executables::resolve("npm"));
                         command
                             .args(["install", "--no-audit", "--no-fund", "--prefix"])
                             .arg(&prefix)
@@ -625,7 +627,7 @@ impl RendererManager for ManagedVideoRenderers {
                         let package = renderer_package(id)?;
                         let prefix = self.root.join("pagedjs");
                         fs::create_dir_all(&prefix)?;
-                        let mut command = Command::new("npm");
+                        let mut command = Command::new(crate::executables::resolve("npm"));
                         command
                             .args(["install", "--no-audit", "--no-fund", "--prefix"])
                             .arg(&prefix)
@@ -1196,7 +1198,7 @@ async fn concat_clips(
         ));
     }
     fs::write(&list, manifest).with_context(|| format!("Could not write {}", list.display()))?;
-    let mut concat = Command::new("ffmpeg");
+    let mut concat = Command::new(crate::executables::resolve("ffmpeg"));
     concat
         .args(["-y", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list)
@@ -1248,7 +1250,7 @@ async fn compose_film(request: ComposeFilmRequest<'_>) -> Result<()> {
         return Ok(());
     }
 
-    let mut command = Command::new("ffmpeg");
+    let mut command = Command::new(crate::executables::resolve("ffmpeg"));
     command.args(["-y", "-i"]).arg(silent);
     if let Some(captions) = captions {
         command.arg("-i").arg(captions);
@@ -1447,7 +1449,7 @@ async fn inspect_video(path: &Path, operation: &OperationContext) -> Result<Vide
     if !path.is_file() {
         bail!("Rendered video does not exist at {}", path.display());
     }
-    let mut command = Command::new("ffprobe");
+    let mut command = Command::new(crate::executables::resolve("ffprobe"));
     command
         .args([
             "-v",

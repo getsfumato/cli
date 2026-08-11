@@ -169,7 +169,7 @@ impl UvPythonRuntime {
         fs::create_dir_all(&root)
             .with_context(|| format!("Could not create {}", root.display()))?;
         let environment = root.join(".venv");
-        let mut venv = Command::new("uv");
+        let mut venv = Command::new(crate::executables::resolve("uv"));
         venv.args(["venv", "--python", &resolved.spec.python])
             .arg(&environment);
         checked(
@@ -179,7 +179,7 @@ impl UvPythonRuntime {
             &format!("Python environment '{}' creation", resolved.layer),
         )
         .await?;
-        let mut install = Command::new("uv");
+        let mut install = Command::new(crate::executables::resolve("uv"));
         install
             .args(["pip", "install", "--python"])
             .arg(&interpreter);

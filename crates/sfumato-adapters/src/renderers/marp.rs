@@ -10,7 +10,7 @@ use sfumato_core::{
 };
 use tokio::process::Command;
 
-use crate::{browser, runtime::run_command};
+use crate::{browser, file_urls::file_url, runtime::run_command};
 
 /// Marp CLI and headless-browser renderer adapter.
 #[derive(Clone, Copy, Debug, Default)]
@@ -34,7 +34,7 @@ impl SlideRenderer for MarpCliRenderer {
     ) -> SfumatoResult<()> {
         let result: Result<()> = async {
             let args = command_args(markdown_path, theme_css_path, pdf_path, browser_path)?;
-            let mut command = Command::new("marp");
+            let mut command = Command::new(crate::executables::resolve("marp"));
             command.args(args);
             let output = run_command(&mut command, operation, OperationStage::Render).await;
             let output = match output {
@@ -71,7 +71,7 @@ impl SlideRenderer for MarpCliRenderer {
             inject_layout_inspector(html_path)?;
             let browser = browser::resolve(browser_path)?
                 .with_context(|| browser::not_found("for Marp layout inspection"))?;
-            let url = format!("file://{}", html_path.canonicalize()?.display());
+            let url = file_url(&html_path.canonicalize()?);
             let mut command = Command::new(browser);
             command.args([
                 "--headless",
@@ -123,7 +123,7 @@ async fn render_html(
     html_path: &Path,
     operation: &OperationContext,
 ) -> Result<()> {
-    let mut command = Command::new("marp");
+    let mut command = Command::new(crate::executables::resolve("marp"));
     command.args([
         "--template".as_ref(),
         "bare".as_ref(),

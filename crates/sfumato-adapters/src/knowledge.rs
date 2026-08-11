@@ -139,7 +139,9 @@ async fn invoke(
     stage: OperationStage,
 ) -> SfumatoResult<Envelope> {
     let executable = executable_path(binding);
-    let mut command = Command::new(&executable);
+    // `vitruvio` may be a bare name on PATH or a configured path; resolve handles
+    // both, and hands the name back unchanged when it finds nothing.
+    let mut command = Command::new(crate::executables::resolve(&executable.to_string_lossy()));
     command.arg("--brain").arg(&binding.brain);
     if let Some(config) = &binding.config_file {
         command.arg("--config").arg(config);

@@ -33,7 +33,7 @@ impl DiagramRenderer for MermaidCliRenderer {
         let result: Result<String> = async {
             let puppeteer_config = write_puppeteer_config(output_path, browser_path)?;
             let mermaid_config = write_mermaid_config(output_path, theme)?;
-            let mut command = Command::new("mmdc");
+            let mut command = Command::new(crate::executables::resolve("mmdc"));
             command.args(mermaid_cli_args(
                 input_path,
                 output_path,
