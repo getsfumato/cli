@@ -113,11 +113,30 @@ jobs:
               cargo package -p sfumato-adapters --locked
             fi
 
-            if [ "$DRY" = "true" ]; then
+            if [ "$DRY" != "true" ]; then
+              cargo publish -p "$crate" --locked
+              continue
+            fi
+
+            # A dry run cannot cover the whole workspace, and it is worth being blunt
+            # about why rather than appearing to. `cargo publish --dry-run` packages
+            # the crate and resolves its dependencies **from the registry**, not
+            # through the sibling paths — so core cannot be dry-run until domain is
+            # really published, and it fails with "failed to select a version for the
+            # requirement sfumato-domain". Publishing a dependency chain is inherently
+            # sequential; only the root can be checked ahead of time.
+            #
+            # This is worth knowing for another reason: it means a dry run *does*
+            # catch a stale internal version, but only when that version is absent
+            # from crates.io. If it happens to exist, the dry run passes and the
+            # publish is wrong and permanent — which is why check_versions.py runs
+            # regardless.
+            if [ "$crate" = "sfumato-domain" ]; then
               echo "dry run: $crate $version"
               cargo publish -p "$crate" --locked --dry-run
             else
-              cargo publish -p "$crate" --locked
+              echo "dry run: skipping $crate — its dependencies are not on crates.io" \
+                   "at $version yet, and a dry run resolves them from there."
             fi
           done
 
