@@ -12,12 +12,22 @@ use crate::{
     sfumato_bail as bail,
 };
 
+/// What one run overrides, on top of user and project configuration.
+///
+/// The third and last layer of resolution: user, then project, then this. Every
+/// field is optional because absent means "whatever the layers below say" — the
+/// distinction matters, and [`Self::pdf`] is the field that proves it.
 #[derive(Clone, Debug, Default)]
 pub struct ConfigOverrides {
+    /// Which project to act on, instead of the active one.
     pub project: Option<String>,
+    /// A theme for this run only.
     pub theme: Option<String>,
+    /// Per-capability profile choices, as `--model text=fast` supplies.
     pub model_overrides: BTreeMap<Capability, String>,
+    /// A reviewer profile for this run only.
     pub reviewer_model: Option<String>,
+    /// Where to publish the finished artifact, overriding the project's setting.
     pub publish_dir: Option<PathBuf>,
     /// PDF override for one run; the project decides when absent.
     ///
@@ -25,48 +35,78 @@ pub struct ConfigOverrides {
     /// `marp.pdf = true` in the config — which is the shipped default — no flag
     /// combination could turn PDF off for a single run.
     pub pdf: Option<bool>,
+    /// Per-tool on/off decisions for this run. Enabling and disabling the same tool
+    /// is refused rather than resolved to one of them.
     pub tool_overrides: BTreeMap<GenerationToolKind, bool>,
 }
 
+/// The user-global document: everything shared by every project.
 #[derive(Clone, Debug, Serialize)]
 pub struct GlobalConfig {
+    /// Who this is, which the prompts use to pitch explanations.
     pub user: UserConfig,
+    /// Configured providers, by the name the user gave each one.
     pub connectors: BTreeMap<String, ConnectorConfig>,
+    /// Model profiles, by name.
     pub models: BTreeMap<String, ModelProfile>,
+    /// Which profile serves each capability when nothing overrides it.
     pub defaults: ModelDefaults,
+    /// Which profile serves each named role, such as the reviewer.
     #[serde(default)]
     pub model_roles: BTreeMap<ModelRole, String>,
+    /// Slide export settings.
     pub marp: MarpConfig,
     /// The browser the renderers launch.
     #[serde(default)]
     pub browser: BrowserConfig,
 }
 
+/// Who the resources are being made for.
+///
+/// Reaches the prompts: a deck written for someone who said they learn from worked
+/// examples should not be a wall of definitions.
 #[derive(Clone, Debug, Serialize)]
 pub struct UserConfig {
+    /// What to call them, when they said.
     pub name: Option<String>,
+    /// How they say they learn, in their own words.
     pub learning_style: Vec<String>,
 }
 
+/// Every project this user has registered, and which one is current.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ProjectRegistry {
+    /// The project used when a command omits `--project`.
     pub active: Option<String>,
+    /// Registered projects, by name.
     pub projects: BTreeMap<String, RegisteredProject>,
 }
 
+/// A registry entry: a name pointing at a directory.
+///
+/// The project's own settings live in that directory, not here, which is what lets a
+/// project be moved between machines with its configuration intact.
 #[derive(Clone, Debug, Serialize)]
 pub struct RegisteredProject {
+    /// Canonical root of the project.
     pub path: PathBuf,
 }
 
+/// One project's own document, portable with its directory.
 #[derive(Clone, Debug, Serialize)]
 pub struct ProjectConfig {
+    /// Registry name; must match the entry pointing here.
     pub name: String,
+    /// Installed theme this project renders with.
     pub theme: String,
+    /// Where finished artifacts are copied, relative to the project root. The
+    /// managed revision under `~/.sfumato` stays authoritative either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_dir: Option<PathBuf>,
+    /// Per-capability profile choices that override the user-global defaults.
     #[serde(default)]
     pub model_defaults: BTreeMap<Capability, String>,
+    /// Per-role profile choices that override the user-global ones.
     #[serde(default)]
     pub model_roles: BTreeMap<ModelRole, String>,
     /// Page-only visual extensions.
@@ -81,15 +121,26 @@ pub struct ProjectConfig {
     /// Where this project's resources may draw their claims from.
     #[serde(default)]
     pub knowledge: KnowledgeConfig,
+    /// Slide export settings for this project. `None` uses the user-global ones;
+    /// `Some` replaces them wholesale rather than merging field by field.
     #[serde(default)]
     pub marp: Option<MarpConfig>,
 }
 
+/// A named binding from capabilities to one connector's model.
+///
+/// The indirection is the point: a workflow asks for `text`, and which model that is
+/// can change without touching a prompt or a command.
 #[derive(Clone, Debug, Serialize)]
 pub struct ModelProfile {
+    /// Which configured connector to generate through.
     pub connector: String,
+    /// Provider-side model identifier, as the provider spells it.
     pub model: String,
+    /// What this profile may be selected for. Selecting it for anything else is
+    /// refused, because the layer below would reject it anyway.
     pub capabilities: Vec<Capability>,
+    /// Per-capability generation options.
     #[serde(default)]
     pub options: ModelOptions,
 }
@@ -97,29 +148,45 @@ pub struct ModelProfile {
 /// Capability-specific options for a model profile.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ModelOptions {
+    /// Applied to text and code generation.
     pub text: TextModelOptions,
+    /// Applied to image generation.
     pub image: ImageModelOptions,
+    /// Applied to video generation.
     pub video: VideoModelOptions,
+    /// Applied to speech synthesis.
     pub speech: SpeechModelOptions,
 }
 
 /// Options used by text and code generation.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct TextModelOptions {
+    /// Sampling temperature. Absent leaves the provider's default alone.
     pub temperature: Option<f32>,
+    /// Output ceiling. Reaching it fails the generation rather than using a
+    /// truncated answer, so raising it is the remedy an output-limit error names.
     pub max_tokens: Option<u32>,
+    /// How many rounds of tool calls a generation may take before being asked to
+    /// answer with what it has.
     pub max_tool_rounds: Option<usize>,
+    /// Nucleus sampling cutoff.
     pub top_p: Option<f32>,
+    /// Sampling seed, where the provider honours one.
     pub seed: Option<i64>,
 }
 
 /// Options used by image generation.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ImageModelOptions {
+    /// Provider-specific quality tier.
     pub quality: Option<String>,
+    /// Background treatment, such as transparency where it is supported.
     pub background: Option<String>,
+    /// Pixel dimensions, as the provider spells them.
     pub size: Option<String>,
+    /// Aspect ratio, for providers that take one instead of a size.
     pub aspect_ratio: Option<String>,
+    /// Encoding to ask for.
     pub output_format: Option<String>,
 }
 
@@ -493,14 +560,17 @@ impl ProjectSecurityConfig {
 }
 
 impl ModelOptions {
+    /// Configured temperature, or the shipped default.
     pub fn text_temperature(&self) -> f32 {
         self.text.temperature.unwrap_or(0.4)
     }
 
+    /// Configured output ceiling, or the shipped default.
     pub fn text_max_tokens(&self) -> u32 {
         self.text.max_tokens.unwrap_or(4000)
     }
 
+    /// Configured tool-round limit, or the shipped default.
     pub fn tool_rounds(&self) -> usize {
         self.text
             .max_tool_rounds
@@ -508,6 +578,9 @@ impl ModelOptions {
             .unwrap_or(8)
     }
 
+    /// Applies only the fields `changes` actually sets.
+    ///
+    /// Field-by-field so editing one option does not silently clear the rest.
     pub fn merge(&mut self, changes: Self) {
         macro_rules! replace_some {
             ($($field:ident),+ $(,)?) => {
@@ -553,6 +626,7 @@ impl ModelOptions {
         );
     }
 
+    /// The options as `key=value` strings, for echoing a profile back to a user.
     pub fn cli_pairs(&self) -> Vec<String> {
         let mut pairs = Vec::new();
         macro_rules! push_option {
@@ -593,21 +667,28 @@ impl ModelOptions {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+/// Which profile serves each capability.
 pub struct ModelDefaults(pub BTreeMap<Capability, String>);
 
+/// A job a model does in a run, as distinct from what it must be able to do.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelRole {
+    /// The model that reviews generated content against the instruction and the
+    /// sources. A role rather than a capability because it needs text like the
+    /// drafter does, so the capability alone could not tell them apart.
     Reviewer,
 }
 
 impl ModelRole {
+    /// The stable identifier a config stores and a command accepts.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Reviewer => "reviewer",
         }
     }
 
+    /// What a profile must declare to serve this role.
     pub fn required_capability(self) -> Capability {
         match self {
             Self::Reviewer => Capability::Text,
@@ -625,11 +706,16 @@ impl FromStr for ModelRole {
         }
     }
 }
+/// One OpenAI-compatible endpoint, which is what Ollama, LM Studio and
+/// OpenRouter all speak.
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OpenAiCompatibleConnectorConfig {
+    /// Endpoint serving `/v1`.
     pub base_url: String,
+    /// Reference to the credential, never the credential.
     pub credential: Option<SecretRef>,
+    /// Extra headers sent with every request.
     pub headers: BTreeMap<String, String>,
 }
 
@@ -836,9 +922,12 @@ pub struct CodexAppServerConnectorConfig {
     /// Executable name or path. Authentication remains owned by Codex.
     pub executable: PathBuf,
 }
+/// How decks are exported.
 
 #[derive(Clone, Debug, Serialize)]
 pub struct MarpConfig {
+    /// Whether a deck is exported to PDF. On by default; `--no-pdf` is what turns it
+    /// off for one run, because configuration alone could only turn it on.
     pub pdf: bool,
     /// Deprecated location for the browser path. Read for compatibility; new
     /// configuration writes `[browser] path`. See [`BrowserConfig`].
@@ -863,17 +952,27 @@ pub struct BrowserConfig {
     #[serde(default)]
     pub path: Option<PathBuf>,
 }
+/// Everything one run needs, with all three layers already resolved.
 
 #[derive(Clone, Debug, Serialize)]
 pub struct EffectiveConfig {
+    /// Who the resource is for.
     pub user: UserConfig,
+    /// The project this run acts on.
     pub project_name: String,
+    /// Its canonical root, which bounds what the model may read.
     pub project_root: PathBuf,
+    /// Where the finished artifact is copied, if anywhere.
     pub publish_dir: Option<PathBuf>,
+    /// The theme to render with.
     pub theme: String,
+    /// Configured connectors.
     pub connectors: BTreeMap<String, ConnectorConfig>,
+    /// Configured profiles.
     pub models: BTreeMap<String, ModelProfile>,
+    /// The resolved per-capability choices, after all three layers.
     pub model_defaults: BTreeMap<Capability, String>,
+    /// The resolved per-role choices.
     pub model_roles: BTreeMap<ModelRole, String>,
     /// Page-only visual extension defaults.
     pub page: PageDefaults,
@@ -883,12 +982,14 @@ pub struct EffectiveConfig {
     pub security: ProjectSecurityConfig,
     /// Where this project's resources may draw their claims from.
     pub knowledge: KnowledgeConfig,
+    /// Slide export settings.
     pub marp: MarpConfig,
     /// The browser every renderer launches.
     pub browser: BrowserConfig,
 }
 
 impl GlobalConfig {
+    /// The configuration `sfumato init user --yes` writes.
     pub fn default_config() -> Self {
         let mut models = BTreeMap::new();
         models.insert(
@@ -969,6 +1070,10 @@ impl GlobalConfig {
         }
     }
 
+    /// Checks the whole document, not one field.
+    ///
+    /// Every write validates the result of the edit, so a single-key change cannot
+    /// leave configuration in a state a later command would refuse.
     pub fn validate(&self) -> Result<()> {
         if self
             .user
@@ -1090,6 +1195,7 @@ impl GlobalConfig {
 }
 
 impl ProjectConfig {
+    /// Checks the whole project document.
     pub fn validate(&self) -> Result<()> {
         validate_project_name(&self.name)?;
         if self.theme.trim().is_empty() {
@@ -1124,6 +1230,7 @@ impl ProjectConfig {
 }
 
 impl ProjectRegistry {
+    /// The requested project, or the active one, with its root.
     pub fn selected(&self, requested: Option<&str>) -> Result<(String, PathBuf)> {
         let name = requested
             .map(ToOwned::to_owned)
@@ -1138,6 +1245,10 @@ impl ProjectRegistry {
 }
 
 impl EffectiveConfig {
+    /// Resolves user, project and per-run layers into one answer.
+    ///
+    /// The single place precedence is decided, so nothing downstream has to know
+    /// that there were three documents.
     pub fn from_parts(
         global: GlobalConfig,
         selected_name: String,
@@ -1231,6 +1342,7 @@ impl EffectiveConfig {
         })
     }
 
+    /// The profile serving a capability, or why none does.
     pub fn resolve_model(&self, capability: Capability) -> Result<(&str, &ModelProfile)> {
         let profile_name = self.model_defaults.get(&capability).with_context(|| {
             format!(
@@ -1251,6 +1363,8 @@ impl EffectiveConfig {
         Ok((profile_name, profile))
     }
 
+    /// The profile serving a role, falling back to the drafter where that is the
+    /// defined behaviour.
     pub fn resolve_model_role(&self, role: ModelRole) -> Result<(&str, &ModelProfile)> {
         let fallback;
         let profile_name = if let Some(profile_name) = self.model_roles.get(&role) {
@@ -1281,6 +1395,7 @@ impl EffectiveConfig {
         Ok((profile_name, profile))
     }
 
+    /// Where artifacts are published, resolved against the project root.
     pub fn publish_root(&self) -> Result<Option<PathBuf>> {
         self.publish_dir
             .as_ref()
@@ -1323,6 +1438,7 @@ impl EffectiveConfig {
     }
 }
 
+/// Validates the stable project identifier grammar.
 pub fn validate_project_name(name: &str) -> Result<()> {
     let path = Path::new(name);
     if name.trim().is_empty() {
