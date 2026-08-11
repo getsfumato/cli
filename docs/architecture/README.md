@@ -26,13 +26,17 @@ sfumato presentation/composition -> sfumato-core application/ports -> sfumato-do
   ports without choosing a storage backend. It has no `anyhow`, Clap, Ratatui, Inquire,
   Indicatif, Reqwest, or process dependency.
 - **`sfumato-adapters`** implements schema-v5 TOML persistence and v4 migration, layered
-  MiniJinja prompts, filesystem repositories, composed OpenAI-compatible,
-  OpenRouter, Ollama, and local Codex transports,
-  native OS credential storage, source/tools, Marp, Mermaid, browser inspection,
-  and artifact transactions.
-- **`sfumato`** is the composition and presentation package. CLI and TUI both
-  receive one production `SfumatoApplication` and translate typed DTOs/events to
-  human or JSON output.
+  MiniJinja prompts, filesystem repositories, the composed OpenAI-compatible
+  transport shared by OpenRouter, Ollama and LM Studio, Anthropic's native Messages
+  API, the local Codex JSON-RPC transport, ElevenLabs speech, native OS credential
+  storage, source and tool access, managed Python environments for Manim and
+  `chart-gen`, the Vitruvio brain client, Marp, Mermaid, Paged.js documents,
+  browser discovery and inspection, and artifact transactions.
+  `ApplicationRoots` selects where configuration and data live, so the composition
+  is not tied to one user's home directory.
+- **`sfumato`** is the composition and presentation package, in `cli/`. CLI and TUI
+  both receive one production `SfumatoApplication` and translate typed DTOs/events
+  to human or JSON output.
 
 Cargo workspace dependencies enforce this direction.
 
@@ -45,7 +49,8 @@ Cargo workspace dependencies enforce this direction.
 - [Page generation sequence](page-generation-sequence.mmd): structured fragments, offline plugins and MathJax, browser repair, commit, and namespaced Obsidian publication.
 - [Video generation sequence](video-generation-sequence.mmd): planning, review, engine-specific authoring, focused repair, MP4 inspection, and publication.
 - [Edit sequence](edit-sequence.mmd): revision-guarded content-only editing.
-- [Config lifecycle](config-lifecycle.mmd): strict v4 reads and atomic revision-aware writes.
+- [Config lifecycle](config-lifecycle.mmd): strict v5 reads, a one-shot v4 migration, and atomic revision-aware writes.
+- [Knowledge port](../adr/0010-knowledge-port.md): filesystem browsing or Vitruvio brain retrieval behind one port.
 - [Secret resolution](secret-resolution.mmd): secure login, provider lookup, and future cloud replacement.
 - [Codex App Server connector](../reference/codex-app-server.md): authenticated model discovery, streamed turns, and native Sfumato dynamic tools.
 - [Connector capabilities](../reference/connector-capabilities.md): common generation transport and provider-native catalogs/status.
