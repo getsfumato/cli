@@ -3,6 +3,18 @@
 Notable changes. This project follows [Conventional Commits](https://www.conventionalcommits.org),
 so `git log` is the complete record; this file is the readable summary.
 
+## 0.3.1 — 2026-08-11
+
+### Fixed
+
+- **renderers:** resolve external tools on PATH before spawning them
+- **pages:** build file:// URLs instead of interpolating a path into one
+
+### Documentation
+
+- point at the published crates
+- rewrite the README around installing, and follow the repo rename
+
 ## 0.3.0
 
 The first published release. Everything before this existed only as source.
