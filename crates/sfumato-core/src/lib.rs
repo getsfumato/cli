@@ -17,7 +17,6 @@ pub mod connectors;
 pub mod errors;
 pub mod filesystem;
 /// Provider-neutral generation request and result DTOs.
-#[allow(missing_docs)]
 pub mod generation;
 /// Knowledge-source ports: the brain a project may be grounded in.
 pub mod knowledge;
