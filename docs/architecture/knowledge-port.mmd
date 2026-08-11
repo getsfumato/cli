@@ -1,0 +1,50 @@
+%% How grounding material reaches a generation: two backends behind one port.
+%% See docs/adr/0010-knowledge-port.md for why it is shaped this way.
+flowchart TB
+    subgraph Core["sfumato-core: policy"]
+        WORKFLOW["Generate slides / document / page / video"]
+        CONFIG["knowledge.backend, per project"]
+        PORT["BrainClient port"]
+        REFUSE["refuse_sources_under_brain"]
+        TOOLS["GenerationToolFactory<br/>chooses the model's file or brain tools"]
+    end
+
+    subgraph Prompt["Prompt assembly"]
+        INDEX["source-index partial<br/>a listing of the files given"]
+        CARD["brain-card partial<br/>modules, block counts, Merkle roots, facets"]
+    end
+
+    subgraph Adapters["sfumato-adapters: infrastructure"]
+        FS["FilesystemSourceReader"]
+        VIT["VitruvioCliBrainClient"]
+    end
+
+    subgraph Outside["Outside the process"]
+        FILES[("Project files<br/>and the paths given to the run")]
+        CLI2["vitruvio CLI<br/>--json, one object on stdout"]
+        BRAIN[("A brain: a local directory<br/>of content-addressed blocks")]
+    end
+
+    WORKFLOW --> CONFIG
+    CONFIG -->|"filesystem, the default"| FS
+    CONFIG -->|vitruvio| PORT
+    PORT --> VIT
+    VIT -->|"brain info + index stats"| CLI2
+    VIT -->|"query search"| CLI2
+    CLI2 --> BRAIN
+    FS --> FILES
+
+    CONFIG -->|filesystem| INDEX
+    CONFIG -->|vitruvio| CARD
+    INDEX --> WORKFLOW
+    CARD --> WORKFLOW
+
+    CONFIG --> TOOLS
+    TOOLS -->|filesystem| T1["sfumato_list_directory<br/>sfumato_read_file"]
+    TOOLS -->|vitruvio| T2["sfumato_search_brain"]
+
+    CONFIG -->|"vitruvio + source paths given"| REFUSE
+    REFUSE -->|"the run is rejected, not silently reinterpreted"| WORKFLOW
+
+    VIT -.->|"index stats unavailable:<br/>a warning, the card still renders"| CARD
+    VIT -.->|"brain unreachable:<br/>the run fails"| WORKFLOW

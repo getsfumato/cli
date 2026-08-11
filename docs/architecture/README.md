@@ -50,7 +50,7 @@ Cargo workspace dependencies enforce this direction.
 - [Video generation sequence](video-generation-sequence.mmd): planning, review, engine-specific authoring, focused repair, MP4 inspection, and publication.
 - [Edit sequence](edit-sequence.mmd): revision-guarded content-only editing.
 - [Config lifecycle](config-lifecycle.mmd): strict v5 reads, a one-shot v4 migration, and atomic revision-aware writes.
-- [Knowledge port](../adr/0010-knowledge-port.md): filesystem browsing or Vitruvio brain retrieval behind one port.
+- [Knowledge port](knowledge-port.mmd): filesystem browsing or Vitruvio brain retrieval behind one port, the tool swap each implies, and how each degrades. Decided in [ADR-0010](../adr/0010-knowledge-port.md).
 - [Secret resolution](secret-resolution.mmd): secure login, provider lookup, and future cloud replacement.
 - [Codex App Server connector](../reference/codex-app-server.md): authenticated model discovery, streamed turns, and native Sfumato dynamic tools.
 - [Connector capabilities](../reference/connector-capabilities.md): common generation transport and provider-native catalogs/status.

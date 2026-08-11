@@ -38,6 +38,8 @@ The compacted retry that follows a context-limit failure has no brain access, so
 it replays the `BrainEvidenceRecord`s already retrieved. Building that record
 became lazy for this reason.
 
+The shape is drawn in [knowledge-port.mmd](../architecture/knowledge-port.mmd).
+
 ## Consequences
 
 A project can be grounded in portable, verifiable knowledge without Sfumato owning

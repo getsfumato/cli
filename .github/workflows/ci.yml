@@ -205,3 +205,34 @@ jobs:
           [ "$(grep -c '^## 9.9.9' CHANGELOG.md)" = 1 ] || {
             echo "::error::prepend_changelog is not idempotent"; exit 1; }
           echo "bump and changelog round-trip cleanly"
+
+  diagrams:
+    name: architecture diagrams
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: every .mmd must parse
+        run: |
+          set -eu
+          # A broken diagram fails silently: the file stays in the repository, the
+          # link from the README still resolves, and only a reader discovers it does
+          # not render. One of the fourteen had been broken by a `;` in a sequence
+          # message, which mermaid reads as a statement separator.
+          work=$(mktemp -d)
+          # Both locations: one diagram lives at docs/ rather than under
+          # docs/architecture/, and was outside the first version of this glob.
+          cp docs/architecture/*.mmd docs/*.mmd "$work/"
+          failed=0
+          for file in "$work"/*.mmd; do
+            name=$(basename "$file")
+            if docker run --rm -v "$work":/data minlag/mermaid-cli:11.4.2 \
+                 -i "/data/$name" -o "/data/$name.svg" >/dev/null 2>&1; then
+              echo "ok    $name"
+            else
+              echo "::error::$name does not parse"
+              docker run --rm -v "$work":/data minlag/mermaid-cli:11.4.2 \
+                -i "/data/$name" -o "/data/$name.svg" 2>&1 | grep -iE "^Error|Parse error" | head -3 || true
+              failed=1
+            fi
+          done
+          exit $failed

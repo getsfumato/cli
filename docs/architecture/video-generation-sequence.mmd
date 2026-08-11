@@ -16,7 +16,7 @@ sequenceDiagram
     User->>UI: generate video --engine ... --duration ...
     UI->>App: GenerateVideoCommand
     App->>Workflow: effective config and outbound ports
-    Workflow->>Prompts: route workflow; render design, storyboard, and plan templates
+    Workflow->>Prompts: route workflow, then render design, storyboard, and plan templates
     Workflow->>Draft: plan with filesystem and optional image tool
     Draft-->>Workflow: VideoPlanDocument JSON
     opt review enabled
