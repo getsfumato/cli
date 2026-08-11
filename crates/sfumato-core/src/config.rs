@@ -37,6 +37,9 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub model_roles: BTreeMap<ModelRole, String>,
     pub marp: MarpConfig,
+    /// The browser the renderers launch.
+    #[serde(default)]
+    pub browser: BrowserConfig,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -837,8 +840,28 @@ pub struct CodexAppServerConnectorConfig {
 #[derive(Clone, Debug, Serialize)]
 pub struct MarpConfig {
     pub pdf: bool,
-    #[serde(default)]
+    /// Deprecated location for the browser path. Read for compatibility; new
+    /// configuration writes `[browser] path`. See [`BrowserConfig`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_path: Option<PathBuf>,
+}
+
+/// Which browser the renderers launch.
+///
+/// Its own section rather than a Marp setting, which is what it used to be: slides,
+/// pages, documents and Mermaid diagrams all launch the same browser, so
+/// `marp.browser_path` named one caller of four. The old key is still read, so no
+/// existing configuration has to change and there is no schema migration —
+/// `[browser] path` simply wins where both are present.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserConfig {
+    /// Executable to launch. Left unset, discovery finds one: `SFUMATO_BROWSER`,
+    /// then `PUPPETEER_EXECUTABLE_PATH` and `CHROME_PATH`, then `PATH`, then the
+    /// platform's usual locations. A path that does not exist is an error rather
+    /// than a silent fall back to discovery.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -861,6 +884,8 @@ pub struct EffectiveConfig {
     /// Where this project's resources may draw their claims from.
     pub knowledge: KnowledgeConfig,
     pub marp: MarpConfig,
+    /// The browser every renderer launches.
+    pub browser: BrowserConfig,
 }
 
 impl GlobalConfig {
@@ -940,6 +965,7 @@ impl GlobalConfig {
                 pdf: true,
                 browser_path: None,
             },
+            browser: BrowserConfig::default(),
         }
     }
 
@@ -1140,6 +1166,12 @@ impl EffectiveConfig {
         let publish_dir = overrides.publish_dir.or(project.publish_dir);
         let theme = resolve_theme_name(&project.theme, overrides.theme);
         let marp = project.marp.unwrap_or_else(|| global.marp.clone());
+        // `[browser] path` wins; `marp.browser_path` is the deprecated spelling and
+        // is read so that no existing configuration has to be rewritten. Resolved
+        // once, here, so every renderer downstream reads one field.
+        let browser = BrowserConfig {
+            path: global.browser.path.clone().or(marp.browser_path.clone()),
+        };
         let marp = MarpConfig {
             pdf: overrides.pdf.unwrap_or(marp.pdf),
             browser_path: marp.browser_path,
@@ -1163,6 +1195,7 @@ impl EffectiveConfig {
             security: project.security,
             knowledge: project.knowledge,
             marp,
+            browser,
         })
     }
 

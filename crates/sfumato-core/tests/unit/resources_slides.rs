@@ -25,6 +25,7 @@ fn effective_config() -> EffectiveConfig {
         security: crate::config::ProjectSecurityConfig::default(),
         knowledge: Default::default(),
         marp: global.marp,
+        browser: Default::default(),
     }
 }
 

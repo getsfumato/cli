@@ -473,3 +473,63 @@ backend = "vitruvio"
 
     assert!(error.to_string().contains("knowledge.brain"), "{error}");
 }
+
+#[test]
+fn the_deprecated_marp_browser_path_still_parses() {
+    // No existing configuration has to be rewritten, and there is no schema bump
+    // for this: the old spelling stays readable indefinitely. Which of the two
+    // spellings takes effect is decided when the effective config is assembled —
+    // asserted in sfumato-core, because a project can carry the old key too.
+    let document = r#"
+schema_version = 5
+[user]
+name = "alex"
+learning_style = []
+[connectors]
+[models]
+[defaults]
+[marp]
+pdf = true
+browser_path = "/usr/bin/chromium"
+"#;
+    let dto: GlobalConfigDto = toml::from_str(document).expect("a v5 document parses");
+    let config = dto.into_domain().expect("it converts");
+
+    assert_eq!(
+        config.marp.browser_path.as_deref(),
+        Some(std::path::Path::new("/usr/bin/chromium")),
+        "the deprecated key must survive parsing to be resolvable later"
+    );
+}
+
+#[test]
+fn the_browser_section_is_read() {
+    let document = r#"
+schema_version = 5
+[user]
+name = "alex"
+learning_style = []
+[connectors]
+[models]
+[defaults]
+[marp]
+pdf = true
+[browser]
+path = "/opt/chrome"
+"#;
+    let dto: GlobalConfigDto = toml::from_str(document).expect("the new section parses");
+    let config = dto.into_domain().expect("it converts");
+
+    assert_eq!(
+        config.browser.path.as_deref(),
+        Some(std::path::Path::new("/opt/chrome"))
+    );
+}
+
+#[test]
+fn a_configuration_that_never_set_a_browser_grows_no_empty_section() {
+    // Saving must not add noise to a document that did not ask for it.
+    let config = GlobalConfig::default_config();
+    let rendered = toml::to_string_pretty(&GlobalConfigDto::from_domain(&config)).unwrap();
+    assert!(!rendered.contains("[browser]"), "{rendered}");
+}

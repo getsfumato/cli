@@ -143,7 +143,7 @@ fn write_puppeteer_config(
     configured: Option<&Path>,
 ) -> Result<Option<PathBuf>> {
     // Shares `browser::resolve` with the slide, page and document renderers:
-    // `marp.browser_path` exists for a browser that is not where discovery looks,
+    // `browser.path` exists for a browser that is not where discovery looks,
     // and a configured path that does not exist is an error worth reporting
     // instead of silently falling back to a scan.
     let Some(browser_path) = browser::resolve(configured)? else {

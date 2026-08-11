@@ -31,6 +31,10 @@ pub(crate) struct GlobalConfigDto {
     #[serde(default)]
     model_roles: BTreeMap<ModelRole, String>,
     marp: MarpConfigDto,
+    /// Optional so a document written before this section existed still parses;
+    /// `deny_unknown_fields` means it has to be declared to be accepted at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    browser: Option<BrowserConfigDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -147,8 +151,17 @@ struct ModelOptionsDto {
 #[serde(deny_unknown_fields)]
 struct MarpConfigDto {
     pdf: bool,
-    #[serde(default)]
+    /// The deprecated spelling of the browser path, still read so that no existing
+    /// configuration has to be rewritten. `[browser] path` wins where both appear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     browser_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserConfigDto {
+    #[serde(default)]
+    path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -430,6 +443,10 @@ impl GlobalConfigDto {
             defaults: ModelDefaults(self.defaults),
             model_roles: self.model_roles,
             marp: self.marp.into(),
+            browser: self
+                .browser
+                .map(|browser| sfumato_core::config::BrowserConfig { path: browser.path })
+                .unwrap_or_default(),
         };
         config.validate()?;
         Ok(config)
@@ -525,6 +542,11 @@ impl GlobalConfigDto {
             defaults: config.defaults.0.clone(),
             model_roles: config.model_roles.clone(),
             marp: MarpConfigDto::from(&config.marp),
+            // Written only when set, so a configuration that never used it does not
+            // grow an empty section on every save.
+            browser: config.browser.path.as_ref().map(|path| BrowserConfigDto {
+                path: Some(path.clone()),
+            }),
         }
     }
 }

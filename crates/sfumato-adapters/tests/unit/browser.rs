@@ -267,7 +267,7 @@ fn the_not_found_message_keeps_the_prefix_its_callers_match_on() {
     );
     assert!(message.contains("for page inspection"), "{message}");
     // The remedy is the part a user acts on, so it is worth asserting too.
-    assert!(message.contains("marp.browser_path"), "{message}");
+    assert!(message.contains("browser.path"), "{message}");
     assert!(message.contains("SFUMATO_BROWSER"), "{message}");
 }
 

@@ -194,7 +194,7 @@ pub(crate) async fn edit_slides(
         BTreeMap::new(),
     );
     let layout_context = LayoutInspectionContext {
-        browser_path: config.marp.browser_path.as_deref(),
+        browser_path: config.browser.path.as_deref(),
         diagram_renderer: options.diagram_renderer.as_ref(),
         slide_renderer: options.slide_renderer.as_ref(),
         workspace: options.workspace.as_ref(),
@@ -237,7 +237,7 @@ pub(crate) async fn edit_slides(
         diagrams_dir: &diagrams_dir,
         theme: &theme,
         renderer: options.diagram_renderer.as_ref(),
-        browser_path: config.marp.browser_path.as_deref(),
+        browser_path: config.browser.path.as_deref(),
         workspace: options.workspace.as_ref(),
         operation: &options.operation,
         stage: OperationStage::Render,
@@ -258,7 +258,7 @@ pub(crate) async fn edit_slides(
         &markdown_path,
         &pdf_path,
         &theme_css_path,
-        config.marp.browser_path.as_deref(),
+        config.browser.path.as_deref(),
         options.slide_renderer.as_ref(),
         &options.operation,
     )

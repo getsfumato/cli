@@ -31,6 +31,7 @@ fn config_with(chart_enabled: bool, allow_python: bool) -> EffectiveConfig {
         security,
         knowledge: Default::default(),
         marp: global.marp,
+        browser: Default::default(),
     }
 }
 

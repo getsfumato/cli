@@ -17,6 +17,7 @@ fn effective_config() -> EffectiveConfig {
         security: ProjectSecurityConfig::default(),
         knowledge: Default::default(),
         marp: global.marp,
+        browser: Default::default(),
     }
 }
 
@@ -237,4 +238,102 @@ fn a_malformed_allowlist_entry_is_reported_while_editing_the_project() {
         marp: None,
     };
     assert!(project.validate().is_err());
+}
+
+/// A project carrying nothing of its own, so global settings decide.
+fn bare_project() -> ProjectConfig {
+    ProjectConfig {
+        name: "university".to_string(),
+        theme: "sfumato-default".to_string(),
+        publish_dir: None,
+        model_defaults: Default::default(),
+        model_roles: Default::default(),
+        page: Default::default(),
+        generation_tools: Default::default(),
+        security: Default::default(),
+        knowledge: Default::default(),
+        marp: None,
+    }
+}
+
+fn resolved(global: GlobalConfig, project: ProjectConfig) -> EffectiveConfig {
+    EffectiveConfig::from_parts(
+        global,
+        "university".to_string(),
+        PathBuf::from("/tmp/university"),
+        project,
+        ConfigOverrides::default(),
+    )
+    .expect("the parts resolve")
+}
+
+#[test]
+fn the_deprecated_marp_browser_path_still_reaches_the_renderers() {
+    // The setting moved out of [marp] because pages, documents and diagrams launch
+    // the same browser, but there is no schema bump and no migration: a
+    // configuration written before the move keeps working untouched.
+    let mut global = GlobalConfig::default_config();
+    global.marp.browser_path = Some(PathBuf::from("/usr/bin/chromium"));
+
+    let config = resolved(global, bare_project());
+
+    assert_eq!(
+        config.browser.path.as_deref(),
+        Some(Path::new("/usr/bin/chromium"))
+    );
+}
+
+#[test]
+fn the_browser_section_takes_effect() {
+    let mut global = GlobalConfig::default_config();
+    global.browser.path = Some(PathBuf::from("/opt/chrome"));
+
+    let config = resolved(global, bare_project());
+
+    assert_eq!(
+        config.browser.path.as_deref(),
+        Some(Path::new("/opt/chrome"))
+    );
+}
+
+#[test]
+fn the_browser_section_wins_where_both_are_set() {
+    // The state a user is in while moving over. If the old key won, moving would
+    // appear to do nothing.
+    let mut global = GlobalConfig::default_config();
+    global.marp.browser_path = Some(PathBuf::from("/usr/bin/old"));
+    global.browser.path = Some(PathBuf::from("/usr/bin/new"));
+
+    let config = resolved(global, bare_project());
+
+    assert_eq!(
+        config.browser.path.as_deref(),
+        Some(Path::new("/usr/bin/new"))
+    );
+}
+
+#[test]
+fn a_projects_deprecated_key_overrides_the_global_one() {
+    // A project's [marp] replaces the global one wholesale, which is how the
+    // deprecated key behaved before the move and must keep behaving.
+    let mut global = GlobalConfig::default_config();
+    global.marp.browser_path = Some(PathBuf::from("/usr/bin/global"));
+    let mut project = bare_project();
+    project.marp = Some(MarpConfig {
+        pdf: true,
+        browser_path: Some(PathBuf::from("/usr/bin/project")),
+    });
+
+    let config = resolved(global, project);
+
+    assert_eq!(
+        config.browser.path.as_deref(),
+        Some(Path::new("/usr/bin/project"))
+    );
+}
+
+#[test]
+fn no_browser_configured_leaves_discovery_to_decide() {
+    let config = resolved(GlobalConfig::default_config(), bare_project());
+    assert_eq!(config.browser.path, None);
 }

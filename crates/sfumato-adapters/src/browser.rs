@@ -222,7 +222,7 @@ pub(crate) fn resolve(configured: Option<&Path>) -> Result<Option<PathBuf>> {
 pub(crate) fn not_found(purpose: &str) -> String {
     format!(
         "Could not find Chrome, Chromium, or Edge {purpose}. Install one, or name \
-         the executable with `marp.browser_path` in your configuration or the \
+         the executable with `browser.path` in your configuration or the \
          SFUMATO_BROWSER environment variable."
     )
 }

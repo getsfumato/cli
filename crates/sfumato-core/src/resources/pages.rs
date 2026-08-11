@@ -658,11 +658,7 @@ pub(crate) async fn generate_page(
     workspace.write(&inspection_path, inspection_html.html.as_bytes())?;
     emit_stage(&event_sink, GenerationStage::LayoutCheck, None);
     let initial_issues = match page_inspector
-        .inspect(
-            &inspection_path,
-            config.marp.browser_path.as_deref(),
-            &operation,
-        )
+        .inspect(&inspection_path, config.browser.path.as_deref(), &operation)
         .await
     {
         Ok(issues) => {
@@ -747,11 +743,7 @@ pub(crate) async fn generate_page(
             )?;
             workspace.write(&inspection_path, candidate_inspection_html.html.as_bytes())?;
             let issues = page_inspector
-                .inspect(
-                    &inspection_path,
-                    config.marp.browser_path.as_deref(),
-                    &operation,
-                )
+                .inspect(&inspection_path, config.browser.path.as_deref(), &operation)
                 .await?;
             Ok::<_, SfumatoError>((candidate, candidate_assembly, issues))
         }

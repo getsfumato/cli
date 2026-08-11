@@ -667,7 +667,7 @@ pub(crate) async fn generate_slides(
                                 &reviewed,
                                 &theme,
                                 diagram_renderer.as_ref(),
-                                config.marp.browser_path.as_deref(),
+                                config.browser.path.as_deref(),
                                 workspace.as_ref(),
                                 &operation,
                             )
@@ -740,7 +740,7 @@ pub(crate) async fn generate_slides(
             BTreeMap::new(),
         );
         let layout_context = LayoutInspectionContext {
-            browser_path: config.marp.browser_path.as_deref(),
+            browser_path: config.browser.path.as_deref(),
             diagram_renderer: diagram_renderer.as_ref(),
             slide_renderer: slide_renderer.as_ref(),
             workspace: workspace.as_ref(),
@@ -900,7 +900,7 @@ pub(crate) async fn generate_slides(
                                     &candidate_markdown,
                                     &theme,
                                     diagram_renderer.as_ref(),
-                                    config.marp.browser_path.as_deref(),
+                                    config.browser.path.as_deref(),
                                     workspace.as_ref(),
                                     &operation,
                                 )
@@ -1022,7 +1022,7 @@ pub(crate) async fn generate_slides(
         diagrams_dir: &diagrams_dir,
         theme: &theme,
         renderer: diagram_renderer.as_ref(),
-        browser_path: config.marp.browser_path.as_deref(),
+        browser_path: config.browser.path.as_deref(),
         workspace: workspace.as_ref(),
         operation: &operation,
         stage: OperationStage::Render,
@@ -1053,7 +1053,7 @@ pub(crate) async fn generate_slides(
                 &markdown_path,
                 &theme_css_path,
                 &pdf_path,
-                config.marp.browser_path.as_deref(),
+                config.browser.path.as_deref(),
                 &operation,
             )
             .await;
@@ -1482,7 +1482,7 @@ async fn repair_mermaid_once(
             markdown,
             theme,
             diagram_renderer,
-            config.marp.browser_path.as_deref(),
+            config.browser.path.as_deref(),
             workspace,
             operation,
         )
@@ -1533,7 +1533,7 @@ async fn repair_mermaid_once(
         &candidate,
         theme,
         diagram_renderer,
-        config.marp.browser_path.as_deref(),
+        config.browser.path.as_deref(),
         workspace,
         operation,
     )
