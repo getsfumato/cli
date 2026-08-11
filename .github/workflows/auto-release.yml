@@ -123,7 +123,7 @@ jobs:
             echo "::notice::no releasable commits since ${last:-the beginning}; nothing to do"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-plan
           path: /tmp/plan.json
@@ -174,7 +174,7 @@ jobs:
 
       # The notes the plan job computed, rather than a second computation that
       # could disagree with the summary already shown.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: release-plan
           path: /tmp/plan
