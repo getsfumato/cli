@@ -155,6 +155,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
+          # The gate below runs fmt and clippy, which are components rather than part
+          # of the toolchain: without naming them here the job fails on
+          # `cargo-fmt is not installed` and looks like a formatting problem.
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: auto-release
