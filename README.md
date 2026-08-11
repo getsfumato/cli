@@ -23,7 +23,7 @@ binary, verifies its checksum, and installs to `~/.local/bin`. Overrides:
 From source instead — needs Rust 1.91 or newer:
 
 ```bash
-cargo install --git https://github.com/getsfumato/sfumato --locked sfumato
+cargo install sfumato --locked
 ```
 
 ### Prerequisites
@@ -125,20 +125,20 @@ Architecture decisions, diagrams, and internal APIs are under
 
 ## Crates
 
-The workspace is four crates. The three libraries carry no presentation concerns,
-so another front end — an API, a service — can reuse the workflows without this
-repository. They are not on crates.io yet; until then, depend on them by tag:
+The workspace is four crates, all published. The three libraries carry no
+presentation concerns, so another front end — an API, a service — can reuse the
+workflows without this repository:
 
 ```toml
-sfumato-core = { git = "https://github.com/getsfumato/sfumato", tag = "v0.3.0" }
+sfumato-core = "0.3"
 ```
 
 | Crate | Contents |
 | --- | --- |
-| [`sfumato`](cli) | CLI, TUI, formatting, and the composition root |
-| [`sfumato-adapters`](crates/sfumato-adapters) | providers, renderers, stores, prompts, secrets |
-| [`sfumato-core`](crates/sfumato-core) | workflows, ports, and the application facade |
-| [`sfumato-domain`](crates/sfumato-domain) | pure entities and invariants |
+| [`sfumato`](https://crates.io/crates/sfumato) | CLI, TUI, formatting, and the composition root |
+| [`sfumato-adapters`](https://crates.io/crates/sfumato-adapters) | providers, renderers, stores, prompts, secrets |
+| [`sfumato-core`](https://crates.io/crates/sfumato-core) | workflows, ports, and the application facade |
+| [`sfumato-domain`](https://crates.io/crates/sfumato-domain) | pure entities and invariants |
 
 Dependencies point inward only — `sfumato` → `adapters` → `core` → `domain` — and
 `cli/tests/architecture.rs` enforces it rather than leaving it to discipline.
