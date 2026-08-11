@@ -3,6 +3,28 @@
 Notable changes. This project follows [Conventional Commits](https://www.conventionalcommits.org),
 so `git log` is the complete record; this file is the readable summary.
 
+## 0.4.0 — 2026-08-11
+
+### Added
+
+- **config:** move the browser path out of [marp] to [browser] path
+
+### Fixed
+
+- **ci:** install rustfmt and clippy in the release gate
+- **plugins:** move the registry off master and say when it degrades
+- **tests:** stop the brain stub racing its own executable bit
+
+### Documentation
+
+- **core:** document the last two modules, and guard the lint
+- **core:** document the generation requests, outputs and review summaries
+- **core:** document the configuration model
+- **core:** document the provider ports
+- **core:** document the theme, model and connector surfaces
+- **core:** document the config-editor, setup and project surfaces
+- **architecture:** draw the knowledge port, and check that diagrams parse
+
 ## 0.3.1 — 2026-08-11
 
 ### Fixed
