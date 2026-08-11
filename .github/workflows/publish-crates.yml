@@ -103,7 +103,13 @@ jobs:
             # directory when its target is missing and still compiles, so a bad
             # `include` would publish a crate with no prompts and pass every other
             # check.
-            if [ "$crate" = "sfumato-adapters" ]; then
+            #
+            # Only on a real run. `cargo package` builds the *extracted* crate, whose
+            # dependency on core is a registry dependency rather than a path — so in a
+            # dry run, where core was never uploaded, it fails with "no matching
+            # package named sfumato-core found" for a reason that has nothing to do
+            # with what the dry run is checking.
+            if [ "$crate" = "sfumato-adapters" ] && [ "$DRY" != "true" ]; then
               cargo package -p sfumato-adapters --locked
             fi
 
