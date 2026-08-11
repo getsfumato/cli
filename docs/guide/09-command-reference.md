@@ -33,7 +33,7 @@ to the leaf command.
 | Variable | Effect |
 | --- | --- |
 | `SFUMATO_BROWSER` | Path to the Chromium-family browser to use. Also honours `PUPPETEER_EXECUTABLE_PATH` and `CHROME_PATH`, in that order, before searching `PATH` and well-known locations. |
-| `SFUMATO_PLUGIN_REGISTRY_URL` | Overrides the page-plugin registry URL. Falls back to the on-disk cache, then the bundled copy. |
+| `SFUMATO_PLUGIN_REGISTRY_URL` | Overrides the page-plugin registry URL, which defaults to `https://sfumato.sh/page-plugin-registry.json`. When it cannot be reached, the on-disk cache is used, then the copy compiled into the binary — and a warning says so rather than silently serving older metadata. |
 | `SFUMATO_DISABLE_BROWSER_SANDBOX` | Disables the browser sandbox for Mermaid rendering. The sandbox is on by default because `mmdc` loads model-written source. |
 | `NO_COLOR`, `TERM` | Suppress ANSI colour in human output and progress events. |
 

@@ -1,6 +1,7 @@
 //! Remote plugin discovery and versioned user-local plugin storage.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -11,7 +12,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use sfumato_core::{
     catalogs::{CatalogListing, UnreadableEntry},
     errors::{ErrorClass, OperationStage, SfumatoError, SfumatoResult},
-    operation::OperationContext,
+    operation::{OperationContext, OperationEventKind},
     page_plugins::{
         DownloadedPagePluginPackage, PagePluginCatalog, PagePluginCdnAsset,
         PagePluginInstallRecipe, PagePluginPackage, PagePluginRegistry, PagePluginRelease,
@@ -23,7 +24,22 @@ use sha2::{Digest, Sha256};
 use crate::runtime::await_operation;
 
 const BUILTIN_REGISTRY: &[u8] = include_bytes!("../assets/page-plugin-registry.json");
-const DEFAULT_REGISTRY_URL: &str = "https://raw.githubusercontent.com/getsfumato/sfumato/master/crates/sfumato-adapters/assets/page-plugin-registry.json";
+/// Where the plugin registry is fetched from.
+///
+/// Served from the site rather than from `raw.githubusercontent.com/…/master/…`,
+/// which is where it used to point. The registry is a **trust root**: it supplies
+/// both the URL a plugin is downloaded from and the `sha256` that validates it, so
+/// whoever can write it can make the CLI fetch and execute arbitrary JavaScript
+/// into a user's page. That does not belong on the branch this repository pushes to
+/// every day, where a work-in-progress edit is live to every installed binary the
+/// moment it lands.
+///
+/// It stays mutable rather than pinned to a tag, deliberately. Pinning would fetch
+/// a file byte-identical to the compiled-in copy, paying a network round trip for
+/// nothing, and would remove the only way to correct a bad URL or hash for binaries
+/// already installed. Entries are append-only for the same reason: old binaries
+/// keep reading this file.
+const DEFAULT_REGISTRY_URL: &str = "https://sfumato.sh/page-plugin-registry.json";
 
 /// Metadata-only registry with direct public-CDN installation.
 #[derive(Clone, Debug)]
@@ -112,7 +128,27 @@ impl PagePluginSource for CdnPagePluginSource {
                 write_atomic(&self.cache_path, &bytes).map_err(plugin_store_error)?;
                 Ok(registry)
             }
-            Err(_) => self.cached_or_builtin_registry(),
+            Err(error) => {
+                // Said out loud rather than swallowed. Degrading to the cache or the
+                // compiled-in copy is the right behaviour — a plugin operation
+                // should not fail because a CDN is unreachable — but silently
+                // serving month-old metadata is how a user ends up unable to explain
+                // why a plugin they know exists is not on offer.
+                operation.emit(
+                    OperationStage::Resolve,
+                    OperationEventKind::Warning,
+                    BTreeMap::from([
+                        (
+                            "message".to_string(),
+                            "could not reach the plugin registry; using the cached or \
+                             bundled copy, which may be older than what is available"
+                                .to_string(),
+                        ),
+                        ("reason".to_string(), error.message.clone()),
+                    ]),
+                );
+                self.cached_or_builtin_registry()
+            }
         }
     }
 
