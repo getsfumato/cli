@@ -116,18 +116,31 @@ nothing to rotate and nothing to leak. **The workflow's filename is part of the
 claim**, so renaming it breaks publishing until the claim is updated on all four
 crates.
 
-Configuring it, once per crate, at `https://crates.io/crates/<name>/settings`:
+Configuring it, at `https://crates.io/crates/<name>/settings`. **Two entries per
+crate**, both with owner `getsfumato`, repository `sfumato`, and no environment:
 
-| Field | Value |
+| Workflow filename | Serves |
 | --- | --- |
-| Repository owner | `getsfumato` |
-| Repository name | `sfumato` |
-| Workflow filename | `publish-crates.yml` |
-| Environment | leave empty |
+| `auto-release.yml` | The automated chain. |
+| `publish-crates.yml` | A manual `workflow_dispatch`. |
 
 Four crates: `sfumato-domain`, `sfumato-core`, `sfumato-adapters`, `sfumato`. It can
 only be set on a crate that already exists, which is why the first publish had to use
 a token.
+
+Two entries because **the claim names the run's entrypoint workflow**, which is not
+always the file the publishing job is written in. crates.io reads the top-level
+workflow out of the OIDC token, so the chained run presents `auto-release.yml` even
+though it is `publish-crates.yml` that does the work. Registering only the latter
+fails the automated release at the auth step with `does not match the workflow
+filename auto-release.yml in the JWT` — which is exactly how v0.5.0 was tagged and
+released on GitHub while crates.io stayed on 0.4.0.
+
+Making `publish-crates.yml` the entrypoint instead does not work: an `on: release:
+published` trigger never fires, because the release is published with GITHUB_TOKEN and
+GitHub refuses to let a run beget a run. That refusal is why the chain is a
+`workflow_call` to begin with, and the two constraints have no overlap. Registering
+both filenames is the way out that costs neither a secret nor a restructure.
 
 It runs after the artifacts job, never before, for the reason below.
 

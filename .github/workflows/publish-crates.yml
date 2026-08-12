@@ -10,6 +10,19 @@ name: publish-crates
 #
 # The name of this file is part of that claim. Renaming it breaks publishing until
 # the claim is updated on all four crates.
+#
+# The claim names the *entrypoint* workflow, which is not always this file. crates.io
+# reads the run's top-level workflow from the OIDC token, so a `workflow_call` from
+# `auto-release.yml` presents `auto-release.yml` no matter that the publishing job is
+# declared here. Both filenames are therefore registered on all four crates: this one
+# for a manual `workflow_dispatch`, and `auto-release.yml` for the automated chain.
+# Dropping either registration breaks that path alone, silently, at the auth step.
+#
+# The obvious alternative does not work. Triggering on `release: published` would make
+# this file the entrypoint, but the release is published by `release-artifacts.yml`
+# using GITHUB_TOKEN, and GitHub refuses to let a run beget a run — the workflow would
+# never fire at all. That refusal is why the chain uses `workflow_call` in the first
+# place.
 on:
   workflow_call:
     inputs:

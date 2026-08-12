@@ -226,6 +226,11 @@ jobs:
     # crates.io version can be yanked but never deleted and never reused. Chaining it
     # here means the binaries have already built and smoke-tested on six targets and
     # the release has gone live before anything irreversible happens.
+    #
+    # crates.io must trust `auto-release.yml` by name for this to authenticate, not
+    # just the file it calls: Trusted Publishing matches the run's entrypoint workflow,
+    # and a `workflow_call` does not change what that is. See the header of
+    # publish-crates.yml for why the chain cannot be an event trigger instead.
     needs: [plan, artifacts]
     if: needs.plan.outputs.release == 'true'
     permissions:
