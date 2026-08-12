@@ -673,3 +673,202 @@ fn the_last_document_page_setup_flag_wins() {
     assert!(args.no_toc);
     assert!(!args.toc);
 }
+
+/// Renders the command surface as Markdown, from the parser rather than by hand.
+///
+/// A reference that disagrees with the parser is worse than none: it costs a
+/// turn to discover, and the reader has no way to tell which of the two is
+/// lying. Generating it and checking the committed copy in CI means adding a
+/// command forces the reference to be regenerated in the same change.
+mod reference {
+    use super::*;
+    use clap::CommandFactory;
+    use std::fmt::Write as _;
+
+    /// Where the generated reference is committed.
+    fn reference_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the cli package sits under the workspace root")
+            .join("skills/sfumato/references/cli-reference.md")
+    }
+
+    /// One command's arguments and options, in the order clap declares them.
+    fn signature(command: &clap::Command) -> String {
+        let mut parts = Vec::new();
+        for argument in command.get_positionals() {
+            let name = argument.get_id().as_str().to_ascii_uppercase();
+            parts.push(if argument.is_required_set() {
+                format!("`<{name}>`")
+            } else {
+                format!("`[{name}]`")
+            });
+        }
+        let mut flags: Vec<_> = command
+            .get_arguments()
+            .filter(|argument| argument.get_long().is_some())
+            .filter(|argument| {
+                // `--timeout` is global and would repeat on all seventy-odd
+                // rows, and `--help` is not a command's own surface.
+                !matches!(argument.get_long(), Some("help" | "timeout"))
+            })
+            .map(|argument| {
+                let long = argument.get_long().unwrap_or_default();
+                let note = if argument.is_required_set() {
+                    " *(required)*"
+                } else if argument.is_hide_set() {
+                    // Accepted but absent from `--help`, which is exactly the
+                    // kind of flag a reader cannot discover any other way.
+                    " *(hidden)*"
+                } else {
+                    ""
+                };
+                format!("`--{long}`{note}")
+            })
+            .collect();
+        parts.append(&mut flags);
+        parts.join(" ")
+    }
+
+    /// Accepted values for whichever arguments constrain them.
+    fn values(command: &clap::Command) -> Vec<String> {
+        command
+            .get_arguments()
+            .filter(|argument| !matches!(argument.get_long(), Some("help" | "timeout")))
+            .filter_map(|argument| {
+                let accepted: Vec<_> = argument
+                    .get_possible_values()
+                    .iter()
+                    .map(|value| value.get_name().to_string())
+                    .collect();
+                // A switch reports `true, false`, which is what a switch is and
+                // tells a reader nothing they did not already know.
+                if accepted.is_empty() || accepted == ["true", "false"] {
+                    return None;
+                }
+                let name = argument.get_long().map_or_else(
+                    || argument.get_id().as_str().to_ascii_uppercase(),
+                    |long| format!("--{long}"),
+                );
+                Some(format!("`{name}`: {}", accepted.join(", ")))
+            })
+            .collect()
+    }
+
+    fn describe(command: &clap::Command) -> String {
+        command
+            .get_about()
+            .map(ToString::to_string)
+            .unwrap_or_default()
+    }
+
+    fn render(command: &clap::Command, path: &str, depth: usize, out: &mut String) {
+        let heading = "#".repeat(depth.min(6));
+        let signature = signature(command);
+        let title = if signature.is_empty() {
+            format!("`{path}`")
+        } else {
+            format!("`{path}` {signature}")
+        };
+        let _ = writeln!(out, "\n{heading} {title}\n");
+        let about = describe(command);
+        if !about.is_empty() {
+            let _ = writeln!(out, "{about}\n");
+        }
+        for line in values(command) {
+            let _ = writeln!(out, "- {line}");
+        }
+        let mut children: Vec<_> = command.get_subcommands().collect();
+        children.sort_by_key(|child| child.get_name().to_string());
+        for child in children {
+            if child.get_name() == "help" {
+                continue;
+            }
+            render(
+                child,
+                &format!("{path} {}", child.get_name()),
+                depth + 1,
+                out,
+            );
+        }
+    }
+
+    fn generate() -> String {
+        let root = Cli::command();
+        let mut out = String::from(
+            "# CLI reference\n\n\
+             Generated from the clap command declarations by the `renders_the_committed_cli_reference`\n\
+             test in `cli/tests/unit/cli.rs`. Do not edit by hand: a reference that disagrees with the\n\
+             parser is worse than none, because it costs a turn to discover which one is lying.\n\n\
+             Regenerate with `SFUMATO_WRITE_CLI_REFERENCE=1 cargo test -p sfumato cli_reference`.\n\n\
+             Every command also accepts the global `--timeout <SECONDS>`, which abandons the operation\n\
+             after that many seconds and is unbounded when omitted. `--help` is omitted throughout.\n",
+        );
+        let mut groups: Vec<_> = root.get_subcommands().collect();
+        groups.sort_by_key(|group| group.get_name().to_string());
+        for group in groups {
+            if group.get_name() == "help" {
+                continue;
+            }
+            render(group, &format!("sfumato {}", group.get_name()), 2, &mut out);
+        }
+        out
+    }
+
+    /// Every command group is named in the hand-written surface skill.
+    ///
+    /// The generated reference cannot go stale, but the prose beside it can:
+    /// `sfumato-cli/SKILL.md` names the flag that decides each command's
+    /// outcome, which is a judgement no generator makes. A group added without
+    /// a section there would simply be invisible to a reader who trusted it,
+    /// and the pinned count in its opening line would quietly become wrong.
+    #[test]
+    fn the_command_surface_skill_documents_every_group() {
+        let skill = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the cli package sits under the workspace root")
+            .join("skills/sfumato-cli/SKILL.md");
+        let prose = std::fs::read_to_string(&skill).expect("the surface skill is committed");
+
+        let groups: Vec<String> = Cli::command()
+            .get_subcommands()
+            .map(|group| group.get_name().to_string())
+            .filter(|name| name != "help")
+            .collect();
+
+        for group in &groups {
+            assert!(
+                prose.contains(&format!("## `{group}`")),
+                "skills/sfumato-cli/SKILL.md has no `## `{group}`` section. \
+                 Document the group, or the reader who trusts that file cannot find it."
+            );
+        }
+
+        // Spelled out in the prose, so it has to be corrected rather than left
+        // to rot the first time a group is added.
+        let counted = match groups.len() {
+            15 => "Fifteen groups",
+            other => panic!("the group count changed to {other}; update the count in the skill"),
+        };
+        assert!(
+            prose.contains(counted),
+            "the skill's opening line no longer states the real group count"
+        );
+    }
+
+    #[test]
+    fn renders_the_committed_cli_reference() {
+        let generated = generate();
+        let path = reference_path();
+        if std::env::var_os("SFUMATO_WRITE_CLI_REFERENCE").is_some() {
+            std::fs::write(&path, &generated).expect("the reference is writable");
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            committed, generated,
+            "skills/sfumato/references/cli-reference.md is stale. \
+             Regenerate it with SFUMATO_WRITE_CLI_REFERENCE=1 cargo test -p sfumato cli_reference"
+        );
+    }
+}
