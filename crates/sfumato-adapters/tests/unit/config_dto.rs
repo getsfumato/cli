@@ -418,8 +418,8 @@ theme = "sfumato-default"
 
 [knowledge]
 backend = "vitruvio"
+project = "facultad"
 brain = "algebra"
-config = "../vitruvio/vitruvio.toml"
 memory_types = ["canonical", "semantic"]
 max_limit = 25
 "#;
@@ -429,6 +429,7 @@ max_limit = 25
         .expect("and should be valid");
 
     assert!(project.knowledge.uses_brain());
+    assert_eq!(project.knowledge.project.as_deref(), Some("facultad"));
     assert_eq!(project.knowledge.brain.as_deref(), Some("algebra"));
     assert_eq!(project.knowledge.memory_types.len(), 2);
     assert_eq!(project.knowledge.max_limit, 25);
@@ -439,6 +440,60 @@ max_limit = 25
         .into_domain()
         .unwrap();
     assert_eq!(reparsed.knowledge, project.knowledge);
+}
+
+#[test]
+fn a_brain_reached_through_an_explicit_configuration_file_round_trips_too() {
+    // The other way to say which Vitruvio project: a path instead of a
+    // registered name, for a brain nobody has registered on this machine.
+    let document = r#"
+schema_version = 5
+name = "university"
+theme = "sfumato-default"
+
+[knowledge]
+backend = "vitruvio"
+brain = "algebra"
+config = "../vitruvio/vitruvio.toml"
+"#;
+    let project = toml::from_str::<ProjectConfigDto>(document)
+        .expect("a brain-backed project should parse")
+        .into_domain()
+        .expect("and should be valid");
+
+    assert_eq!(project.knowledge.project, None);
+    assert_eq!(
+        project.knowledge.config_file,
+        Some(PathBuf::from("../vitruvio/vitruvio.toml"))
+    );
+
+    let rendered = toml::to_string_pretty(&ProjectConfigDto::from_domain(&project)).unwrap();
+    let reparsed = toml::from_str::<ProjectConfigDto>(&rendered)
+        .unwrap()
+        .into_domain()
+        .unwrap();
+    assert_eq!(reparsed.knowledge, project.knowledge);
+}
+
+#[test]
+fn naming_a_vitruvio_project_and_a_configuration_file_at_once_is_rejected_when_it_is_read() {
+    let document = r#"
+schema_version = 5
+name = "university"
+theme = "sfumato-default"
+
+[knowledge]
+backend = "vitruvio"
+project = "facultad"
+brain = "algebra"
+config = "../vitruvio/vitruvio.toml"
+"#;
+    let error = toml::from_str::<ProjectConfigDto>(document)
+        .expect("it parses")
+        .into_domain()
+        .expect_err("but it is not a usable project");
+
+    assert!(error.to_string().contains("knowledge.project"), "{error}");
 }
 
 #[test]

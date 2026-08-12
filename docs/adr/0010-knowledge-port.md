@@ -24,6 +24,17 @@ CLI is the supported way in. Its `--json` contract is one object on stdout with
 stable error and exit codes, which is narrow enough to build on. `--actor-kind` is
 always `agent`: a brain that records who asked should not be told a human did.
 
+Every invocation states its whole context — `--project` when the project file
+names one, then `--brain` — rather than relying on any layer Vitruvio would
+otherwise fall back to. Those layers are a walk-up from the working directory and
+a selection some earlier `vitruvio brain use` saved on the machine, and both make
+which brain a run reads depend on something outside the Sfumato project file. A
+generation that quietly draws from the wrong subject produces a resource that
+looks entirely correct, which is why this is stated rather than inherited.
+`knowledge.config` is the same answer for a Vitruvio project that was never
+registered: it names the file directly, and it is refused alongside
+`knowledge.project` because Vitruvio would honour only the file.
+
 Source paths are **refused** under a brain, not ignored. Accepting them while
 reading from the brain would silently answer a different question than the one
 asked.

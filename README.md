@@ -93,6 +93,7 @@ provenance instead of reading a directory:
 # .sfumato/project.toml
 [knowledge]
 backend = "vitruvio"
+project = "my-project"
 brain = "my-brain"
 ```
 

@@ -142,6 +142,12 @@ async fn invoke(
     // `vitruvio` may be a bare name on PATH or a configured path; resolve handles
     // both, and hands the name back unchanged when it finds nothing.
     let mut command = Command::new(crate::executables::resolve(&executable.to_string_lossy()));
+    // Project first, then brain: that is the order Vitruvio resolves them in, and
+    // stating both is what makes one invocation independent of the directory it
+    // ran from and of whatever `vitruvio brain use` last recorded on the machine.
+    if let Some(project) = &binding.project {
+        command.arg("--project").arg(project);
+    }
     command.arg("--brain").arg(&binding.brain);
     if let Some(config) = &binding.config_file {
         command.arg("--config").arg(config);
@@ -255,11 +261,15 @@ fn envelope_error(
         .and_then(Value::as_str)
         .map(|hint| format!(" {hint}"))
         .unwrap_or_default();
-    let named = error
+    let name = error
         .and_then(|error| error.get("code"))
         .and_then(Value::as_str)
-        .map(|code| format!(" [{code}]"))
         .unwrap_or_default();
+    let named = if name.is_empty() {
+        String::new()
+    } else {
+        format!(" [{name}]")
+    };
     let detail = if error.is_some() {
         String::new()
     } else {
@@ -268,8 +278,16 @@ fn envelope_error(
     let message = format!("{message}{named}{hint}{detail}");
 
     match code {
+        // Vitruvio's own code, not the exit code: an unregistered project and an
+        // unreadable one both exit 3, and only the first is fixed by a command
+        // rather than by editing anything.
+        3 if name == "PROJECT_NOT_KNOWN" => SfumatoError::config(format!(
+            "{message} Run `vitruvio project register` in that project's directory, \
+             or correct knowledge.project in .sfumato/project.toml."
+        )),
         3 => SfumatoError::config(format!(
-            "{message} Check knowledge.brain and knowledge.config in .sfumato/project.toml."
+            "{message} Check knowledge.project, knowledge.brain and knowledge.config \
+             in .sfumato/project.toml."
         )),
         4 => SfumatoError::not_found(message),
         2 | 6 | 7 => SfumatoError::tool(ErrorClass::Permanent, message),

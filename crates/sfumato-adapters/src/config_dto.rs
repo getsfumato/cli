@@ -232,6 +232,8 @@ struct KnowledgeDto {
     #[serde(default)]
     backend: KnowledgeBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     brain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     config: Option<PathBuf>,
@@ -277,6 +279,7 @@ impl KnowledgeDto {
     fn into_domain(self) -> KnowledgeConfig {
         KnowledgeConfig {
             backend: self.backend,
+            project: self.project,
             brain: self.brain,
             config_file: self.config,
             executable: self.executable,
@@ -292,6 +295,7 @@ impl KnowledgeDto {
     fn from_domain(knowledge: &KnowledgeConfig) -> Self {
         Self {
             backend: knowledge.backend,
+            project: knowledge.project.clone(),
             brain: knowledge.brain.clone(),
             config: knowledge.config_file.clone(),
             executable: knowledge.executable.clone(),

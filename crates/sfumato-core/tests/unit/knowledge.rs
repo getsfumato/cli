@@ -20,6 +20,26 @@ fn brain_project(knowledge: KnowledgeConfig) -> ProjectConfig {
     }
 }
 
+/// A global layer that configures nothing, for the tests that only care about
+/// what the project's `[knowledge]` table resolves to.
+fn bare_global() -> crate::config::GlobalConfig {
+    crate::config::GlobalConfig {
+        user: crate::config::UserConfig {
+            name: None,
+            learning_style: Vec::new(),
+        },
+        connectors: Default::default(),
+        models: Default::default(),
+        defaults: Default::default(),
+        model_roles: Default::default(),
+        marp: crate::config::MarpConfig {
+            pdf: false,
+            browser_path: None,
+        },
+        browser: Default::default(),
+    }
+}
+
 #[test]
 fn a_vitruvio_project_without_a_brain_is_rejected_at_validation() {
     let project = brain_project(KnowledgeConfig {
@@ -44,6 +64,51 @@ fn a_named_brain_validates() {
     });
 
     project.validate().expect("a named brain is valid");
+}
+
+#[test]
+fn naming_a_project_and_a_configuration_file_at_once_is_rejected() {
+    // Vitruvio takes `--config` verbatim and stops asking, so the project name
+    // would be inert. A key that quietly does nothing is worse than a refusal.
+    let project = brain_project(KnowledgeConfig {
+        backend: KnowledgeBackend::Vitruvio,
+        project: Some("facultad".to_string()),
+        brain: Some("algebra".to_string()),
+        config_file: Some(PathBuf::from("../vitruvio/vitruvio.toml")),
+        ..KnowledgeConfig::default()
+    });
+
+    let error = project
+        .validate()
+        .expect_err("two ways to name one project is one too many");
+
+    assert!(
+        error.to_string().contains("knowledge.project"),
+        "the error must name the keys that collide: {error}"
+    );
+}
+
+#[test]
+fn a_named_project_reaches_the_binding() {
+    let project = brain_project(KnowledgeConfig {
+        backend: KnowledgeBackend::Vitruvio,
+        project: Some("  facultad  ".to_string()),
+        brain: Some("algebra".to_string()),
+        ..KnowledgeConfig::default()
+    });
+    let config = crate::config::EffectiveConfig::from_parts(
+        bare_global(),
+        project.name.clone(),
+        PathBuf::from("/projects/university"),
+        project,
+        Default::default(),
+    )
+    .expect("the project is valid");
+
+    let binding = config.brain_binding().expect("it is brain-backed");
+
+    assert_eq!(binding.project.as_deref(), Some("facultad"));
+    assert_eq!(binding.brain, "algebra");
 }
 
 #[test]

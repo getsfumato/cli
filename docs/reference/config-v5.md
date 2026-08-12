@@ -110,8 +110,9 @@ did before the table existed.
 ```toml
 [knowledge]
 backend = "vitruvio"                     # "filesystem" (default) | "vitruvio"
+project = "facultad"                     # registered Vitruvio project holding the brain
 brain = "algebra"                        # brain name from vitruvio.toml, or a path
-config = "../vitruvio/vitruvio.toml"     # optional explicit Vitruvio config
+config = "../vitruvio/vitruvio.toml"     # instead of `project`: one vitruvio.toml, verbatim
 executable = "~/.local/bin/vitruvio"     # optional; "vitruvio" on PATH otherwise
 actor = "sfumato"                        # recorded against each query
 memory_types = ["canonical", "semantic"] # default filter, optional
@@ -120,6 +121,19 @@ default_limit = 10
 max_limit = 50
 timeout_seconds = 60
 ```
+
+A Vitruvio brain is addressed in two steps — which project, then which brain
+within it — because a brain name means nothing until it is known whose
+vocabulary it belongs to. `project` names one Vitruvio has registered, which is
+what makes the address work from any directory; `config` is the alternative for
+a project that was never registered, and points at its `vitruvio.toml`. Set one
+or the other: Vitruvio takes `config` verbatim and never consults its registry
+afterwards, so naming both is refused rather than left to mean nothing.
+
+Naming neither is allowed, and means Vitruvio walks up from wherever Sfumato was
+run to find a `vitruvio.toml`. That is fine for a brain inside the Sfumato
+project's own tree and misleading everywhere else, because it makes the working
+directory decide which brain a name refers to.
 
 With `backend = "vitruvio"`, `brain` is required and generation changes in
 exactly two places. The model is offered `sfumato_search_brain` instead of

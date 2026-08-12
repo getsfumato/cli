@@ -60,6 +60,7 @@ impl StubBrain {
 
     fn binding(&self) -> BrainBinding {
         BrainBinding {
+            project: None,
             brain: "algebra".to_string(),
             config_file: None,
             executable: Some(self.home.path().join("vitruvio")),
@@ -165,6 +166,57 @@ async fn the_actor_kind_is_always_agent() {
         .expect("the stub answers");
 
     assert!(brain.arguments().contains("--actor-kind agent"));
+}
+
+#[tokio::test]
+async fn a_configured_project_is_stated_alongside_the_brain() {
+    // Vitruvio resolves a project first and a brain within it, and it will fall
+    // back to a saved per-project selection when neither is stated. An agent
+    // must not depend on that layer: what a run reads has to be decided by the
+    // project file, not by wherever the process happened to be started.
+    let brain = StubBrain::ok(r#"{"matches":[],"verified_against":{},"truncated":false}"#);
+    let mut binding = brain.binding();
+    binding.project = Some("facultad".to_string());
+
+    search(&brain, search_request(binding))
+        .await
+        .expect("the stub answers");
+
+    let arguments = brain.arguments();
+    assert!(
+        arguments.contains("--project facultad"),
+        "the project is missing from: {arguments}"
+    );
+    assert!(
+        arguments.contains("--brain algebra"),
+        "the brain is missing from: {arguments}"
+    );
+}
+
+#[tokio::test]
+async fn a_project_this_machine_does_not_know_says_how_to_register_it() {
+    // Exit 3 is also "the configuration is invalid", and only this one is fixed
+    // by running a command rather than by editing a file.
+    let brain = StubBrain::new(
+        r#"{"vitruvio":"0.1.0","command":"query.search","ok":false,"data":{},"warnings":[],
+            "error":{"code":"PROJECT_NOT_KNOWN","kind":"config",
+                     "message":"no project named 'facultad' is registered"}}"#,
+        "",
+        3,
+    );
+    let mut binding = brain.binding();
+    binding.project = Some("facultad".to_string());
+
+    let error = search(&brain, search_request(binding))
+        .await
+        .expect_err("an unregistered project is an error");
+
+    assert_eq!(error.code, ErrorCode::Config);
+    assert!(
+        error.message.contains("vitruvio project register"),
+        "{}",
+        error.message
+    );
 }
 
 #[tokio::test]
@@ -298,11 +350,9 @@ async fn a_configuration_exit_names_the_keys_that_fix_it() {
         .expect_err("a configuration failure is an error");
 
     assert_eq!(error.code, ErrorCode::Config);
-    assert!(
-        error.message.contains("knowledge.brain"),
-        "{}",
-        error.message
-    );
+    for key in ["knowledge.project", "knowledge.brain", "knowledge.config"] {
+        assert!(error.message.contains(key), "{key}: {}", error.message);
+    }
 }
 
 #[tokio::test]
@@ -398,6 +448,7 @@ async fn a_hanging_brain_is_stopped_by_the_configured_timeout() {
     fs::write(&script, "#!/bin/sh\nsleep 30\n").expect("the stub is written");
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("it is executable");
     let binding = BrainBinding {
+        project: None,
         brain: "algebra".to_string(),
         config_file: None,
         executable: Some(script),

@@ -931,6 +931,7 @@ fn brain_tool_set(
                     bundle,
                 }),
                 binding: sfumato_core::knowledge::BrainBinding {
+                    project: None,
                     brain: "algebra".into(),
                     config_file: None,
                     executable: None,

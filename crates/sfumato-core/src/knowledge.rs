@@ -26,8 +26,17 @@ use crate::{
 /// Carried per call rather than held by the client so a single client instance
 /// can serve every project: which brain to read is a property of the request,
 /// not of the transport.
+///
+/// Selection is two questions, in this order — which Vitruvio project, then
+/// which brain within it — because a brain name means nothing until it is known
+/// whose vocabulary it belongs to. Both are stated on every invocation. The
+/// alternative is a pointer some earlier `vitruvio brain use` left on the
+/// machine, and a saved selection that answers for a project nobody named is
+/// how a run reads the wrong subject in silence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrainBinding {
+    /// Vitruvio project holding the brain, by its registered name.
+    pub project: Option<String>,
     /// Brain name from the project's `vitruvio.toml`, or a path to one.
     pub brain: String,
     /// Optional explicit Vitruvio configuration file.

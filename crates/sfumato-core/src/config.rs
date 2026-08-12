@@ -411,6 +411,14 @@ pub struct KnowledgeConfig {
     /// Which knowledge source grounds this project.
     #[serde(default)]
     pub backend: KnowledgeBackend,
+    /// Vitruvio project holding the brain, by its registered name.
+    ///
+    /// Optional, and the answer whenever the brain lives outside this project's
+    /// directory tree: without it Vitruvio reads whichever `vitruvio.toml` the
+    /// working directory walks up to, so where Sfumato was run from decides
+    /// which brain a name refers to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// Brain name from the project's `vitruvio.toml`, or a path to one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brain: Option<String>,
@@ -456,6 +464,7 @@ impl Default for KnowledgeConfig {
     fn default() -> Self {
         Self {
             backend: KnowledgeBackend::default(),
+            project: None,
             brain: None,
             config_file: None,
             executable: None,
@@ -495,6 +504,23 @@ impl KnowledgeConfig {
         }
         if !self.uses_brain() {
             return Ok(());
+        }
+        // Vitruvio takes `--config` verbatim and never consults the project
+        // registry once it has one, so naming both would leave `knowledge.project`
+        // doing nothing at all. Refusing beats a key that silently means nothing.
+        if self.project.is_some() && self.config_file.is_some() {
+            bail!(
+                "knowledge.project and knowledge.config both name a Vitruvio project. \
+                 Keep one: knowledge.project addresses a registered project from anywhere, \
+                 knowledge.config points at one vitruvio.toml."
+            );
+        }
+        if let Some(project) = self.project.as_deref().map(str::trim)
+            && project.is_empty()
+        {
+            bail!(
+                "knowledge.project is empty. Name a registered Vitruvio project, or remove the key."
+            );
         }
         match self.brain.as_deref().map(str::trim) {
             Some(brain) if !brain.is_empty() => Ok(()),
@@ -1334,6 +1360,13 @@ impl EffectiveConfig {
                  Set knowledge.brain in .sfumato/project.toml.",
             )?;
         Ok(crate::knowledge::BrainBinding {
+            project: self
+                .knowledge
+                .project
+                .as_deref()
+                .map(str::trim)
+                .filter(|project| !project.is_empty())
+                .map(ToString::to_string),
             brain: brain.to_string(),
             config_file: self.knowledge.config_file.clone(),
             executable: self.knowledge.executable.clone(),

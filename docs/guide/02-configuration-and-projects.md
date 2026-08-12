@@ -231,8 +231,24 @@ local Vitruvio directory that returns evidence with its provenance — never pro
 ```toml
 [knowledge]
 backend = "vitruvio"
+project = "facultad"
 brain = "algebra"
+```
+
+Two names, because Vitruvio addresses a brain in two steps: which project, then
+which brain within it. `knowledge.project` is a project `vitruvio project
+register` has made addressable by name, and Sfumato states both on every query
+so that what a run reads is decided by this file rather than by the directory
+the command was typed in.
+
+For a Vitruvio project nobody registered, point at its file instead — the two
+keys are alternatives, and naming both is refused:
+
+```toml
+[knowledge]
+backend = "vitruvio"
 config = "../vitruvio/vitruvio.toml"
+brain = "algebra"
 ```
 
 The brain must be reachable through the `vitruvio` command; set
