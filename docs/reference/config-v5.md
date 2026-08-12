@@ -135,6 +135,23 @@ run to find a `vitruvio.toml`. That is fine for a brain inside the Sfumato
 project's own tree and misleading everywhere else, because it makes the working
 directory decide which brain a name refers to.
 
+`--brain-project` and `--brain` override the two keys for one run, on every
+`generate` command:
+
+```console
+sfumato generate slides --project university --brain simulacion --instruction "..."
+sfumato generate slides --project university \
+    --brain-project ethicompass --brain metrica-a --instruction "..."
+```
+
+`--brain-project` also clears `config` for that run: the two are alternatives, and
+Vitruvio honours a config file over a project name, so keeping the file would
+leave the flag doing nothing. Neither flag will *ground* a run — on a project
+still set to `filesystem` they are refused rather than switching the backend,
+because that changes where every claim in the resource may come from and refuses
+the source paths the command was called with. `sfumato edit slides` has neither
+flag: it works from the deck it is handed and reaches no knowledge source.
+
 With `backend = "vitruvio"`, `brain` is required and generation changes in
 exactly two places. The model is offered `sfumato_search_brain` instead of
 `sfumato_list_directory` and `sfumato_read_file`, and the prompt carries an

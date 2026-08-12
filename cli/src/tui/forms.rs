@@ -565,6 +565,10 @@ impl GenerateForm {
             allow_code_execution: self.toggle(GenerateFieldId::AllowCodeExecution),
             dry_run: self.toggle(GenerateFieldId::DryRun),
             project,
+            // The workspace has no brain picker: a run started here reads
+            // whichever brain the project names.
+            brain_project: None,
+            brain: None,
             theme,
             model_overrides,
             review_model: optional(self.text(GenerateFieldId::Reviewer)),
@@ -608,6 +612,10 @@ impl GenerateForm {
             allow_code_execution: self.toggle(GenerateFieldId::AllowCodeExecution),
             dry_run: self.toggle(GenerateFieldId::DryRun),
             project,
+            // The workspace has no brain picker: a run started here reads
+            // whichever brain the project names.
+            brain_project: None,
+            brain: None,
             theme,
             model_overrides,
             review_model: optional(self.text(GenerateFieldId::Reviewer)),
@@ -652,6 +660,10 @@ impl GenerateForm {
             allow_code_execution: self.toggle(GenerateFieldId::AllowCodeExecution),
             dry_run: self.toggle(GenerateFieldId::DryRun),
             project,
+            // The workspace has no brain picker: a run started here reads
+            // whichever brain the project names.
+            brain_project: None,
+            brain: None,
             theme,
             model_overrides,
             review_model: optional(self.text(GenerateFieldId::Reviewer)),
@@ -743,6 +755,10 @@ impl GenerateForm {
             out: optional(self.text(GenerateFieldId::Publish)).map(PathBuf::from),
             dry_run: self.toggle(GenerateFieldId::DryRun),
             project,
+            // The workspace has no brain picker: a run started here reads
+            // whichever brain the project names.
+            brain_project: None,
+            brain: None,
             theme,
             model_overrides,
             review_model: optional(self.text(GenerateFieldId::Reviewer)),

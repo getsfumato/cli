@@ -1193,6 +1193,8 @@ pub(crate) async fn execute_page(
     let model_overrides = parse_model_overrides(&args.model_overrides)?;
     let config = ConfigOverrides {
         project: args.project.clone(),
+        brain_project: args.brain_project,
+        brain: args.brain,
         theme: args.theme,
         model_overrides: model_overrides.clone(),
         reviewer_model: args.review_model,
@@ -1311,6 +1313,8 @@ pub(crate) async fn execute_video(
     }
     let config = ConfigOverrides {
         project: args.project.clone(),
+        brain_project: args.brain_project,
+        brain: args.brain,
         theme: args.theme,
         model_overrides: model_overrides.clone(),
         reviewer_model: args.review_model,
@@ -1503,6 +1507,11 @@ pub(crate) async fn execute_edit_slides(
     }
     let config = ConfigOverrides {
         project: args.project,
+        // Editing an existing deck reaches no knowledge source at all — it works
+        // from the Markdown it was handed — so there is no brain here to point
+        // somewhere else, and no flag offering to.
+        brain_project: None,
+        brain: None,
         theme: None,
         model_overrides,
         reviewer_model: None,
@@ -1602,6 +1611,8 @@ pub(crate) async fn execute_document(
     let model_overrides = parse_model_overrides(&args.model_overrides)?;
     let config = ConfigOverrides {
         project: args.project.clone(),
+        brain_project: args.brain_project,
+        brain: args.brain,
         theme: args.theme,
         model_overrides: model_overrides.clone(),
         reviewer_model: args.review_model,
@@ -1745,6 +1756,8 @@ pub(crate) async fn execute_slides(
     let model_overrides = parse_model_overrides(&args.model_overrides)?;
     let config = ConfigOverrides {
         project: args.project.clone(),
+        brain_project: args.brain_project,
+        brain: args.brain,
         theme: args.theme,
         model_overrides: model_overrides.clone(),
         reviewer_model: args.review_model,

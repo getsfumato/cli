@@ -710,6 +710,8 @@ sfumato generate slides [INPUTS]... \
   [--template <NAME>] \
   [--out <FOLDER>] \
   [--project <NAME>] \
+  [--brain-project <NAME>] \
+  [--brain <NAME>] \
   [--theme <NAME>] \
   [--model <CAPABILITY=PROFILE>]... \
   [--review-model <PROFILE>] \
@@ -728,6 +730,7 @@ sfumato generate slides [INPUTS]... \
 | `--template` | Opt into one installed slide template; none is used by default. |
 | `--out` | Publish the rendered PDF under `<FOLDER>/_sfumato/slides`; managed Markdown/PDF remain in the artifact store. |
 | `--project`, `--theme` | One-request project/theme selection. |
+| `--brain-project`, `--brain` | One-request Vitruvio project/brain selection, overriding `knowledge.project` and `knowledge.brain`. Refused unless the project is already grounded in a brain. Note `--project` is the Sfumato project and `--brain-project` the Vitruvio one. |
 | `--model` | Repeatable capability profile override. Slides require text; image may be needed by the tool. |
 | `--review-model` | One-request reviewer profile override. |
 | `--no-review` | Skip semantic review, layout inspection, and model layout repair. Core structural validation and final rendering still apply. |
@@ -755,6 +758,8 @@ sfumato generate document [INPUTS]... \
   [--toc | --no-toc] \
   [--cover | --no-cover] \
   [--project <NAME>] \
+  [--brain-project <NAME>] \
+  [--brain <NAME>] \
   [--theme <NAME>] \
   [--model <CAPABILITY=PROFILE>]... \
   [--review-model <PROFILE>] \
@@ -797,6 +802,8 @@ sfumato generate page [INPUTS]... \
   [--template <NAME>] \
   [--out <FOLDER>] \
   [--project <NAME>] \
+  [--brain-project <NAME>] \
+  [--brain <NAME>] \
   [--theme <NAME>] \
   [--model <CAPABILITY=PROFILE>]... \
   [--review-model <PROFILE>] \
@@ -844,6 +851,8 @@ sfumato generate video [INPUTS]... \
   [--title <TITLE>] \
   [--out <FOLDER>] \
   [--project <NAME>] \
+  [--brain-project <NAME>] \
+  [--brain <NAME>] \
   [--theme <NAME>] \
   [--model <CAPABILITY=PROFILE>]... \
   [--review-model <PROFILE>] \

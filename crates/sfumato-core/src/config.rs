@@ -23,6 +23,14 @@ pub struct ConfigOverrides {
     pub project: Option<String>,
     /// A theme for this run only.
     pub theme: Option<String>,
+    /// Vitruvio project to read from for this run only.
+    ///
+    /// Distinct from [`Self::project`], which selects the *Sfumato* project. The
+    /// two are unrelated names in unrelated registries, and one run routinely
+    /// states both.
+    pub brain_project: Option<String>,
+    /// A brain for this run only, within whichever Vitruvio project applies.
+    pub brain: Option<String>,
     /// Per-capability profile choices, as `--model text=fast` supplies.
     pub model_overrides: BTreeMap<Capability, String>,
     /// A reviewer profile for this run only.
@@ -1300,6 +1308,12 @@ impl EffectiveConfig {
             overrides.reviewer_model,
         );
 
+        let knowledge = merge_knowledge(
+            project.knowledge,
+            overrides.brain_project,
+            overrides.brain,
+            &project.name,
+        )?;
         let publish_dir = overrides.publish_dir.or(project.publish_dir);
         let theme = resolve_theme_name(&project.theme, overrides.theme);
         let marp = project.marp.unwrap_or_else(|| global.marp.clone());
@@ -1330,7 +1344,7 @@ impl EffectiveConfig {
                 overrides.tool_overrides,
             )),
             security: project.security,
-            knowledge: project.knowledge,
+            knowledge,
             marp,
             browser,
         })
@@ -1512,6 +1526,58 @@ fn merge_model_roles(
 
 fn resolve_theme_name(project_theme: &str, command_theme: Option<String>) -> String {
     command_theme.unwrap_or_else(|| project_theme.to_string())
+}
+
+/// Applies one run's brain choice on top of the project's.
+///
+/// Points at a different subject for one generation without editing the project
+/// file — the same shape as `--theme` and `--out`, for the setting that decides
+/// where a resource's claims may come from.
+///
+/// What it deliberately will not do is *ground* a run that the project did not
+/// ground. Switching a filesystem project to a brain silently changes what the
+/// model is given, refuses the source paths the command was probably called
+/// with, and produces a resource built from material nobody asked for. That is a
+/// decision the project makes.
+fn merge_knowledge(
+    mut knowledge: KnowledgeConfig,
+    brain_project: Option<String>,
+    brain: Option<String>,
+    project_name: &str,
+) -> Result<KnowledgeConfig> {
+    let named = |value: Option<String>, flag: &str| -> Result<Option<String>> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            bail!("{flag} was given an empty name.");
+        }
+        Ok(Some(trimmed.to_string()))
+    };
+    let brain_project = named(brain_project, "--brain-project")?;
+    let brain = named(brain, "--brain")?;
+    if brain_project.is_none() && brain.is_none() {
+        return Ok(knowledge);
+    }
+    if !knowledge.uses_brain() {
+        bail!(
+            "Project '{project_name}' is not grounded in a brain, so there is no brain \
+             to override. Set knowledge.backend = \"vitruvio\" in .sfumato/project.toml."
+        );
+    }
+    if let Some(brain_project) = brain_project {
+        // The run named a registered project, so the file's path to one stops
+        // applying: Vitruvio honours `--config` over `--project`, and keeping
+        // both would make the flag do nothing at all.
+        knowledge.config_file = None;
+        knowledge.project = Some(brain_project);
+    }
+    if let Some(brain) = brain {
+        knowledge.brain = Some(brain);
+    }
+    knowledge.validate()?;
+    Ok(knowledge)
 }
 
 fn merge_tool_defaults(

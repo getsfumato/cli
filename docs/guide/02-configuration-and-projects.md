@@ -255,6 +255,23 @@ The brain must be reachable through the `vitruvio` command; set
 `knowledge.executable` when it is not on `PATH`. Sfumato queries it as an agent
 actor, so the brain records that a model asked.
 
+For one run, `--brain` and `--brain-project` override those two keys the way
+`--theme` overrides the theme — same layering, no edit to the file:
+
+```console
+sfumato generate slides --brain simulacion --instruction "..."
+sfumato generate slides --brain-project ethicompass --brain metrica-a --instruction "..."
+```
+
+Careful with the two `project` words: `--project` is the **Sfumato** project and
+`--brain-project` the **Vitruvio** one. They are unrelated names in unrelated
+registries, and one command often states both.
+
+Neither flag grounds a project that is not grounded. On `backend = "filesystem"`
+they are refused, because switching where a resource's claims come from also
+refuses the source paths you passed, and that is the project's decision to make
+rather than one run's.
+
 What changes under a brain is deliberately small. The model is offered the
 search tool instead of the two file tools, and the prompt carries an inventory of
 the brain — which memory modules exist, how many blocks each holds, which filters

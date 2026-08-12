@@ -35,6 +35,15 @@ looks entirely correct, which is why this is stated rather than inherited.
 registered: it names the file directly, and it is refused alongside
 `knowledge.project` because Vitruvio would honour only the file.
 
+Both keys take a per-run override — `--brain-project` and `--brain` — through the
+same `ConfigOverrides` layer as `--theme` and `--out`. Which *subject* a resource
+is drawn from is the kind of thing that varies run to run, so it belongs in the
+run layer. Which *backend* is not: those flags are refused on a project set to
+`filesystem` rather than switching it, because grounding decides where every
+claim may come from and its side effect is refusing the source paths the command
+was called with. A run may point somewhere else; only the project may change what
+kind of place that is.
+
 Source paths are **refused** under a brain, not ignored. Accepting them while
 reading from the brain would silently answer a different question than the one
 asked.

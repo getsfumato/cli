@@ -1,5 +1,17 @@
 use super::*;
 
+/// Unwraps a parsed `generate`, past the box the variant is held in.
+///
+/// `Commands::Generate` carries every generate flag there is and would
+/// otherwise set the size of the whole enum, so it is boxed — and a `Box` is not
+/// something a pattern can see through on stable.
+fn generate(cli: Cli) -> GenerateCommands {
+    match cli.command {
+        Some(Commands::Generate { command }) => *command,
+        other => panic!("expected a generate command, got: {other:?}"),
+    }
+}
+
 #[test]
 fn parses_video_approval_output_override() {
     let cli = Cli::try_parse_from([
@@ -39,14 +51,38 @@ fn parses_reviewer_model_and_review_opt_out() {
     ])
     .unwrap();
 
-    let Some(Commands::Generate {
-        command: GenerateCommands::Slides(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Slides(args) = generate(cli) else {
         panic!("expected generate slides command");
     };
     assert_eq!(args.review_model.as_deref(), Some("local-review"));
     assert!(args.no_review);
+}
+
+#[test]
+fn generate_takes_a_brain_for_one_run() {
+    // `--project` is the Sfumato project and `--brain-project` the Vitruvio one.
+    // Two registries, two names, and one command routinely states both.
+    let cli = Cli::try_parse_from([
+        "sfumato",
+        "generate",
+        "slides",
+        "--instruction",
+        "explain Jacobi",
+        "--project",
+        "university",
+        "--brain-project",
+        "facultad",
+        "--brain",
+        "analisis-numerico",
+    ])
+    .unwrap();
+
+    let GenerateCommands::Slides(args) = generate(cli) else {
+        panic!("expected generate slides command");
+    };
+    assert_eq!(args.project.as_deref(), Some("university"));
+    assert_eq!(args.brain_project.as_deref(), Some("facultad"));
+    assert_eq!(args.brain.as_deref(), Some("analisis-numerico"));
 }
 
 #[test]
@@ -121,10 +157,7 @@ fn parses_page_plugins_and_dedicated_generation_options() {
     ])
     .unwrap();
 
-    let Some(Commands::Generate {
-        command: GenerateCommands::Page(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Page(args) = generate(cli) else {
         panic!("expected generate page command");
     };
     assert_eq!(args.inputs, vec![PathBuf::from("notes")]);
@@ -339,10 +372,7 @@ fn pages_alias_selects_the_page_generator() {
         "--shadcn",
     ])
     .unwrap();
-    let Some(Commands::Generate {
-        command: GenerateCommands::Page(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Page(args) = generate(cli) else {
         panic!("expected page generator");
     };
     assert!(args.shadcn);
@@ -381,10 +411,7 @@ fn parses_reusable_template_commands_and_generation_selection() {
         "interactive-lesson",
     ])
     .unwrap();
-    let Some(Commands::Generate {
-        command: GenerateCommands::Page(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Page(args) = generate(cli) else {
         panic!("expected generate page command");
     };
     assert_eq!(args.template.as_deref(), Some("interactive-lesson"));
@@ -400,10 +427,7 @@ fn generation_does_not_select_a_template_implicitly() {
         "Explain Fourier series",
     ])
     .unwrap();
-    let Some(Commands::Generate {
-        command: GenerateCommands::Page(page),
-    }) = page.command
-    else {
+    let GenerateCommands::Page(page) = generate(page) else {
         panic!("expected page generator");
     };
     assert!(page.template.is_none());
@@ -416,10 +440,7 @@ fn generation_does_not_select_a_template_implicitly() {
         "Explain Fourier series",
     ])
     .unwrap();
-    let Some(Commands::Generate {
-        command: GenerateCommands::Slides(slides),
-    }) = slides.command
-    else {
+    let GenerateCommands::Slides(slides) = generate(slides) else {
         panic!("expected slides generator");
     };
     assert!(slides.template.is_none());
@@ -437,10 +458,7 @@ fn parses_ui_as_an_exclusive_page_library() {
         "materialui",
     ])
     .unwrap();
-    let Some(Commands::Generate {
-        command: GenerateCommands::Page(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Page(args) = generate(cli) else {
         panic!("expected generate page command");
     };
     assert_eq!(args.ui.as_deref(), Some("materialui"));
@@ -469,10 +487,7 @@ fn parses_video_generation_and_engine_specific_options() {
         "code=codex",
     ])
     .unwrap();
-    let Some(Commands::Generate {
-        command: GenerateCommands::Video(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Video(args) = generate(cli) else {
         panic!("expected generate video command");
     };
 
@@ -605,10 +620,7 @@ fn parses_document_page_setup_flags() {
     ])
     .unwrap();
 
-    let Some(Commands::Generate {
-        command: GenerateCommands::Document(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Document(args) = generate(cli) else {
         panic!("expected generate document command");
     };
     assert_eq!(args.inputs, vec![PathBuf::from("notes.md")]);
@@ -633,10 +645,7 @@ fn omitting_document_page_setup_flags_defers_to_the_theme() {
     ])
     .unwrap();
 
-    let Some(Commands::Generate {
-        command: GenerateCommands::Document(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Document(args) = generate(cli) else {
         panic!("expected generate document command");
     };
     assert!(args.page_size.is_none());
@@ -658,10 +667,7 @@ fn the_last_document_page_setup_flag_wins() {
     ])
     .unwrap();
 
-    let Some(Commands::Generate {
-        command: GenerateCommands::Document(args),
-    }) = cli.command
-    else {
+    let GenerateCommands::Document(args) = generate(cli) else {
         panic!("expected generate document command");
     };
     assert!(args.no_toc);

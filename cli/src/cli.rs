@@ -81,8 +81,12 @@ pub enum Commands {
         command: VideoCommands,
     },
     Generate {
+        // Boxed because this variant carries every generate command's flags and
+        // dwarfs the rest of the enum, which is otherwise paid for by every
+        // parse. `Init` and `Config` do not need a `generate video`'s worth of
+        // stack.
         #[command(subcommand)]
-        command: GenerateCommands,
+        command: Box<GenerateCommands>,
     },
     #[command(about = "Edit existing generated resources without regenerating them")]
     Edit {
@@ -696,6 +700,20 @@ pub struct DocumentArgs {
     #[arg(long)]
     pub project: Option<String>,
 
+    #[arg(
+        long = "brain-project",
+        value_name = "NAME",
+        help = "Vitruvio project to read from, overriding knowledge.project"
+    )]
+    pub brain_project: Option<String>,
+
+    #[arg(
+        long = "brain",
+        value_name = "NAME",
+        help = "Brain to read from, overriding knowledge.brain"
+    )]
+    pub brain: Option<String>,
+
     #[arg(long)]
     pub theme: Option<String>,
 
@@ -775,6 +793,20 @@ pub struct SlidesArgs {
     #[arg(long)]
     pub project: Option<String>,
 
+    #[arg(
+        long = "brain-project",
+        value_name = "NAME",
+        help = "Vitruvio project to read from, overriding knowledge.project"
+    )]
+    pub brain_project: Option<String>,
+
+    #[arg(
+        long = "brain",
+        value_name = "NAME",
+        help = "Brain to read from, overriding knowledge.brain"
+    )]
+    pub brain: Option<String>,
+
     #[arg(long)]
     pub theme: Option<String>,
 
@@ -840,6 +872,20 @@ pub struct PageArgs {
 
     #[arg(long)]
     pub project: Option<String>,
+
+    #[arg(
+        long = "brain-project",
+        value_name = "NAME",
+        help = "Vitruvio project to read from, overriding knowledge.project"
+    )]
+    pub brain_project: Option<String>,
+
+    #[arg(
+        long = "brain",
+        value_name = "NAME",
+        help = "Brain to read from, overriding knowledge.brain"
+    )]
+    pub brain: Option<String>,
 
     #[arg(long)]
     pub theme: Option<String>,
@@ -951,6 +997,18 @@ pub struct VideoArgs {
     pub dry_run: bool,
     #[arg(long)]
     pub project: Option<String>,
+    #[arg(
+        long = "brain-project",
+        value_name = "NAME",
+        help = "Vitruvio project to read from, overriding knowledge.project"
+    )]
+    pub brain_project: Option<String>,
+    #[arg(
+        long = "brain",
+        value_name = "NAME",
+        help = "Brain to read from, overriding knowledge.brain"
+    )]
+    pub brain: Option<String>,
     #[arg(long)]
     pub theme: Option<String>,
     #[arg(long = "model", value_name = "CAPABILITY=PROFILE")]

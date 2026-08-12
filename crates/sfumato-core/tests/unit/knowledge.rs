@@ -20,24 +20,19 @@ fn brain_project(knowledge: KnowledgeConfig) -> ProjectConfig {
     }
 }
 
-/// A global layer that configures nothing, for the tests that only care about
-/// what the project's `[knowledge]` table resolves to.
-fn bare_global() -> crate::config::GlobalConfig {
-    crate::config::GlobalConfig {
-        user: crate::config::UserConfig {
-            name: None,
-            learning_style: Vec::new(),
-        },
-        connectors: Default::default(),
-        models: Default::default(),
-        defaults: Default::default(),
-        model_roles: Default::default(),
-        marp: crate::config::MarpConfig {
-            pdf: false,
-            browser_path: None,
-        },
-        browser: Default::default(),
-    }
+/// Resolves a project through the three layers, so the tests below read what a
+/// run actually gets rather than what the project file said.
+fn resolve(
+    project: ProjectConfig,
+    overrides: crate::config::ConfigOverrides,
+) -> crate::errors::SfumatoResult<crate::config::EffectiveConfig> {
+    crate::config::EffectiveConfig::from_parts(
+        crate::config::GlobalConfig::default_config(),
+        project.name.clone(),
+        PathBuf::from("/projects/university"),
+        project,
+        overrides,
+    )
 }
 
 #[test]
@@ -96,19 +91,127 @@ fn a_named_project_reaches_the_binding() {
         brain: Some("algebra".to_string()),
         ..KnowledgeConfig::default()
     });
-    let config = crate::config::EffectiveConfig::from_parts(
-        bare_global(),
-        project.name.clone(),
-        PathBuf::from("/projects/university"),
-        project,
-        Default::default(),
-    )
-    .expect("the project is valid");
+    let config = resolve(project, Default::default()).expect("the project is valid");
 
     let binding = config.brain_binding().expect("it is brain-backed");
 
     assert_eq!(binding.project.as_deref(), Some("facultad"));
     assert_eq!(binding.brain, "algebra");
+}
+
+#[test]
+fn one_run_can_point_at_another_project_and_brain() {
+    let project = brain_project(KnowledgeConfig {
+        backend: KnowledgeBackend::Vitruvio,
+        project: Some("facultad".to_string()),
+        brain: Some("algebra".to_string()),
+        ..KnowledgeConfig::default()
+    });
+
+    let config = resolve(
+        project,
+        crate::config::ConfigOverrides {
+            brain_project: Some("ethicompass".to_string()),
+            brain: Some("metrica-a".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("the run resolves");
+
+    let binding = config.brain_binding().expect("it is brain-backed");
+    assert_eq!(binding.project.as_deref(), Some("ethicompass"));
+    assert_eq!(binding.brain, "metrica-a");
+}
+
+#[test]
+fn a_run_may_change_only_the_brain_and_keep_the_project() {
+    let project = brain_project(KnowledgeConfig {
+        backend: KnowledgeBackend::Vitruvio,
+        project: Some("facultad".to_string()),
+        brain: Some("algebra".to_string()),
+        ..KnowledgeConfig::default()
+    });
+
+    let config = resolve(
+        project,
+        crate::config::ConfigOverrides {
+            brain: Some("simulacion".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("the run resolves");
+
+    let binding = config.brain_binding().expect("it is brain-backed");
+    assert_eq!(binding.project.as_deref(), Some("facultad"));
+    assert_eq!(binding.brain, "simulacion");
+}
+
+#[test]
+fn naming_a_project_for_one_run_drops_the_configuration_file_the_project_named() {
+    // Vitruvio honours `--config` over `--project`, so leaving the file in place
+    // would make the flag do nothing — the run would read the brain the project
+    // file points at, under a project name that never applied.
+    let project = brain_project(KnowledgeConfig {
+        backend: KnowledgeBackend::Vitruvio,
+        config_file: Some(PathBuf::from("../vitruvio/vitruvio.toml")),
+        brain: Some("algebra".to_string()),
+        ..KnowledgeConfig::default()
+    });
+
+    let config = resolve(
+        project,
+        crate::config::ConfigOverrides {
+            brain_project: Some("facultad".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("the run resolves");
+
+    let binding = config.brain_binding().expect("it is brain-backed");
+    assert_eq!(binding.project.as_deref(), Some("facultad"));
+    assert_eq!(binding.config_file, None);
+}
+
+#[test]
+fn a_run_cannot_ground_a_filesystem_project_in_a_brain() {
+    // Grounding decides where every claim in the resource may come from, and
+    // switching it would refuse the source paths the command was called with.
+    // That belongs to the project, not to one invocation.
+    let project = brain_project(KnowledgeConfig::default());
+
+    let error = resolve(
+        project,
+        crate::config::ConfigOverrides {
+            brain: Some("algebra".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect_err("there is no brain to override");
+
+    assert!(
+        error.to_string().contains("knowledge.backend"),
+        "the error must name what would make it work: {error}"
+    );
+}
+
+#[test]
+fn an_empty_brain_override_is_refused_rather_than_ignored() {
+    let project = brain_project(KnowledgeConfig {
+        backend: KnowledgeBackend::Vitruvio,
+        brain: Some("algebra".to_string()),
+        ..KnowledgeConfig::default()
+    });
+
+    let error = resolve(
+        project,
+        crate::config::ConfigOverrides {
+            brain: Some("   ".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect_err("an empty name names nothing");
+
+    assert!(error.to_string().contains("--brain"), "{error}");
 }
 
 #[test]
