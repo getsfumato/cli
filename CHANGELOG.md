@@ -3,6 +3,13 @@
 Notable changes. This project follows [Conventional Commits](https://www.conventionalcommits.org),
 so `git log` is the complete record; this file is the readable summary.
 
+## 0.5.0 — 2026-08-12
+
+### Added
+
+- **knowledge:** point one run at another brain with --brain and --brain-project
+- **knowledge:** address a brain by its Vitruvio project as well as its name
+
 ## 0.4.0 — 2026-08-11
 
 ### Added
